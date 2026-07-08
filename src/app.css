@@ -1,3 +1,13 @@
 :root { font-family: system-ui, sans-serif; color-scheme: light dark; }
 body { margin: 0; }
 .app { padding: 1.5rem; }
+.app-header { display: flex; align-items: center; gap: 0.75rem; }
+.badge {
+  font-size: 0.8rem;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+}
+.badge-checking { color: #888; }
+.badge-up { color: #2e7d32; }
+.badge-down { color: #c62828; }
