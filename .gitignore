@@ -6,6 +6,9 @@ dist/
 src-tauri/target/
 src-tauri/gen/
 
+# typescript incremental build info
+*.tsbuildinfo
+
 # python
 __pycache__/
 *.py[cod]
