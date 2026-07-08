@@ -16,11 +16,18 @@ pub struct SidecarHandle {
 impl SidecarHandle {
     pub fn kill(&self) {
         if let Ok(mut guard) = self.child.lock() {
-            if let Some(child) = guard.as_mut() {
+            // take() so a second call is a cheap no-op rather than re-killing.
+            if let Some(mut child) = guard.take() {
                 let _ = child.kill();
                 let _ = child.wait();
             }
         }
+    }
+}
+
+impl Drop for SidecarHandle {
+    fn drop(&mut self) {
+        self.kill();
     }
 }
 
