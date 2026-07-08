@@ -1027,7 +1027,7 @@ describe("streamChat", () => {
 
   it("handles a chunk split across read boundaries", async () => {
     (globalThis.fetch as any).mockResolvedValue(
-      ndjsonResponse(['{"type":"text","content":"a"', 'b"}\n{"type":"done"}\n'])
+      ndjsonResponse(['{"type":"text","content":"a', 'b"}\n{"type":"done"}\n'])
     );
     const events = [];
     for await (const e of streamChat("http://x", [{ role: "user", content: "hi" }])) {
