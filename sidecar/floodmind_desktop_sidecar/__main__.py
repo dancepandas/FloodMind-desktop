@@ -19,7 +19,7 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=None)
     args = parser.parse_args()
 
-    port = args.port if args.port else find_free_port()
+    port = args.port if args.port is not None else find_free_port()
     app = create_app(StubAgent())
 
     # First stdout line announces readiness + the chosen port. Rust reads this.

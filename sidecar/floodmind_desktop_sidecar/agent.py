@@ -22,7 +22,7 @@ class StubAgent:
         user_text = messages[-1]["content"] if messages else ""
         reply = f"[sidecar stub] 收到：{user_text}"
         mid = len(reply) // 2
-        chunks = [reply[:mid], reply[mid:], ""]
+        chunks = [reply[:mid], reply[mid:]] or [""]
         for c in chunks:
             yield {"type": "text", "content": c}
         yield {"type": "done"}
