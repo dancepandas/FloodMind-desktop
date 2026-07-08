@@ -1,3 +1,5 @@
+import ChatView from "./components/ChatView";
+import Composer from "./components/Composer";
 import HealthBadge from "./components/HealthBadge";
 
 export default function App() {
@@ -7,6 +9,8 @@ export default function App() {
         <h1>FloodMind Desktop</h1>
         <HealthBadge />
       </header>
+      <ChatView />
+      <Composer />
     </main>
   );
 }
