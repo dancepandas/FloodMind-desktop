@@ -3,10 +3,10 @@ import HealthBadge from "./HealthBadge";
 import UsageBadge from "./UsageBadge";
 
 export default function TopBar() {
-  const messages = useChatStore((s) => s.messages);
+  const turns = useChatStore((s) => s.turns);
   const reset = useChatStore((s) => s.reset);
 
-  const firstUser = messages.find((m) => m.role === "user")?.content || "";
+  const firstUser = turns.find((m) => m.role === "user")?.content || "";
   const title = firstUser ? firstUser.slice(0, 40) + (firstUser.length > 40 ? "…" : "") : "新会话";
 
   return (

@@ -2,220 +2,249 @@ import { create } from "zustand";
 import { getBaseUrl } from "../lib/sidecar-client";
 import { streamChat, type ChatEvent, type ChatMessage } from "../lib/chat-stream";
 
-type Role = "user" | "assistant";
-
-export interface ToolCall {
-  call_id: string;
-  tool_name: string;
-  status: string;
-  input?: string;
-  output?: string;
-}
 export interface PlanStep {
   key: string;
   status: string;
   title?: string;
   outcome?: string;
 }
-export interface Artifact {
-  kind: "file" | "image";
-  name: string;
-  path: string;
+export interface Usage {
+  prompt: number;
+  completion: number;
+  total: number;
 }
-export interface PermissionAsk {
-  ask_id: string;
-  call_id: string;
-  tool_name: string;
-  reason: string;
-  input: unknown;
+
+export type Block =
+  | { id: string; kind: "thinking"; content: string }
+  | {
+      id: string;
+      kind: "tool";
+      call_id: string;
+      tool_name: string;
+      status: string;
+      input?: string;
+      output?: string;
+    }
+  | { id: string; kind: "text"; content: string; final?: boolean }
+  | { id: string; kind: "plan"; title: string; steps: PlanStep[] }
+  | { id: string; kind: "artifact"; artKind: "file" | "image"; name: string; path: string }
+  | { id: string; kind: "permission"; tool_name: string; reason: string }
+  | { id: string; kind: "error"; content: string };
+
+export type Msg = { role: "user"; content: string } | AssistantTurn;
+export interface AssistantTurn {
+  role: "assistant";
+  blocks: Block[];
+  usage: Usage | null;
+  done: boolean;
 }
 
 interface ChatState {
-  messages: { role: Role; content: string }[];
+  turns: Msg[];
   streaming: boolean;
-  thinking: string;
-  tools: ToolCall[];
-  planTitle: string;
-  planSteps: PlanStep[];
-  artifacts: Artifact[];
-  usage: { prompt: number; completion: number; total: number } | null;
-  permission: PermissionAsk | null;
-  error: string | null;
   abortController: AbortController | null;
   send: (text: string) => Promise<void>;
   reset: () => void;
-  dismissPermission: () => void;
 }
 
-const initial = {
-  messages: [] as { role: Role; content: string }[],
-  streaming: false,
-  thinking: "",
-  tools: [] as ToolCall[],
-  planTitle: "",
-  planSteps: [] as PlanStep[],
-  artifacts: [] as Artifact[],
-  usage: null,
-  permission: null,
-  error: null,
-  abortController: null,
+// Deterministic block ids (also keeps test assertions stable).
+let _blockSeq = 0;
+const nextId = () => `b${++_blockSeq}`;
+/** Test-only: reset the block-id counter so assertions are order-independent. */
+export const _resetBlockIdsForTest = () => {
+  _blockSeq = 0;
 };
 
+/** Append a thinking/text delta, merging into the last block when it's the same kind. */
+function appendDelta(blocks: Block[], kind: "thinking" | "text", content: string): Block[] {
+  const last = blocks[blocks.length - 1];
+  if (last && last.kind === kind) {
+    const out = blocks.slice();
+    out[out.length - 1] = { ...last, content: (last as { content: string }).content + content };
+    return out;
+  }
+  return [...blocks, { id: nextId(), kind, content }];
+}
+
+/** Mark the last text block as the final answer (expanded in the UI). */
+function markFinal(blocks: Block[]): Block[] {
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    if (blocks[i].kind === "text") {
+      const out = blocks.slice();
+      out[i] = { ...(out[i] as Extract<Block, { kind: "text" }>), final: true };
+      return out;
+    }
+  }
+  return blocks;
+}
+
+/**
+ * Fold one streamed event into the active assistant turn. Pure — returns a new
+ * turn — so it is unit-testable in isolation. Events arrive in order, so the
+ * block list is naturally interleaved (think → tool → text → tool → final).
+ */
+export function reduceEvent(turn: AssistantTurn, ev: ChatEvent): AssistantTurn {
+  let blocks = turn.blocks;
+  let usage = turn.usage;
+
+  switch (ev.type) {
+    case "thinking":
+      blocks = appendDelta(blocks, "thinking", ev.content);
+      break;
+    case "text":
+      blocks = appendDelta(blocks, "text", ev.content);
+      break;
+    case "tool_start":
+      blocks = [
+        ...blocks,
+        { id: nextId(), kind: "tool", call_id: ev.call_id, tool_name: ev.tool_name, status: "running", input: ev.input },
+      ];
+      break;
+    case "tool_end": {
+      const idx = blocks.findIndex((b) => b.kind === "tool" && b.call_id === ev.call_id);
+      if (idx >= 0) {
+        blocks = blocks.map((b, i) =>
+          i === idx && b.kind === "tool" ? { ...b, status: ev.status, output: ev.output } : b
+        );
+      } else {
+        // Orphan tool_end (no matching start): show it rather than drop the output.
+        blocks = [
+          ...blocks,
+          { id: nextId(), kind: "tool", call_id: ev.call_id, tool_name: ev.tool_name, status: ev.status, output: ev.output },
+        ];
+      }
+      break;
+    }
+    case "plan": {
+      const steps: PlanStep[] = Array.isArray(ev.steps)
+        ? ev.steps.map((st: any) => ({
+            key: st.key,
+            status: st.status,
+            title: st.title,
+            outcome: st.outcome,
+          }))
+        : [];
+      const idx = blocks.findIndex((b) => b.kind === "plan");
+      if (idx >= 0) {
+        blocks = blocks.map((b, i) => (i === idx && b.kind === "plan" ? { ...b, title: ev.title, steps } : b));
+      } else {
+        blocks = [...blocks, { id: nextId(), kind: "plan", title: ev.title, steps }];
+      }
+      break;
+    }
+    case "step":
+      blocks = blocks.map((b) =>
+        b.kind === "plan"
+          ? {
+              ...b,
+              steps: b.steps.map((p) =>
+                p.key === ev.key ? { ...p, status: ev.status, outcome: ev.outcome ?? p.outcome } : p
+              ),
+            }
+          : b
+      );
+      break;
+    case "artifact":
+      blocks = [...blocks, { id: nextId(), kind: "artifact", artKind: ev.kind, name: ev.name, path: ev.path }];
+      break;
+    case "permission":
+      blocks = [...blocks, { id: nextId(), kind: "permission", tool_name: ev.tool_name, reason: ev.reason }];
+      break;
+    case "error":
+      blocks = [...blocks, { id: nextId(), kind: "error", content: ev.content }];
+      break;
+    case "usage": {
+      const prev = usage ?? { prompt: 0, completion: 0, total: 0 };
+      usage = {
+        prompt: prev.prompt + ev.prompt,
+        completion: prev.completion + ev.completion,
+        total: prev.total + ev.total,
+      };
+      break;
+    }
+    case "done":
+      break; // completion (incl. final-answer marking) handled in send()'s finally
+  }
+
+  return { ...turn, blocks, usage };
+}
+
 export const useChatStore = create<ChatState>((set, get) => ({
-  ...initial,
+  turns: [],
+  streaming: false,
+  abortController: null,
 
   async send(text: string) {
     if (!text.trim() || get().streaming) return;
 
-    const userMsg: ChatMessage = { role: "user", content: text };
     const controller = new AbortController();
     set((s) => ({
-      messages: [
-        ...s.messages,
+      turns: [
+        ...s.turns,
         { role: "user", content: text },
-        { role: "assistant", content: "" },
+        { role: "assistant", blocks: [], usage: null, done: false },
       ],
       streaming: true,
-      thinking: "",
-      tools: [],
-      planTitle: "",
-      planSteps: [],
-      artifacts: [],
-      usage: null,
-      permission: null,
-      error: null,
       abortController: controller,
     }));
 
+    let errored = false;
     try {
       const baseUrl = await getBaseUrl();
-      let acc = "";
-      for await (const ev of streamChat(baseUrl, [userMsg], controller.signal) as AsyncGenerator<ChatEvent>) {
-        switch (ev.type) {
-          case "text":
-            acc += ev.content;
-            set((s) => {
-              const m = [...s.messages];
-              m[m.length - 1] = { role: "assistant", content: acc };
-              return { messages: m };
-            });
-            break;
-          case "thinking":
-            set((s) => ({ thinking: s.thinking + ev.content }));
-            break;
-          case "tool_start":
-            set((s) => ({
-              tools: [
-                ...s.tools,
-                { call_id: ev.call_id, tool_name: ev.tool_name, status: "running", input: ev.input },
-              ],
-            }));
-            break;
-          case "tool_end":
-            set((s) => {
-              const exists = s.tools.some((t) => t.call_id === ev.call_id);
-              return {
-                tools: exists
-                  ? s.tools.map((t) =>
-                      t.call_id === ev.call_id
-                        ? { ...t, status: ev.status, output: ev.output }
-                        : t
-                    )
-                  : // Orphan tool_end (no matching start, or empty call_id): show it anyway
-                    // rather than silently dropping the tool's output.
-                    [
-                      ...s.tools,
-                      { call_id: ev.call_id, tool_name: ev.tool_name, status: ev.status, output: ev.output },
-                    ],
-              };
-            });
-            break;
-          case "plan":
-            set({
-              planTitle: ev.title,
-              planSteps: Array.isArray(ev.steps)
-                ? ev.steps.map((st: any) => ({
-                    key: st.key,
-                    status: st.status,
-                    title: st.title,
-                    outcome: st.outcome,
-                  }))
-                : [],
-            });
-            break;
-          case "step":
-            set((s) => ({
-              planSteps: s.planSteps.map((p) =>
-                p.key === ev.key
-                  ? { ...p, status: ev.status, outcome: ev.outcome ?? p.outcome }
-                  : p
-              ),
-            }));
-            break;
-          case "artifact":
-            set((s) => ({
-              artifacts: [...s.artifacts, { kind: ev.kind, name: ev.name, path: ev.path }],
-            }));
-            break;
-          case "permission":
-            set({
-              permission: {
-                ask_id: ev.ask_id,
-                call_id: ev.call_id,
-                tool_name: ev.tool_name,
-                reason: ev.reason,
-                input: ev.input,
-              },
-            });
-            break;
-          case "usage":
-            // token_usage fires once per LLM call; a multi-iteration turn emits
-            // several. Accumulate so the badge reflects the whole turn, not just
-            // the last call.
-            set((s) => {
-              const prev = s.usage ?? { prompt: 0, completion: 0, total: 0 };
-              return {
-                usage: {
-                  prompt: prev.prompt + ev.prompt,
-                  completion: prev.completion + ev.completion,
-                  total: prev.total + ev.total,
-                },
-              };
-            });
-            break;
-          case "error":
-            set({ error: ev.content });
-            break;
-          // "done" needs no action.
-        }
+      for await (const ev of streamChat(baseUrl, [{ role: "user", content: text }], controller.signal)) {
+        if (ev.type === "done") continue;
+        set((s) => {
+          const turns = s.turns.slice();
+          const last = turns[turns.length - 1];
+          if (last && last.role === "assistant") turns[turns.length - 1] = reduceEvent(last, ev);
+          return { turns };
+        });
       }
     } catch (e) {
-      if (controller.signal.aborted) {
-        set({ streaming: false, abortController: null });
-        return;
-      }
+      if (controller.signal.aborted) return; // finally finalizes without marking final
+      errored = true;
+      // Surface a mid-stream failure as an error block on the active turn.
       set((s) => {
-        const m = [...s.messages];
-        m[m.length - 1] = { role: "assistant", content: `⚠️ 出错：${(e as Error).message}` };
-        return { messages: m, error: (e as Error).message };
+        const turns = s.turns.slice();
+        const last = turns[turns.length - 1];
+        if (last && last.role === "assistant") {
+          turns[turns.length - 1] = {
+            ...last,
+            blocks: [...last.blocks, { id: nextId(), kind: "error", content: `⚠️ ${(e as Error).message}` }],
+          };
+        }
+        return { turns };
       });
     } finally {
-      set({ streaming: false, abortController: null });
+      const aborted = controller.signal.aborted;
+      // Don't promote a partial answer to "final" when the turn aborted or
+      // errored — there is no valid final answer in those cases.
+      const finalize = !aborted && !errored;
+      set((s) => {
+        const turns = s.turns.slice();
+        const last = turns[turns.length - 1];
+        if (last && last.role === "assistant") {
+          turns[turns.length - 1] = {
+            ...last,
+            blocks: finalize ? markFinal(last.blocks) : last.blocks,
+            done: true,
+          };
+        }
+        return { turns, streaming: false, abortController: null };
+      });
     }
   },
 
   reset: () => {
     // Cancel any in-flight stream first, then clear local state.
     get().abortController?.abort();
-    set({ ...initial });
-    // Also tell the sidecar to forget conversation history so the agent itself
-    // starts clean (its memory persists server-side across UI resets). Fire and
-    // forget — UI clears immediately regardless.
+    set({ turns: [], streaming: false, abortController: null });
+    // Tell the sidecar to forget conversation history so the agent itself starts
+    // clean. Fire and forget — UI clears immediately regardless.
     getBaseUrl()
       .then((b) => fetch(`${b}/api/session/reset`, { method: "POST" }))
       .catch(() => {
         /* sidecar may be mid-restart; the local clear is what matters */
       });
   },
-  dismissPermission: () => set({ permission: null }),
 }));

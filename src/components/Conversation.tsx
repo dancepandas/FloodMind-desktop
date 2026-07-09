@@ -1,77 +1,18 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import Logo from "./Logo";
-import Markdown from "./Markdown";
-import { useChatStore, type ToolCall } from "../state/chat-store";
-
-function stepDot(status: string): string {
-  const s = (status || "").toLowerCase();
-  if (["completed", "ok", "success", "done", "finished"].includes(s)) return "up";
-  if (["error", "failed"].includes(s)) return "down";
-  return "checking";
-}
-
-function ToolLine({ t }: { t: ToolCall }) {
-  const [open, setOpen] = useState(false);
-  const dot = t.status === "running" || t.status === "in_progress" ? "checking" : stepDot(t.status);
-  const args = (t.input || "").replace(/\s+/g, " ").trim();
-  const hasDetail = !!(t.input || t.output);
-
-  function toggle() {
-    if (hasDetail) setOpen((o) => !o);
-  }
-
-  function onKeyDown(e: React.KeyboardEvent<HTMLDivElement>) {
-    if (e.key === "Enter" || e.key === " ") {
-      e.preventDefault();
-      toggle();
-    }
-  }
-
-  return (
-    <>
-      <div
-        className="tool"
-        onClick={toggle}
-        onKeyDown={onKeyDown}
-        role={hasDetail ? "button" : undefined}
-        tabIndex={hasDetail ? 0 : undefined}
-        aria-expanded={hasDetail ? open : undefined}
-        style={{ cursor: hasDetail ? "pointer" : "default" }}
-      >
-        <span className={`sdot tdot sdot-${dot}`} />
-        <span className="tname">{t.tool_name}</span>
-        {args && <span className="targs">{args.length > 64 ? args.slice(0, 64) + "…" : args}</span>}
-        <span className="tstat">{t.status}</span>
-      </div>
-      {open && hasDetail && (
-        <div className="tool-detail">
-          {t.input && `→ ${t.input}\n`}
-          {t.output}
-        </div>
-      )}
-    </>
-  );
-}
+import BlockView from "./BlockView";
+import { useChatStore, type Block, type Msg } from "../state/chat-store";
 
 export default function Conversation() {
-  const messages = useChatStore((s) => s.messages);
+  const turns = useChatStore((s) => s.turns);
   const streaming = useChatStore((s) => s.streaming);
-  const thinking = useChatStore((s) => s.thinking);
-  const tools = useChatStore((s) => s.tools);
-  const planTitle = useChatStore((s) => s.planTitle);
-  const planSteps = useChatStore((s) => s.planSteps);
-  const artifacts = useChatStore((s) => s.artifacts);
-  const usage = useChatStore((s) => s.usage);
-  const error = useChatStore((s) => s.error);
-  const permission = useChatStore((s) => s.permission);
-  const dismissPermission = useChatStore((s) => s.dismissPermission);
   const endRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, thinking, tools, artifacts, streaming]);
+  }, [turns, streaming]);
 
-  if (messages.length === 0) {
+  if (turns.length === 0) {
     return (
       <div className="conversation">
         <div className="empty-hint">
@@ -83,94 +24,46 @@ export default function Conversation() {
     );
   }
 
-  let lastAssistantIdx = -1;
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].role === "assistant") {
-      lastAssistantIdx = i;
-      break;
-    }
-  }
-
   return (
     <div className="conversation">
-      {messages.map((m, i) => {
-        const isLastAssistant = i === lastAssistantIdx;
-
-        if (m.role === "user") {
-          return (
-            <div className="turn user-turn" key={i}>
-              <div className="msg-user">{m.content}</div>
-            </div>
-          );
-        }
-
-        return (
-          <div className="turn assistant-turn" key={i}>
-            <div className="assistant-header">
-              <span className="assistant-avatar" aria-hidden="true">F</span>
-              <span className="assistant-name">FloodMind</span>
-            </div>
-
-            {isLastAssistant && thinking && (
-              <div className="thinking">{thinking}</div>
-            )}
-
-            {isLastAssistant && planSteps.length > 0 && (
-              <div className="plan">
-                {planTitle && <div className="plan-title">{planTitle}</div>}
-                {planSteps.map((s, j) => (
-                  <div className="plan-step" key={s.key || j}>
-                    <span className={`sdot sdot-${stepDot(s.status)}`} />
-                    <span>{s.title || s.key}</span>
-                    {s.outcome && <span className="label"> — {s.outcome}</span>}
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {isLastAssistant && tools.map((t, j) => (
-              <ToolLine t={t} key={t.call_id || j} />
-            ))}
-
-            <div className="msg-assistant">
-              <Markdown>{m.content}</Markdown>
-              {isLastAssistant && streaming && <span className="stream-cursor" aria-hidden="true">▌</span>}
-            </div>
-
-            {isLastAssistant && artifacts.map((a, j) => (
-              <div className="artifact" key={j}>
-                <span>+</span>
-                <span className="aname">{a.name}</span>
-              </div>
-            ))}
-
-            {isLastAssistant && permission && (
-              <div className="permission-line">
-                <span>🔒 {permission.tool_name}：{permission.reason}（已自动同意）</span>
-                <button
-                  className="permission-dismiss"
-                  onClick={dismissPermission}
-                  aria-label="关闭"
-                  type="button"
-                >
-                  ✕
-                </button>
-              </div>
-            )}
-
-            {isLastAssistant && error && (
-              <div className="error-line">✗ {error}</div>
-            )}
-
-            {isLastAssistant && usage && (
-              <div className="usage-line">
-                ↑ {usage.prompt} ↓ {usage.completion} · {usage.total} tok
-              </div>
-            )}
-          </div>
-        );
-      })}
+      {turns.map((m, i) => (
+        <TurnView key={i} turn={m} isLast={i === turns.length - 1} streaming={streaming} />
+      ))}
       <div ref={endRef} />
+    </div>
+  );
+}
+
+function TurnView({ turn, isLast, streaming }: { turn: Msg; isLast: boolean; streaming: boolean }) {
+  if (turn.role === "user") {
+    return (
+      <div className="turn user-turn">
+        <div className="msg-user">{turn.content}</div>
+      </div>
+    );
+  }
+
+  // The last block of an in-progress turn is the live tail (expanded).
+  const liveIdx = isLast && streaming && !turn.done ? turn.blocks.length - 1 : -1;
+
+  return (
+    <div className="turn assistant-turn">
+      <div className="assistant-header">
+        <span className="assistant-avatar" aria-hidden="true">F</span>
+        <span className="assistant-name">FloodMind</span>
+      </div>
+
+      {turn.blocks.length === 0 && !turn.done && <div className="thinking-body">…</div>}
+
+      {turn.blocks.map((b: Block, j: number) => (
+        <BlockView key={b.id} block={b} isLive={j === liveIdx} />
+      ))}
+
+      {turn.usage && (
+        <div className="usage-line">
+          ↑ {turn.usage.prompt} ↓ {turn.usage.completion} · {turn.usage.total} tok
+        </div>
+      )}
     </div>
   );
 }
