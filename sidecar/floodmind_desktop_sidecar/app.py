@@ -46,6 +46,56 @@ def create_app(agent: Agent, workspace_manager=None) -> Flask:
             return jsonify({"ok": False, "error": str(e)}), 500
         return jsonify({"ok": True})
 
+    # ── Skills & MCP catalog (read-only browse) ────────────────
+    # SDK imports are lazy + inside try/except so the endpoints degrade to an
+    # empty list instead of 500 when the registry isn't populated.
+    @app.get("/api/skills")
+    def skills_list():
+        try:
+            from floodmind.skills.registry import get_skill_registry
+            return jsonify({"skills": get_skill_registry().list_skills()})
+        except Exception as e:
+            return jsonify({"skills": [], "error": str(e)})
+
+    @app.get("/api/skills/<name>")
+    def skill_detail(name):
+        try:
+            from floodmind.skills.registry import get_skill_registry
+            s = get_skill_registry().get_skill(name)
+        except Exception:
+            # Registry unavailable (e.g. SDK not fully initialized) -> not found,
+            # consistent with the list endpoint degrading to empty.
+            return jsonify({"error": "skill registry unavailable"}), 404
+        if s is None:
+            return jsonify({"error": "skill not found"}), 404
+        return jsonify({
+            "name": s.name,
+            "description": s.description,
+            "prompt": s.prompt,
+            "category": s.category,
+            "provides_tools": s.provides_tools,
+            "version": s.version,
+        })
+
+    @app.get("/api/mcp")
+    def mcp_list():
+        try:
+            from floodmind.agent.mcp_client import get_mcp_client_pool
+            return jsonify({"servers": get_mcp_client_pool().list_servers()})
+        except Exception as e:
+            return jsonify({"servers": [], "error": str(e)})
+
+    @app.get("/api/mcp/<name>")
+    def mcp_detail(name):
+        try:
+            from floodmind.agent.mcp_client import get_mcp_client_pool
+            info = get_mcp_client_pool().get_server_info(name)
+        except Exception:
+            return jsonify({"error": "mcp pool unavailable"}), 404
+        if not info:
+            return jsonify({"error": "server not found"}), 404
+        return jsonify(info)
+
     if workspace_manager is not None:
         @app.get("/api/workspace")
         def workspace_summary():

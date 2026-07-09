@@ -1,7 +1,14 @@
 import { useEffect } from "react";
 import { useChatStore } from "../state/chat-store";
+import { useUiStore, type View } from "../state/ui-store";
 import { useWorkspaceStore } from "../state/workspace-store";
 import Logo from "./Logo";
+
+const NAV: { view: View; label: string }[] = [
+  { view: "skills", label: "Skills" },
+  { view: "mcp", label: "MCP" },
+  { view: "settings", label: "设置" },
+];
 
 export default function Sidebar() {
   const current = useWorkspaceStore((s) => s.current);
@@ -14,6 +21,8 @@ export default function Sidebar() {
   // live so we never rebind out from under a running turn. (New Session aborts
   // the stream itself, so it stays enabled.)
   const streaming = useChatStore((s) => s.streaming);
+  const view = useUiStore((s) => s.view);
+  const setView = useUiStore((s) => s.setView);
 
   useEffect(() => {
     load();
@@ -65,6 +74,20 @@ export default function Sidebar() {
           ))}
         </div>
       )}
+
+      <div className="sidebar-spacer" />
+      <div className="sidebar-section sidebar-nav">
+        {NAV.map((n) => (
+          <button
+            key={n.view}
+            className={view === n.view ? "sidebar-item active" : "sidebar-item"}
+            onClick={() => setView(n.view)}
+            type="button"
+          >
+            <span className="item-name">{n.label}</span>
+          </button>
+        ))}
+      </div>
     </aside>
   );
 }
