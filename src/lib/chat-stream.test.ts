@@ -66,4 +66,20 @@ describe("streamChat", () => {
       })()
     ).rejects.toThrow();
   });
+
+  it("parses mixed event types in order", async () => {
+    (globalThis.fetch as any).mockResolvedValue(
+      ndjsonResponse([
+        '{"type":"tool_start","call_id":"c1","tool_name":"search","input":"x"}\n',
+        '{"type":"text","content":"Hi"}\n',
+        '{"type":"artifact","kind":"file","name":"r.xlsx","path":"/r"}\n',
+        '{"type":"done"}\n',
+      ])
+    );
+    const events = [];
+    for await (const e of streamChat("http://x", [{ role: "user", content: "hi" }])) {
+      events.push(e);
+    }
+    expect(events.map((e) => e.type)).toEqual(["tool_start", "text", "artifact", "done"]);
+  });
 });

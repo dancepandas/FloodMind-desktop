@@ -1,5 +1,17 @@
 export type ChatMessage = { role: string; content: string };
-export type ChatEvent = { type: "text"; content: string } | { type: "done" };
+
+export type ChatEvent =
+  | { type: "text"; content: string }
+  | { type: "thinking"; content: string }
+  | { type: "tool_start"; call_id: string; tool_name: string; input: string }
+  | { type: "tool_end"; call_id: string; tool_name: string; status: string; output: string }
+  | { type: "plan"; title: string; steps: unknown[] }
+  | { type: "step"; key: string; status: string; title?: string; outcome?: string }
+  | { type: "artifact"; kind: "file" | "image"; name: string; path: string }
+  | { type: "permission"; ask_id: string; call_id: string; tool_name: string; reason: string; input: unknown }
+  | { type: "usage"; prompt: number; completion: number; total: number }
+  | { type: "error"; content: string }
+  | { type: "done" };
 
 export async function* streamChat(
   baseUrl: string,

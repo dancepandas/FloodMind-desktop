@@ -51,4 +51,18 @@ describe("chat-store.send", () => {
     expect(last?.content).toContain("boom");
     expect(useChatStore.getState().streaming).toBe(false);
   });
+
+  it("records tool_start/tool_end into the tools slice", async () => {
+    (streamChat as any).mockImplementation(async function* () {
+      yield { type: "tool_start", call_id: "c1", tool_name: "search", input: "x" };
+      yield { type: "tool_end", call_id: "c1", tool_name: "search", status: "ok", output: "result" };
+      yield { type: "done" };
+    });
+
+    await useChatStore.getState().send("hi");
+
+    const tools = useChatStore.getState().tools;
+    expect(tools).toHaveLength(1);
+    expect(tools[0]).toMatchObject({ call_id: "c1", tool_name: "search", status: "ok", output: "result" });
+  });
 });

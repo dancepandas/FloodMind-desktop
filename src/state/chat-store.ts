@@ -1,54 +1,170 @@
 import { create } from "zustand";
 import { getBaseUrl } from "../lib/sidecar-client";
-import { streamChat, type ChatMessage } from "../lib/chat-stream";
+import { streamChat, type ChatEvent, type ChatMessage } from "../lib/chat-stream";
 
 type Role = "user" | "assistant";
+
+export interface ToolCall {
+  call_id: string;
+  tool_name: string;
+  status: string;
+  input?: string;
+  output?: string;
+}
+export interface PlanStep {
+  key: string;
+  status: string;
+  title?: string;
+  outcome?: string;
+}
+export interface Artifact {
+  kind: "file" | "image";
+  name: string;
+  path: string;
+}
+export interface PermissionAsk {
+  ask_id: string;
+  call_id: string;
+  tool_name: string;
+  reason: string;
+  input: unknown;
+}
 
 interface ChatState {
   messages: { role: Role; content: string }[];
   streaming: boolean;
+  tools: ToolCall[];
+  planTitle: string;
+  planSteps: PlanStep[];
+  artifacts: Artifact[];
+  usage: { prompt: number; completion: number; total: number } | null;
+  permission: PermissionAsk | null;
+  error: string | null;
   send: (text: string) => Promise<void>;
+  reset: () => void;
 }
 
-export const useChatStore = create<ChatState>((set, get) => ({
-  messages: [],
+const initial = {
+  messages: [] as { role: Role; content: string }[],
   streaming: false,
+  tools: [] as ToolCall[],
+  planTitle: "",
+  planSteps: [] as PlanStep[],
+  artifacts: [] as Artifact[],
+  usage: null,
+  permission: null,
+  error: null,
+};
+
+export const useChatStore = create<ChatState>((set, get) => ({
+  ...initial,
+
   async send(text: string) {
     if (!text.trim() || get().streaming) return;
 
     const userMsg: ChatMessage = { role: "user", content: text };
     set((s) => ({
-      messages: [...s.messages, { role: "user", content: text }],
+      messages: [
+        ...s.messages,
+        { role: "user", content: text },
+        { role: "assistant", content: "" },
+      ],
       streaming: true,
+      tools: [],
+      planTitle: "",
+      planSteps: [],
+      artifacts: [],
+      usage: null,
+      permission: null,
+      error: null,
     }));
-
-    // Append an empty assistant message and grow it as chunks arrive.
-    set((s) => ({ messages: [...s.messages, { role: "assistant", content: "" }] }));
 
     try {
       const baseUrl = await getBaseUrl();
       let acc = "";
-      for await (const event of streamChat(baseUrl, [userMsg])) {
-        if (event.type === "text") {
-          acc += event.content;
-          set((s) => {
-            const msgs = [...s.messages];
-            msgs[msgs.length - 1] = { role: "assistant", content: acc };
-            return { messages: msgs };
-          });
+      for await (const ev of streamChat(baseUrl, [userMsg]) as AsyncGenerator<ChatEvent>) {
+        switch (ev.type) {
+          case "text":
+            acc += ev.content;
+            set((s) => {
+              const m = [...s.messages];
+              m[m.length - 1] = { role: "assistant", content: acc };
+              return { messages: m };
+            });
+            break;
+          case "tool_start":
+            set((s) => ({
+              tools: [
+                ...s.tools,
+                { call_id: ev.call_id, tool_name: ev.tool_name, status: "running", input: ev.input },
+              ],
+            }));
+            break;
+          case "tool_end":
+            set((s) => ({
+              tools: s.tools.map((t) =>
+                t.call_id === ev.call_id
+                  ? { ...t, status: ev.status, output: ev.output }
+                  : t
+              ),
+            }));
+            break;
+          case "plan":
+            set({
+              planTitle: ev.title,
+              planSteps: (ev.steps as any[]).map((st) => ({
+                key: st.key,
+                status: st.status,
+                title: st.title,
+                outcome: st.outcome,
+              })),
+            });
+            break;
+          case "step":
+            set((s) => ({
+              planSteps: s.planSteps.map((p) =>
+                p.key === ev.key
+                  ? { ...p, status: ev.status, outcome: ev.outcome ?? p.outcome }
+                  : p
+              ),
+            }));
+            break;
+          case "artifact":
+            set((s) => ({
+              artifacts: [...s.artifacts, { kind: ev.kind, name: ev.name, path: ev.path }],
+            }));
+            break;
+          case "permission":
+            set({
+              permission: {
+                ask_id: ev.ask_id,
+                call_id: ev.call_id,
+                tool_name: ev.tool_name,
+                reason: ev.reason,
+                input: ev.input,
+              },
+            });
+            break;
+          case "usage":
+            set({ usage: { prompt: ev.prompt, completion: ev.completion, total: ev.total } });
+            break;
+          case "error":
+            set({ error: ev.content });
+            break;
+          // "thinking" is intentionally not accumulated into the assistant bubble;
+          // Task 4 may surface it in a muted pane. "done" needs no action.
         }
       }
     } catch (e) {
       set((s) => {
-        const msgs = [...s.messages];
-        msgs[msgs.length - 1] = {
-          role: "assistant",
-          content: `⚠️ 出错：${(e as Error).message}`,
-        };
-        return { messages: msgs };
+        const m = [...s.messages];
+        m[m.length - 1] = { role: "assistant", content: `⚠️ 出错：${(e as Error).message}` };
+        return { messages: m, error: (e as Error).message };
       });
     } finally {
       set({ streaming: false });
     }
   },
+
+  reset: () => set({ ...initial }),
 }));
