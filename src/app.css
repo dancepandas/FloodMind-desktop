@@ -1008,6 +1008,126 @@ button:focus-visible,
   overflow: auto;
 }
 
+/* ── Settings form ───────────────────────────────────────── */
+.settings-body {
+  max-width: 560px;
+  margin: 0 auto;
+}
+
+.env-warn {
+  background: #fef3c7;
+  border: 1px solid #fcd34d;
+  color: #92400e;
+  border-radius: 8px;
+  padding: 0.55rem 0.75rem;
+  font-size: 12.5px;
+  margin-bottom: 0.8rem;
+}
+
+.env-warn.error {
+  background: #fee2e2;
+  border-color: #fca5a5;
+  color: #991b1b;
+}
+
+.save-ok {
+  color: var(--green);
+  font-size: 13px;
+  margin-bottom: 0.8rem;
+}
+
+.settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.field-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg-secondary);
+}
+
+.field-label em {
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.field input,
+.field select {
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--fg);
+  font-family: var(--font-sans);
+  font-size: 13px;
+}
+
+.field input:focus,
+.field select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.field-row {
+  display: flex;
+  gap: 0.9rem;
+}
+
+.field-row .field {
+  flex: 1;
+}
+
+.toggles {
+  flex-direction: row;
+  gap: 1.2rem;
+}
+
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 13px;
+  color: var(--fg-secondary);
+  cursor: pointer;
+}
+
+.toggle input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
+}
+
+.save-btn {
+  align-self: flex-start;
+  margin-top: 0.3rem;
+  padding: 0.5rem 1.4rem;
+  border: none;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.save-btn:hover:not(:disabled) {
+  opacity: 0.9;
+}
+
+.save-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 /* ── Scrollbar ──────────────────────────────────────────── */
 .conversation::-webkit-scrollbar {
   width: 8px;

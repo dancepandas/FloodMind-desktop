@@ -127,8 +127,10 @@ class FloodMindAgent:
     def _build_agent(self, session_id: str, persist_dir: str):
         """Construct a fresh SDK agent bound to a per-session DualMemory."""
         from floodmind.agent import create_flood_agent
+        from floodmind.config.settings import get_config
         from floodmind.memory.dual_memory import DualMemory
 
+        m = (get_config() or {}).get("model", {}) or {}
         memory = DualMemory(
             session_id=session_id,
             persist_dir=persist_dir,
@@ -141,6 +143,8 @@ class FloodMindAgent:
             session_id=session_id,
             permission_handler=self._permission_handler,
             max_iterations=50,
+            enable_reasoning=bool(m.get("enableReasoning", False)),
+            enable_search=bool(m.get("enableSearch", False)),
         )
 
     @staticmethod
@@ -274,6 +278,44 @@ class FloodMindAgent:
                 self._agent.clear_memory()
         except Exception as e:
             print(f"[sidecar] clear_memory failed: {e}", file=sys.stderr)
+
+    def reload_model(self) -> bool:
+        """Re-read model settings and rebuild the agent so config changes apply.
+
+        Reuses the current session id + its persist_dir, so conversation memory
+        is reloaded from disk (no history loss).
+
+        NOTE: ModelClient.from_settings() reads a module-level `settings` singleton
+        that is frozen at import — save_config() only clears the *dict* cache, not
+        the singleton. So we derive the new values from the freshly-saved config
+        (get_config() IS refreshed) and pass them explicitly to from_settings,
+        which accepts overrides. Without this the headline "switch model" feature
+        would silently keep the old model.
+        """
+        try:
+            from floodmind.agent.native.model_client import ModelClient
+            from floodmind.config.settings import get_config
+
+            sid = self._agent.session_id
+            _, persist_dir = self._memory_target(sid)
+
+            cfg = get_config() or {}
+            m = cfg.get("model", {}) or {}
+            provider = m.get("provider", "")
+            opts = ((cfg.get("provider", {}) or {}).get(provider, {}) or {}).get("options", {}) or {}
+            self._llm = ModelClient.from_settings(
+                api_key=opts.get("apiKey") or None,
+                base_url=opts.get("baseURL") or None,
+                model_name=m.get("model") or None,
+                temperature=m.get("temperature"),
+                max_tokens=m.get("maxTokens"),
+                enable_thinking=bool(m.get("enableReasoning", False)),
+            )
+            self._agent = self._build_agent(sid, persist_dir)
+            return True
+        except Exception as e:
+            print(f"[sidecar] reload_model failed: {e}", file=sys.stderr)
+            return False
 
     # ── main entry ─────────────────────────────────────────────
     def stream(self, messages: list[Message]) -> Iterator[dict]:

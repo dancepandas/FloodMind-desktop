@@ -91,6 +91,59 @@ def test_unknown_event_passes_through_minimal():
     assert out == [{"type": "something_new", "content": "x"}]
 
 
+def test_reload_model_passes_explicit_config_to_from_settings(monkeypatch):
+    # C1 guard: from_settings() reads a module-level singleton frozen at import,
+    # so reload_model must derive values from get_config() and pass them
+    # explicitly. Assert those exact args are forwarded.
+    from floodmind_desktop_sidecar.floodmind_agent import FloodMindAgent
+
+    captured = {}
+
+    class FakeMC:
+        @classmethod
+        def from_settings(cls, **kw):
+            captured.update(kw)
+            return "NEW_LLM"
+
+    a = FloodMindAgent.__new__(FloodMindAgent)
+    a._llm = "OLD_LLM"
+    a._agent = type("A", (), {"session_id": "desktop-default"})()
+    a._build_agent = lambda sid, pd: ("AGENT", sid, pd)  # avoid real create_flood_agent
+
+    # Patch the real module objects (floodmind.config.settings is shadowed by a
+    # Settings singleton at the package level, so use import_module, not a
+    # dotted string).
+    import importlib
+
+    monkeypatch.setattr(
+        importlib.import_module("floodmind.agent.native.model_client"), "ModelClient", FakeMC
+    )
+    monkeypatch.setattr(
+        importlib.import_module("floodmind.config.settings"),
+        "get_config",
+        lambda: {
+            "model": {
+                "provider": "openai",
+                "model": "gpt-4o-mini",
+                "temperature": 0.9,
+                "maxTokens": 2048,
+                "enableReasoning": True,
+                "enableSearch": False,
+            },
+            "provider": {"openai": {"options": {"apiKey": "sk-new", "baseURL": "https://api.openai.com/v1"}}},
+        },
+    )
+
+    assert a.reload_model() is True
+    assert captured["model_name"] == "gpt-4o-mini"
+    assert captured["api_key"] == "sk-new"
+    assert captured["base_url"] == "https://api.openai.com/v1"
+    assert captured["temperature"] == 0.9
+    assert captured["max_tokens"] == 2048
+    assert captured["enable_thinking"] is True
+    assert a._llm == "NEW_LLM"
+
+
 def test_diff_outputs_yields_artifacts(tmp_path):
     from floodmind_desktop_sidecar.floodmind_agent import FloodMindAgent
 

@@ -23,6 +23,14 @@ class Agent(Protocol):
         """Re-bind the agent's memory/session to a workspace folder (per-workspace isolation)."""
         ...
 
+    def reload_model(self) -> bool:
+        """Re-read model settings + rebuild the agent so config changes take effect.
+
+        Returns True if the agent was rebuilt, False on failure (config is still
+        saved; a restart will apply it).
+        """
+        ...
+
 
 class StubAgent:
     """Deterministic stub used until the real FloodMind agent is wired in."""
@@ -41,3 +49,6 @@ class StubAgent:
 
     def rebind_workspace(self, path: str) -> None:
         pass
+
+    def reload_model(self) -> bool:
+        return True

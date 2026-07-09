@@ -96,6 +96,31 @@ def create_app(agent: Agent, workspace_manager=None) -> Flask:
             return jsonify({"error": "server not found"}), 404
         return jsonify(info)
 
+    # ── Model configuration GUI ────────────────────────────────
+    @app.get("/api/config/model")
+    def config_model_get():
+        from .config_api import read_model_config
+        try:
+            return jsonify(read_model_config())
+        except Exception as e:  # pragma: no cover - defensive
+            return jsonify({"error": str(e)}), 500
+
+    @app.post("/api/config/model")
+    def config_model_set():
+        from .config_api import write_model_config
+        body = request.get_json(silent=True) or {}
+        try:
+            snapshot = write_model_config(body)
+        except Exception as e:  # pragma: no cover - defensive
+            return jsonify({"error": str(e)}), 500
+        # Apply to the running agent so the new model takes effect immediately.
+        reloaded = False
+        try:
+            reloaded = bool(agent.reload_model())
+        except Exception as e:  # pragma: no cover - defensive
+            app.logger.warning("agent.reload_model failed: %s", e)
+        return jsonify({"ok": True, "reloaded": reloaded, "model": snapshot})
+
     if workspace_manager is not None:
         @app.get("/api/workspace")
         def workspace_summary():
