@@ -50,7 +50,9 @@ def translate_event(raw: dict) -> list[dict]:
         return [{"type": "usage", "prompt": raw.get("prompt_tokens", 0),
                  "completion": raw.get("completion_tokens", 0),
                  "total": raw.get("total_tokens", 0)}]
-    if t == "error":
+    if t in ("error", "llm_token_error", "artifact_warning"):
+        # llm_token_error fires on out-of-balance LLM accounts; artifact_warning
+        # on artifact problems. Surface both as user-visible errors.
         return [{"type": "error", "content": raw.get("content", "")}]
 
     # Noisy or redundant events we intentionally drop.
@@ -91,7 +93,13 @@ class FloodMindAgent:
 
     def stream(self, messages: list[Message]) -> Iterator[dict]:
         user_text = messages[-1]["content"] if messages else ""
-        for raw in self._agent.stream(user_text):
-            for ev in translate_event(raw):
-                yield ev
+        try:
+            for raw in self._agent.stream(user_text):
+                for ev in translate_event(raw):
+                    yield ev
+        except Exception as e:
+            # A mid-stream SDK failure (network drop, 401, internal error) must
+            # still surface to the UI: fetch won't reject on a half-closed body,
+            # so without this the user gets a silent partial answer.
+            yield {"type": "error", "content": f"代理执行出错：{e}"}
         yield {"type": "done"}

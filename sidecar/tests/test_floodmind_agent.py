@@ -42,6 +42,28 @@ def test_token_usage_becomes_usage():
     assert out == [{"type": "usage", "prompt": 10, "completion": 5, "total": 15}]
 
 
+def test_llm_token_error_becomes_error():
+    # Out-of-balance LLM account — must surface as a user-visible error.
+    out = translate_event({"type": "llm_token_error", "content": "LLM模型服务账号Token余额不足"})
+    assert out == [{"type": "error", "content": "LLM模型服务账号Token余额不足"}]
+
+
+def test_floodmind_agent_emits_error_and_done_on_inner_exception():
+    # Bypass __init__ (which needs the real SDK + settings) and inject a fake.
+    from floodmind_desktop_sidecar.floodmind_agent import FloodMindAgent
+
+    class BoomAgent:
+        def stream(self, _msg):
+            yield {"type": "answer_delta", "content": "partial"}
+            raise RuntimeError("boom")
+
+    a = FloodMindAgent.__new__(FloodMindAgent)
+    a._agent = BoomAgent()
+    out = list(a.stream([{"role": "user", "content": "hi"}]))
+    assert [e["type"] for e in out] == ["text", "error", "done"]
+    assert "boom" in out[1]["content"]
+
+
 def test_unknown_event_passes_through_minimal():
     out = translate_event({"type": "something_new", "content": "x"})
     assert out == [{"type": "something_new", "content": "x"}]

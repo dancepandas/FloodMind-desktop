@@ -101,13 +101,23 @@ export const useChatStore = create<ChatState>((set, get) => ({
             }));
             break;
           case "tool_end":
-            set((s) => ({
-              tools: s.tools.map((t) =>
-                t.call_id === ev.call_id
-                  ? { ...t, status: ev.status, output: ev.output }
-                  : t
-              ),
-            }));
+            set((s) => {
+              const exists = s.tools.some((t) => t.call_id === ev.call_id);
+              return {
+                tools: exists
+                  ? s.tools.map((t) =>
+                      t.call_id === ev.call_id
+                        ? { ...t, status: ev.status, output: ev.output }
+                        : t
+                    )
+                  : // Orphan tool_end (no matching start, or empty call_id): show it anyway
+                    // rather than silently dropping the tool's output.
+                    [
+                      ...s.tools,
+                      { call_id: ev.call_id, tool_name: ev.tool_name, status: ev.status, output: ev.output },
+                    ],
+              };
+            });
             break;
           case "plan":
             set({

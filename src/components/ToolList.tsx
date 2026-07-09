@@ -7,8 +7,8 @@ export default function ToolList() {
   return (
     <section className="rail-section">
       <h3>工具调用</h3>
-      {tools.map((t) => (
-        <ToolCard key={t.call_id || t.tool_name} tool={t} />
+      {tools.map((t, i) => (
+        <ToolCard key={t.call_id || `${t.tool_name}-${i}`} tool={t} />
       ))}
     </section>
   );
