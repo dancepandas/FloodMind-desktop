@@ -5,11 +5,13 @@ import HealthBadge from "./components/HealthBadge";
 import PlanPanel from "./components/PlanPanel";
 import ToolList from "./components/ToolList";
 import UsageBadge from "./components/UsageBadge";
+import WorkspaceSwitcher from "./components/WorkspaceSwitcher";
 
 export default function App() {
   return (
     <main className="app">
       <header className="app-header">
+        <WorkspaceSwitcher />
         <h1>FloodMind Desktop</h1>
         <HealthBadge />
         <UsageBadge />

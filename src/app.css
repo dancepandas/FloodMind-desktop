@@ -28,7 +28,33 @@ body { margin: 0; background: var(--bg); color: var(--fg); }
   display: flex; align-items: center; gap: 0.75rem;
   padding: 0.6rem 1rem; border-bottom: 1px solid var(--border);
 }
-.app-header h1 { font-size: 1rem; margin: 0; font-weight: 600; }
+.app-header h1 { font-size: 1rem; margin: 0; font-weight: 600; margin-right: auto; }
+
+/* Workspace switcher */
+.ws-switcher { position: relative; display: flex; align-items: center; }
+.ws-pick {
+  display: flex; align-items: center; gap: 0.3rem; cursor: pointer;
+  background: var(--rail-bg); color: var(--fg); border: 1px solid var(--border);
+  border-radius: 6px; padding: 0.3rem 0.6rem; font-size: 0.85rem; max-width: 220px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ws-toggle {
+  cursor: pointer; background: var(--rail-bg); color: var(--fg);
+  border: 1px solid var(--border); border-left: none; border-radius: 0 6px 6px 0;
+  padding: 0.3rem 0.45rem; font-size: 0.8rem;
+}
+.ws-recent {
+  position: absolute; top: 100%; left: 0; z-index: 10; margin: 0.2rem 0 0;
+  list-style: none; padding: 0.25rem; min-width: 200px; max-width: 300px;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.12);
+}
+.ws-recent button {
+  width: 100%; text-align: left; background: none; border: none; cursor: pointer;
+  color: var(--fg); padding: 0.3rem 0.4rem; font-size: 0.82rem; border-radius: 4px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ws-recent button:hover { background: var(--rail-bg); }
 
 .app-body { flex: 1; display: flex; min-height: 0; }
 .chat-col { flex: 1; display: flex; flex-direction: column; min-width: 0; }

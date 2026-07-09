@@ -8,6 +8,7 @@ pub fn run() {
     let sidecar = sidecar::spawn_sidecar().expect("failed to start Python sidecar");
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .manage(sidecar)
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::Destroyed = event {
