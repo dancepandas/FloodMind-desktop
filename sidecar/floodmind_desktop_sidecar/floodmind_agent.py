@@ -73,14 +73,18 @@ class FloodMindAgent:
 
     def __init__(self, permission_handler=None):
         # Imported lazily so translate_event stays unit-testable without the SDK.
-        from floodmind.agent import Agent
+        # Use create_flood_agent (non-bare) to get the full built-in tool registry
+        # (doc generation, planning, file tools) — bare mode registers no tools and
+        # skips permission_ask events, leaving the rich UI empty.
+        from floodmind.agent import create_flood_agent
         from floodmind.agent.native.model_client import ModelClient
 
         llm = ModelClient.from_settings()
-        # Auto-approve by default; Task 5 replaces this with a UI-driven handler.
+        # Auto-approve by default; Task 5 wires a UI-driven handler.
         self._permission_handler = permission_handler or (lambda tool_name, tool_input: True)
-        self._agent = Agent(
-            llm=llm,
+        self._agent = create_flood_agent(
+            llm_service=llm,
+            session_id="desktop-default",
             permission_handler=self._permission_handler,
             max_iterations=50,
         )
