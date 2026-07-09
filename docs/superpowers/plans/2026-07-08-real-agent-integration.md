@@ -438,23 +438,16 @@ git add -A && git commit -m "feat(ui): expanded ChatEvent union + store slices f
 
 ---
 
-## Task 5: Permission approval flow
+## Task 5: Permission approval flow — DEFERRED to Plan 4
 
-**Files:**
-- Create: `src/components/PermissionBar.tsx`
-- Modify: `src/state/chat-store.ts` (add `respondPermission(approved: boolean)`), `sidecar/floodmind_desktop_sidecar/floodmind_agent.py` (wire `permission_handler` to a thread-safe callback set by an endpoint), `sidecar/floodmind_desktop_sidecar/app.py` (add `POST /api/permission/respond`).
+**Finding during Plan 2:** bare mode (the `Agent` class) skips `permission_ask` events and registers no tools, so we switched `FloodMindAgent` to **`create_flood_agent` (non-bare)**, which uses the SDK's `AskService` and DOES emit `permission_ask` through the stream. So the flow is now implementable via the SDK's native machinery:
 
-**Interfaces:**
-- Produces: when the SDK emits `permission_ask`, the sidecar forwards it as a `permission` event AND blocks the agent thread until the frontend POSTs `/api/permission/respond {ask_id, approved}`.
+- `permission_ask` events flow through the stream → our adapter already maps them to `{type:"permission",...}` → frontend `PermissionBar`.
+- Frontend POSTs `/api/permission/respond {ask_id, approved}` → calls the SDK's `get_ask_service().respond(...)` to unblock the executor.
 
-- [ ] **Step 1: Sidecar — a module-level pending-ask registry + endpoint.** `FloodMindAgent.__init__` passes a `permission_handler` that looks up the ask by `ask_id`, emits the `permission` event (via an `on_event`/queue hook into the active stream), and blocks on a `threading.Event` until `/api/permission/respond` resolves it. (The SDK's `permission_handler(tool_name, tool_input)->bool` is synchronous, so block inside it.)
-- [ ] **Step 2: Add `POST /api/permission/respond`** to `app.py` that resolves the pending ask by `ask_id`.
-- [ ] **Step 3: Frontend PermissionBar** — when `store.permission` is set, show a bar with Approve/Deny; on click, POST `/api/permission/respond` and clear.
-- [ ] **Step 4: Wire into App** (above the Composer).
-- [ ] **Step 5: Build + test + manual check.**
-- [ ] **Step 6: Commit.**
+**Why deferred:** (1) permission gating is a safety refinement — the flood-forecasting agent is low-destructiveness, and we currently pass `permission_handler=auto-approve`, which works for MVP; (2) we need to empirically confirm whether our `permission_handler` callback bypasses `AskService` asks entirely (in which case no `permission_ask` events fire) or coexists with them — that determines the exact wiring; (3) whether asks fire at all depends on the default tools' `permission_policy` settings.
 
-> Note: the blocking-callback design means the stream pauses mid-flight until the user responds. This is the intended UX (agent waits for approval). Keep the SDK's 5-min ask timeout in mind.
+**Carry to Plan 4:** build `PermissionBar` + the `/api/permission/respond` route wired to `get_ask_service().respond`; drop the auto-approve handler; verify a real tool (e.g. a file-writing or bash tool) triggers an ask. The adapter's `permission` mapping (`floodmind_agent.py:translate_event`) is already in place and tested.
 
 ---
 
