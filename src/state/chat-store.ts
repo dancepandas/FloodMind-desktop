@@ -169,7 +169,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
             });
             break;
           case "usage":
-            set({ usage: { prompt: ev.prompt, completion: ev.completion, total: ev.total } });
+            // token_usage fires once per LLM call; a multi-iteration turn emits
+            // several. Accumulate so the badge reflects the whole turn, not just
+            // the last call.
+            set((s) => {
+              const prev = s.usage ?? { prompt: 0, completion: 0, total: 0 };
+              return {
+                usage: {
+                  prompt: prev.prompt + ev.prompt,
+                  completion: prev.completion + ev.completion,
+                  total: prev.total + ev.total,
+                },
+              };
+            });
             break;
           case "error":
             set({ error: ev.content });
@@ -193,8 +205,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   reset: () => {
+    // Cancel any in-flight stream first, then clear local state.
     get().abortController?.abort();
     set({ ...initial });
+    // Also tell the sidecar to forget conversation history so the agent itself
+    // starts clean (its memory persists server-side across UI resets). Fire and
+    // forget — UI clears immediately regardless.
+    getBaseUrl()
+      .then((b) => fetch(`${b}/api/session/reset`, { method: "POST" }))
+      .catch(() => {
+        /* sidecar may be mid-restart; the local clear is what matters */
+      });
   },
   dismissPermission: () => set({ permission: null }),
 }));

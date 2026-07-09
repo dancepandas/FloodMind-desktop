@@ -37,6 +37,15 @@ def create_app(agent: Agent, workspace_manager=None) -> Flask:
 
         return Response(generate(), mimetype="application/x-ndjson")
 
+    @app.post("/api/session/reset")
+    def session_reset():
+        """New Session: forget conversation history so the next turn starts clean."""
+        try:
+            agent.clear_memory()
+        except Exception as e:  # pragma: no cover - defensive
+            return jsonify({"ok": False, "error": str(e)}), 500
+        return jsonify({"ok": True})
+
     if workspace_manager is not None:
         @app.get("/api/workspace")
         def workspace_summary():
@@ -52,6 +61,12 @@ def create_app(agent: Agent, workspace_manager=None) -> Flask:
                 summary = workspace_manager.open(path)
             except ValueError as e:
                 return jsonify({"error": str(e)}), 400
+            # Rebind the agent's memory/session to the new workspace so each
+            # folder gets isolated history + outputs.
+            try:
+                agent.rebind_workspace(summary["path"])
+            except Exception as e:  # pragma: no cover - defensive
+                app.logger.warning("agent.rebind_workspace failed: %s", e)
             return jsonify(summary)
 
     return app

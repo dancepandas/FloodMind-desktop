@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import Logo from "./Logo";
+import Markdown from "./Markdown";
 import { useChatStore, type ToolCall } from "../state/chat-store";
 
 function stepDot(status: string): string {
@@ -131,8 +132,9 @@ export default function Conversation() {
               <ToolLine t={t} key={t.call_id || j} />
             ))}
 
-            <div className={isLastAssistant && streaming ? "msg-assistant msg-cursor" : "msg-assistant"}>
-              {m.content}
+            <div className="msg-assistant">
+              <Markdown>{m.content}</Markdown>
+              {isLastAssistant && streaming && <span className="stream-cursor" aria-hidden="true">▌</span>}
             </div>
 
             {isLastAssistant && artifacts.map((a, j) => (

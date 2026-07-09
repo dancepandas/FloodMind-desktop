@@ -65,4 +65,41 @@ describe("chat-store.send", () => {
     expect(tools).toHaveLength(1);
     expect(tools[0]).toMatchObject({ call_id: "c1", tool_name: "search", status: "ok", output: "result" });
   });
+
+  it("accumulates token_usage across calls within one turn", async () => {
+    // The sidecar translates SDK `token_usage` into `usage` events; one fires
+    // per LLM call, so a multi-iteration turn emits several. The store must sum.
+    (streamChat as any).mockImplementation(async function* () {
+      yield { type: "usage", prompt: 10, completion: 5, total: 15 };
+      yield { type: "usage", prompt: 3, completion: 2, total: 5 };
+      yield { type: "done" };
+    });
+
+    await useChatStore.getState().send("hi");
+
+    expect(useChatStore.getState().usage).toEqual({ prompt: 13, completion: 7, total: 20 });
+  });
+
+  it("reset clears local state and pings /api/session/reset", async () => {
+    const fetchMock = vi.fn(async () => new Response("{}", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    useChatStore.setState({
+      messages: [{ role: "user", content: "x" }, { role: "assistant", content: "y" }],
+      streaming: false,
+    });
+
+    useChatStore.getState().reset();
+    // reset's session-reset ping is fire-and-forget; flush microtasks.
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(useChatStore.getState().messages).toEqual([]);
+    expect(fetchMock).toHaveBeenCalled();
+    const url = String((fetchMock as any).mock.calls[0][0]);
+    expect(url).toContain("/api/session/reset");
+
+    vi.unstubAllGlobals();
+  });
 });

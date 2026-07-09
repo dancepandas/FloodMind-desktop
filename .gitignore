@@ -7,6 +7,12 @@ src-tauri/target/
 src-tauri/gen/
 # agent runtime data (sidecar cwd); must never live in the source tree
 src-tauri/data/
+# sidecar/agent runtime data created when the process cwd is the repo or sidecar/
+# (in production cwd = app-data, so these never appear there)
+sidecar/data/
+/default-workspace/
+/desktop-default/
+ws-*/
 /config.json
 
 # typescript incremental build info
