@@ -93,36 +93,46 @@ class FloodMindAgent:
         )
 
     def _set_workspace(self):
-        """Bind the agent's outputs/memory to the current workspace folder.
+        """Bind the agent's outputs/memory to a workspace folder.
 
-        Mirrors the SDK's get_or_create_agent (agent_factory.py): build + set the
-        workspace on every run so artifacts land in the user's folder. No-op when
-        no workspace is open (SDK falls back to its default layout). A workspace
-        setup error is logged + swallowed so a workspace hiccup never kills chat
-        (the workspace is an optional enhancement).
+        The SDK's PathService only permits writes inside the active workspace's
+        user_dir/sandbox_base/writable_roots; with NO workspace set, the static
+        write-prefixes point at the SDK's own package dir (not our app-data), so
+        every write is denied. Therefore ALWAYS set a workspace: the user's
+        folder if one is open, else a default under app-data. Errors are logged
+        and swallowed so a workspace hiccup never kills chat.
         """
-        if not self._workspace_manager:
-            return
-        user_dir = self._workspace_manager.current_path()
-        if not user_dir:
-            return
+        from .workspace import _app_data_dir, session_id_for
+
+        opened = self._workspace_manager.current_path() if self._workspace_manager else None
+        if opened:
+            user_dir, sid = opened, session_id_for(opened)
+        else:
+            # Default workspace so the agent always has somewhere writable.
+            user_dir = str(_app_data_dir() / "default-workspace")
+            sid = "desktop-default"
+
         try:
             from floodmind.agent.runtime.services.workspace_service import (
                 build_workspace,
                 set_workspace,
             )
-            from .workspace import _app_data_dir, session_id_for
+            from floodmind.tools import set_session_context
 
             ws = build_workspace(
-                session_id_for(user_dir),
+                sid,
                 session_root=_app_data_dir(),
                 user_dir=user_dir,
                 sandbox_strategy="user_dir",
             )
             set_workspace(ws.ensure())
+            # SESSION_CONTEXT["output_dir"] is the #1-priority output dir resolver
+            # (ahead of workspace.user_dir). Without it the SDK falls back to
+            # data/sessions/<sid>/outputs. Mirror agent_factory.get_or_create_agent.
+            set_session_context(sid, output_dir=str(ws.user_dir))
         except Exception:
             import sys
-            print("[sidecar] workspace setup failed; using SDK default layout", file=sys.stderr)
+            print(f"[sidecar] workspace setup failed for {user_dir}; using SDK default", file=sys.stderr)
 
     def stream(self, messages: list[Message]) -> Iterator[dict]:
         user_text = messages[-1]["content"] if messages else ""
