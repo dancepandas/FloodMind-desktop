@@ -41,8 +41,10 @@ interface ChatState {
   usage: { prompt: number; completion: number; total: number } | null;
   permission: PermissionAsk | null;
   error: string | null;
+  abortController: AbortController | null;
   send: (text: string) => Promise<void>;
   reset: () => void;
+  dismissPermission: () => void;
 }
 
 const initial = {
@@ -56,6 +58,7 @@ const initial = {
   usage: null,
   permission: null,
   error: null,
+  abortController: null,
 };
 
 export const useChatStore = create<ChatState>((set, get) => ({
@@ -65,6 +68,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     if (!text.trim() || get().streaming) return;
 
     const userMsg: ChatMessage = { role: "user", content: text };
+    const controller = new AbortController();
     set((s) => ({
       messages: [
         ...s.messages,
@@ -80,12 +84,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
       usage: null,
       permission: null,
       error: null,
+      abortController: controller,
     }));
 
     try {
       const baseUrl = await getBaseUrl();
       let acc = "";
-      for await (const ev of streamChat(baseUrl, [userMsg]) as AsyncGenerator<ChatEvent>) {
+      for await (const ev of streamChat(baseUrl, [userMsg], controller.signal) as AsyncGenerator<ChatEvent>) {
         switch (ev.type) {
           case "text":
             acc += ev.content;
@@ -128,12 +133,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
           case "plan":
             set({
               planTitle: ev.title,
-              planSteps: (ev.steps as any[]).map((st) => ({
-                key: st.key,
-                status: st.status,
-                title: st.title,
-                outcome: st.outcome,
-              })),
+              planSteps: Array.isArray(ev.steps)
+                ? ev.steps.map((st: any) => ({
+                    key: st.key,
+                    status: st.status,
+                    title: st.title,
+                    outcome: st.outcome,
+                  }))
+                : [],
             });
             break;
           case "step":
@@ -171,15 +178,23 @@ export const useChatStore = create<ChatState>((set, get) => ({
         }
       }
     } catch (e) {
+      if (controller.signal.aborted) {
+        set({ streaming: false, abortController: null });
+        return;
+      }
       set((s) => {
         const m = [...s.messages];
         m[m.length - 1] = { role: "assistant", content: `⚠️ 出错：${(e as Error).message}` };
         return { messages: m, error: (e as Error).message };
       });
     } finally {
-      set({ streaming: false });
+      set({ streaming: false, abortController: null });
     }
   },
 
-  reset: () => set({ ...initial }),
+  reset: () => {
+    get().abortController?.abort();
+    set({ ...initial });
+  },
+  dismissPermission: () => set({ permission: null }),
 }));

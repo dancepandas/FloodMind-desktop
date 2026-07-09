@@ -15,12 +15,14 @@ export type ChatEvent =
 
 export async function* streamChat(
   baseUrl: string,
-  messages: ChatMessage[]
+  messages: ChatMessage[],
+  signal?: AbortSignal
 ): AsyncGenerator<ChatEvent> {
   const res = await fetch(`${baseUrl}/api/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ messages }),
+    signal,
   });
   if (!res.ok || !res.body) {
     throw new Error(`chat request failed: ${res.status}`);
