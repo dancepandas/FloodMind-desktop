@@ -5,6 +5,8 @@ node_modules/
 dist/
 src-tauri/target/
 src-tauri/gen/
+# agent runtime data (sidecar cwd); must never live in the source tree
+src-tauri/data/
 
 # typescript incremental build info
 *.tsbuildinfo

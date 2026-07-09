@@ -35,8 +35,20 @@ impl Drop for SidecarHandle {
 pub fn spawn_sidecar() -> Result<SidecarHandle, String> {
     let python = std::env::var("FLOODMIND_PYTHON").unwrap_or_else(|_| "python".to_string());
 
+    // Run the sidecar from a dedicated app-data dir OUTSIDE the source tree.
+    // The SDK writes sessions/checkpoints/task_experience/outputs under
+    // `./data/` relative to cwd; if cwd were `src-tauri/` those writes would
+    // trip Tauri's dev file-watcher (rebuild + window restart) and pollute the
+    // repo. Settings (`~/.floodmind/settings.json`) are home-relative, so they
+    // are still found regardless of cwd.
+    let data_dir = dirs::data_dir()
+        .map(|d| d.join("FloodMindDesktop"))
+        .unwrap_or_else(|| std::path::PathBuf::from(".floodmind-desktop"));
+    std::fs::create_dir_all(&data_dir).ok();
+
     let mut child = Command::new(&python)
         .args(["-m", "floodmind_desktop_sidecar"])
+        .current_dir(&data_dir)
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .spawn()
