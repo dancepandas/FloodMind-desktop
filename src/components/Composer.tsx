@@ -13,16 +13,23 @@ export default function Composer() {
   }
 
   return (
-    <form className="composer" onSubmit={submit}>
-      <input
-        value={text}
-        placeholder="输入消息…"
-        onChange={(e) => setText(e.target.value)}
-        disabled={streaming}
-      />
-      <button type="submit" disabled={streaming || !text.trim()}>
-        发送
-      </button>
-    </form>
+    <div className="composer-wrap">
+      <form className="composer" onSubmit={submit}>
+        <span className="prompt">›</span>
+        <input
+          value={text}
+          placeholder={streaming ? "正在生成…" : "给 FloodMind 一个任务…"}
+          onChange={(e) => setText(e.target.value)}
+          disabled={streaming}
+          autoFocus
+        />
+        <button className="send" type="submit" disabled={streaming || !text.trim()}>
+          发送 ↵
+        </button>
+      </form>
+      <div className="composer-hint">
+        <kbd>Enter</kbd> 发送 · 工作区内的文件会被直接读写
+      </div>
+    </div>
   );
 }

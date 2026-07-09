@@ -33,6 +33,7 @@ export interface PermissionAsk {
 interface ChatState {
   messages: { role: Role; content: string }[];
   streaming: boolean;
+  thinking: string;
   tools: ToolCall[];
   planTitle: string;
   planSteps: PlanStep[];
@@ -47,6 +48,7 @@ interface ChatState {
 const initial = {
   messages: [] as { role: Role; content: string }[],
   streaming: false,
+  thinking: "",
   tools: [] as ToolCall[],
   planTitle: "",
   planSteps: [] as PlanStep[],
@@ -70,6 +72,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         { role: "assistant", content: "" },
       ],
       streaming: true,
+      thinking: "",
       tools: [],
       planTitle: "",
       planSteps: [],
@@ -91,6 +94,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
               m[m.length - 1] = { role: "assistant", content: acc };
               return { messages: m };
             });
+            break;
+          case "thinking":
+            set((s) => ({ thinking: s.thinking + ev.content }));
             break;
           case "tool_start":
             set((s) => ({
@@ -161,8 +167,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           case "error":
             set({ error: ev.content });
             break;
-          // "thinking" is intentionally not accumulated into the assistant bubble;
-          // Task 4 may surface it in a muted pane. "done" needs no action.
+          // "done" needs no action.
         }
       }
     } catch (e) {

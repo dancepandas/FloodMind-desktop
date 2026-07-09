@@ -25,6 +25,11 @@ export default function HealthBadge() {
     };
   }, []);
 
-  const label = { checking: "连接中…", up: "sidecar 在线", down: "sidecar 离线" }[status];
-  return <span className={`badge badge-${status}`}>{label}</span>;
+  const label = { checking: "connecting", up: "online", down: "offline" }[status];
+  return (
+    <span className="pill">
+      <span className={`sdot sdot-${status}`} />
+      {label}
+    </span>
+  );
 }
