@@ -1,0 +1,16 @@
+{
+  "checkpoint_id": "ckpt-78e72896fe04479d",
+  "session_id": "sdk-agent",
+  "run_id": "run-1783562309",
+  "parent_checkpoint_id": "",
+  "status": "awaiting_llm",
+  "iteration": 0,
+  "created_at": "2026-07-09T01:58:29.997546Z",
+  "state_file": "state.json",
+  "files_snapshot_dir": null,
+  "files_snapshot_base_dirs": [],
+  "metadata": {
+    "model_name": "deepseek-v4-flash",
+    "status": "awaiting_llm"
+  }
+}
