@@ -73,7 +73,7 @@ class FloodMindAgent:
     pay the SDK's heavy init cost or require a configured LLM at import time.
     """
 
-    def __init__(self, permission_handler=None):
+    def __init__(self, permission_handler=None, workspace_manager=None):
         # Imported lazily so translate_event stays unit-testable without the SDK.
         # Use create_flood_agent (non-bare) to get the full built-in tool registry
         # (doc generation, planning, file tools) — bare mode registers no tools and
@@ -84,6 +84,7 @@ class FloodMindAgent:
         llm = ModelClient.from_settings()
         # Auto-approve by default; Task 5 wires a UI-driven handler.
         self._permission_handler = permission_handler or (lambda tool_name, tool_input: True)
+        self._workspace_manager = workspace_manager
         self._agent = create_flood_agent(
             llm_service=llm,
             session_id="desktop-default",
@@ -91,9 +92,36 @@ class FloodMindAgent:
             max_iterations=50,
         )
 
+    def _set_workspace(self):
+        """Bind the agent's outputs/memory to the current workspace folder.
+
+        Mirrors the SDK's get_or_create_agent (agent_factory.py): build + set the
+        workspace on every run so artifacts land in the user's folder. No-op when
+        no workspace is open (SDK falls back to its default layout).
+        """
+        if not self._workspace_manager:
+            return
+        user_dir = self._workspace_manager.current_path()
+        if not user_dir:
+            return
+        from floodmind.agent.runtime.services.workspace_service import (
+            build_workspace,
+            set_workspace,
+        )
+        from .workspace import _app_data_dir, session_id_for
+
+        ws = build_workspace(
+            session_id_for(user_dir),
+            session_root=_app_data_dir(),
+            user_dir=user_dir,
+            sandbox_strategy="user_dir",
+        )
+        set_workspace(ws.ensure())
+
     def stream(self, messages: list[Message]) -> Iterator[dict]:
         user_text = messages[-1]["content"] if messages else ""
         try:
+            self._set_workspace()
             for raw in self._agent.stream(user_text):
                 for ev in translate_event(raw):
                     yield ev

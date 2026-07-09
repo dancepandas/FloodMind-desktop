@@ -59,6 +59,7 @@ def test_floodmind_agent_emits_error_and_done_on_inner_exception():
 
     a = FloodMindAgent.__new__(FloodMindAgent)
     a._agent = BoomAgent()
+    a._workspace_manager = None  # bypass __init__; no workspace binding in this test
     out = list(a.stream([{"role": "user", "content": "hi"}]))
     assert [e["type"] for e in out] == ["text", "error", "done"]
     assert "boom" in out[1]["content"]

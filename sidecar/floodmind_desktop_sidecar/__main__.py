@@ -11,6 +11,7 @@ import sys
 os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 
 from .floodmind_agent import FloodMindAgent
+from .workspace import WorkspaceManager
 from .app import create_app
 
 
@@ -26,7 +27,11 @@ def main() -> None:
     args = parser.parse_args()
 
     port = args.port if args.port is not None else find_free_port()
-    app = create_app(FloodMindAgent())
+    workspace_manager = WorkspaceManager()
+    app = create_app(
+        FloodMindAgent(workspace_manager=workspace_manager),
+        workspace_manager=workspace_manager,
+    )
 
     # First stdout line announces readiness + the chosen port. Rust reads this.
     sys.stdout.write(f"READY {port}\n")

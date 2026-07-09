@@ -9,7 +9,7 @@ from .agent import Agent, Message
 from . import __version__
 
 
-def create_app(agent: Agent) -> Flask:
+def create_app(agent: Agent, workspace_manager=None) -> Flask:
     app = Flask(__name__)
 
     # The Tauri WebView (origin http://127.0.0.1:1420 in dev, tauri://localhost in
@@ -36,5 +36,22 @@ def create_app(agent: Agent) -> Flask:
                 yield json.dumps(event, ensure_ascii=False) + "\n"
 
         return Response(generate(), mimetype="application/x-ndjson")
+
+    if workspace_manager is not None:
+        @app.get("/api/workspace")
+        def workspace_summary():
+            return jsonify(workspace_manager.summary())
+
+        @app.post("/api/workspace/open")
+        def workspace_open():
+            body = request.get_json(silent=True) or {}
+            path = body.get("path")
+            if not path:
+                return jsonify({"error": "path required"}), 400
+            try:
+                summary = workspace_manager.open(path)
+            except ValueError as e:
+                return jsonify({"error": str(e)}), 400
+            return jsonify(summary)
 
     return app
