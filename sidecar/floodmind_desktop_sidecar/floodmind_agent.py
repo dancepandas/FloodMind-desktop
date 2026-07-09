@@ -97,26 +97,32 @@ class FloodMindAgent:
 
         Mirrors the SDK's get_or_create_agent (agent_factory.py): build + set the
         workspace on every run so artifacts land in the user's folder. No-op when
-        no workspace is open (SDK falls back to its default layout).
+        no workspace is open (SDK falls back to its default layout). A workspace
+        setup error is logged + swallowed so a workspace hiccup never kills chat
+        (the workspace is an optional enhancement).
         """
         if not self._workspace_manager:
             return
         user_dir = self._workspace_manager.current_path()
         if not user_dir:
             return
-        from floodmind.agent.runtime.services.workspace_service import (
-            build_workspace,
-            set_workspace,
-        )
-        from .workspace import _app_data_dir, session_id_for
+        try:
+            from floodmind.agent.runtime.services.workspace_service import (
+                build_workspace,
+                set_workspace,
+            )
+            from .workspace import _app_data_dir, session_id_for
 
-        ws = build_workspace(
-            session_id_for(user_dir),
-            session_root=_app_data_dir(),
-            user_dir=user_dir,
-            sandbox_strategy="user_dir",
-        )
-        set_workspace(ws.ensure())
+            ws = build_workspace(
+                session_id_for(user_dir),
+                session_root=_app_data_dir(),
+                user_dir=user_dir,
+                sandbox_strategy="user_dir",
+            )
+            set_workspace(ws.ensure())
+        except Exception:
+            import sys
+            print("[sidecar] workspace setup failed; using SDK default layout", file=sys.stderr)
 
     def stream(self, messages: list[Message]) -> Iterator[dict]:
         user_text = messages[-1]["content"] if messages else ""

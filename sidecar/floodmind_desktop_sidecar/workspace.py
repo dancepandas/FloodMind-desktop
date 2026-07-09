@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 from pathlib import Path
 from typing import Optional
 
@@ -39,6 +40,7 @@ class WorkspaceManager:
     """Holds the current workspace + recent list, persisted to app-data/config.json."""
 
     def __init__(self):
+        self._lock = threading.Lock()
         self._cfg = self._load()
 
     def _load(self) -> dict:
@@ -69,11 +71,14 @@ class WorkspaceManager:
 
     def open(self, path: str) -> dict:
         rp = str(resolve_user_dir(path))
-        self._cfg["current"] = rp
-        recent = [p for p in self._cfg.get("recent", []) if p != rp]
-        recent.insert(0, rp)
-        self._cfg["recent"] = recent[:10]
-        self._save()
+        # Flask is threaded=True: an /api/workspace/open POST can race a concurrent
+        # open or a chat thread reading current_path(). Serialize the RMW + persist.
+        with self._lock:
+            self._cfg["current"] = rp
+            recent = [p for p in self._cfg.get("recent", []) if p != rp]
+            recent.insert(0, rp)
+            self._cfg["recent"] = recent[:10]
+            self._save()
         return self._summary(rp)
 
     def summary(self) -> dict:
