@@ -46,9 +46,31 @@ pub fn spawn_sidecar() -> Result<SidecarHandle, String> {
         .unwrap_or_else(|| std::path::PathBuf::from(".floodmind-desktop"));
     std::fs::create_dir_all(&data_dir).ok();
 
-    let mut child = Command::new(&python)
-        .args(["-m", "floodmind_desktop_sidecar"])
-        .env("PYTHONUNBUFFERED", "1") // unbuffered stdout so the READY line reaches Rust
+    // In dev, the sidecar source lives at <project-root>/sidecar, next to
+    // src-tauri. Add it to PYTHONPATH so `python -m floodmind_desktop_sidecar`
+    // works without an editable install. In production this path won't exist,
+    // so we leave PYTHONPATH untouched.
+    let sidecar_src = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .map(|p| p.join("sidecar"));
+    let pythonpath = sidecar_src
+        .filter(|p| p.exists())
+        .and_then(|p| p.canonicalize().ok())
+        .map(|p| {
+            let sep = if cfg!(windows) { ';' } else { ':' };
+            match std::env::var("PYTHONPATH") {
+                Ok(existing) if !existing.is_empty() => format!("{}{}{}", p.display(), sep, existing),
+                _ => p.to_string_lossy().into_owned(),
+            }
+        });
+
+    let mut cmd = Command::new(&python);
+    cmd.args(["-m", "floodmind_desktop_sidecar"]);
+    cmd.env("PYTHONUNBUFFERED", "1"); // unbuffered stdout so the READY line reaches Rust
+    if let Some(pp) = pythonpath {
+        cmd.env("PYTHONPATH", pp);
+    }
+    let mut child = cmd
         .current_dir(&data_dir)
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
