@@ -8,6 +8,22 @@ vi.mock("../lib/sidecar-client", () => ({
 vi.mock("../lib/chat-stream", () => ({
   streamChat: vi.fn(),
 }));
+vi.mock("./conversation-store", () => ({
+  useConversationStore: {
+    getState: () => ({
+      create: vi.fn(async (_ws: string) => ({
+        id: "c-new", session_id: "s-new", workspace: _ws, title: "新会话",
+        created_at: "t", updated_at: "t", turns: [],
+      })),
+      activate: vi.fn(async (_id: string) => true),
+      open: vi.fn(async (id: string) => ({
+        id, session_id: "s", workspace: "/ws", title: "old", created_at: "t", updated_at: "t",
+        turns: [{ role: "user", content: "loaded" }],
+      })),
+      loadList: vi.fn(async () => []),
+    }),
+  },
+}));
 
 // Import after mocks are registered.
 import { streamChat } from "../lib/chat-stream";
@@ -125,22 +141,71 @@ describe("chat-store.send", () => {
     expect((texts[1] as { final?: boolean }).final).toBe(true);
   });
 
-  it("reset clears turns and pings /api/session/reset", async () => {
-    const fetchMock = vi.fn(async () => new Response("{}", { status: 200 }));
-    vi.stubGlobal("fetch", fetchMock);
+  it("reset clears local turns without a sidecar call", () => {
+    const fetchMock = vi.fn();
     useChatStore.setState({
       turns: [{ role: "user", content: "x" }, { role: "assistant", blocks: [], usage: null, done: true }],
       streaming: false,
     });
-
     useChatStore.getState().reset();
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
-
     expect(useChatStore.getState().turns).toEqual([]);
-    expect(fetchMock).toHaveBeenCalled();
-    expect(String((fetchMock as any).mock.calls[0][0])).toContain("/api/session/reset");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("startNew creates a conversation, clears turns, sets conversationId", async () => {
+    useChatStore.setState({
+      turns: [{ role: "user", content: "old" }],
+      streaming: false,
+      conversationId: null,
+    });
+    await useChatStore.getState().startNew("/ws/A");
+    const st = useChatStore.getState();
+    expect(st.turns).toEqual([]);
+    expect(st.conversationId).toBe("c-new");
+  });
+
+  it("loadConversation activates + hydrates turns from the loaded record", async () => {
+    await useChatStore.getState().loadConversation("c-old");
+    const st = useChatStore.getState();
+    expect(st.conversationId).toBe("c-old");
+    expect(st.turns).toHaveLength(1);
+    expect((st.turns[0] as any).content).toBe("loaded");
+  });
+
+  it("send posts the finalized turn pair when a conversation is active", async () => {
+    (streamChat as any).mockImplementation(async function* () {
+      yield { type: "text", content: "Hi" };
+      yield { type: "done" };
+    });
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => new Response("{}", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    useChatStore.setState({ turns: [], streaming: false, conversationId: "c1" });
+    _resetBlockIdsForTest();
+
+    await useChatStore.getState().send("hello");
+
+    const posted = fetchMock.mock.calls.find(
+      (c) => String(c[0]).includes("/api/conversations/c1/turns")
+    );
+    expect(posted).toBeTruthy();
+    const body = JSON.parse((posted![1] as RequestInit).body as string);
+    expect(body.turns).toHaveLength(2);
+    expect(body.turns[0]).toMatchObject({ role: "user", content: "hello" });
+    expect(body.turns[1].role).toBe("assistant");
+    vi.unstubAllGlobals();
+  });
+
+  it("send does NOT post when no conversation is active", async () => {
+    (streamChat as any).mockImplementation(async function* () {
+      yield { type: "done" };
+    });
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => new Response("{}", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    useChatStore.setState({ turns: [], streaming: false, conversationId: null });
+    _resetBlockIdsForTest();
+
+    await useChatStore.getState().send("hi");
+    expect(fetchMock).not.toHaveBeenCalled();
     vi.unstubAllGlobals();
   });
 });

@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { getBaseUrl } from "../lib/sidecar-client";
 import { streamChat, type ChatEvent, type ChatMessage } from "../lib/chat-stream";
+import { useConversationStore } from "./conversation-store";
 
 export interface PlanStep {
   key: string;
@@ -43,8 +44,11 @@ interface ChatState {
   turns: Msg[];
   streaming: boolean;
   abortController: AbortController | null;
+  conversationId: string | null;
   send: (text: string) => Promise<void>;
   reset: () => void;
+  startNew: (workspace: string) => Promise<void>;
+  loadConversation: (id: string) => Promise<void>;
 }
 
 // Deterministic block ids (also keeps test assertions stable).
@@ -173,6 +177,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   turns: [],
   streaming: false,
   abortController: null,
+  conversationId: null,
 
   async send(text: string) {
     if (!text.trim() || get().streaming) return;
@@ -217,8 +222,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
       });
     } finally {
       const aborted = controller.signal.aborted;
-      // Don't promote a partial answer to "final" when the turn aborted or
-      // errored — there is no valid final answer in those cases.
       const finalize = !aborted && !errored;
       set((s) => {
         const turns = s.turns.slice();
@@ -232,19 +235,61 @@ export const useChatStore = create<ChatState>((set, get) => ({
         }
         return { turns, streaming: false, abortController: null };
       });
+      // Persist the completed user+assistant pair to the active conversation.
+      if (finalize && text.trim()) {
+        const cid = get().conversationId;
+        if (cid) {
+          const turns = get().turns;
+          const last = turns[turns.length - 1];
+          if (last && last.role === "assistant") {
+            const pair = [
+              { role: "user", content: text } as Msg,
+              last,
+            ];
+            getBaseUrl()
+              .then((b) =>
+                fetch(`${b}/api/conversations/${cid}/turns`, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ turns: pair }),
+                })
+              )
+              .catch(() => {
+                /* persistence is best-effort; the local transcript is the live source */
+              });
+          }
+        }
+      }
     }
   },
 
   reset: () => {
-    // Cancel any in-flight stream first, then clear local state.
     get().abortController?.abort();
     set({ turns: [], streaming: false, abortController: null });
-    // Tell the sidecar to forget conversation history so the agent itself starts
-    // clean. Fire and forget — UI clears immediately regardless.
-    getBaseUrl()
-      .then((b) => fetch(`${b}/api/session/reset`, { method: "POST" }))
-      .catch(() => {
-        /* sidecar may be mid-restart; the local clear is what matters */
-      });
+  },
+
+  async startNew(workspace: string) {
+    get().abortController?.abort();
+    const conv = await useConversationStore.getState().create(workspace);
+    set({
+      turns: [],
+      streaming: false,
+      abortController: null,
+      conversationId: conv ? conv.id : get().conversationId,
+    });
+    await useConversationStore.getState().loadList(workspace);
+  },
+
+  async loadConversation(id: string) {
+    get().abortController?.abort();
+    await useConversationStore.getState().activate(id);
+    const conv = await useConversationStore.getState().open(id);
+    if (!conv) return;
+    set({
+      turns: conv.turns || [],
+      streaming: false,
+      abortController: null,
+      conversationId: conv.id,
+    });
   },
 }));
