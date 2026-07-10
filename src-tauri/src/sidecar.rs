@@ -48,6 +48,7 @@ pub fn spawn_sidecar() -> Result<SidecarHandle, String> {
 
     let mut child = Command::new(&python)
         .args(["-m", "floodmind_desktop_sidecar"])
+        .env("PYTHONUNBUFFERED", "1") // unbuffered stdout so the READY line reaches Rust
         .current_dir(&data_dir)
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())

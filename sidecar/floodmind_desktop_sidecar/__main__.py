@@ -34,8 +34,16 @@ def main() -> None:
     )
 
     # First stdout line announces readiness + the chosen port. Rust reads this.
-    sys.stdout.write(f"READY {port}\n")
-    sys.stdout.flush()
+    # Use os.write (unbuffered) so the pipe actually delivers the line on Windows
+    # where Python's stdout buffer + flush can sporadically fail with EINVAL.
+    ready_line = f"READY {port}\n"
+    try:
+        os.write(1, ready_line.encode())
+    except OSError:
+        # Fall back to regular stdout; if this also fails the Rust side will
+        # time out, which is the correct failure mode.
+        sys.stdout.write(ready_line)
+        sys.stdout.flush()
 
     # debug=False + use_reloader=False so Flask doesn't spawn a reloader child
     # that would break Rust's process control / READY handshake.
