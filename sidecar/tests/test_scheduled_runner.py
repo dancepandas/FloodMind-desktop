@@ -14,6 +14,28 @@ def test_due_tasks_filters_enabled_past_nonrunning():
     assert [t["id"] for t in _due_tasks(tasks, now)] == ["a"]
 
 
+def test_due_tasks_respects_task_timezone():
+    # 09:05 UTC == 17:05 Asia/Shanghai. A task scheduled for 17:00 Shanghai is due.
+    now = "2026-01-01T09:05:00+00:00"
+    tasks = [
+        {"id": "due_shanghai", "enabled": True, "status": "pending",
+         "next_run_at": "2026-01-01T17:00:00", "timezone": "Asia/Shanghai"},
+        {"id": "future_shanghai", "enabled": True, "status": "pending",
+         "next_run_at": "2026-01-01T18:00:00", "timezone": "Asia/Shanghai"},
+        {"id": "due_utc", "enabled": True, "status": "pending",
+         "next_run_at": "2026-01-01T09:00:00+00:00", "timezone": "UTC"},
+    ]
+    assert [t["id"] for t in _due_tasks(tasks, now)] == ["due_shanghai", "due_utc"]
+
+
+def test_due_tasks_ignores_unparseable_next_run_at():
+    now = "2026-01-01T09:05:00+00:00"
+    tasks = [
+        {"id": "bad", "enabled": True, "status": "pending", "next_run_at": "not-a-date", "timezone": "UTC"},
+    ]
+    assert _due_tasks(tasks, now) == []
+
+
 class FakeRuntime:
     def __init__(self):
         self.completed = []

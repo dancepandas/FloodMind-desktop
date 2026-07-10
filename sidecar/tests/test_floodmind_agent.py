@@ -307,3 +307,32 @@ def test_run_headless_swallows_errors_into_an_error_event(tmp_path, monkeypatch)
     events, artifacts, final_text = a.run_headless("sess-x", "/ws/A", "go")
     assert a._agent == "FOREGROUND_AGENT"
     assert any(e["type"] == "error" and "boom" in e["content"] for e in events)
+
+
+def test_run_headless_diffs_output_dir_for_artifacts(tmp_path, monkeypatch):
+    # When the SDK doesn't emit file_generated/image_generated, run_headless must
+    # still discover artifacts by diffing the workspace output directory.
+    monkeypatch.chdir(tmp_path)
+    from floodmind_desktop_sidecar.floodmind_agent import FloodMindAgent
+
+    out = tmp_path / "out"
+    out.mkdir()
+
+    class FakeAgent:
+        def stream(self, command):
+            (out / "report.xlsx").write_bytes(b"data")
+            (out / "chart.png").write_bytes(b"img")
+            yield {"type": "answer_delta", "content": "ok"}
+
+    a = FloodMindAgent.__new__(FloodMindAgent)
+    a._agent = "FOREGROUND_AGENT"
+    a._build_agent = lambda sid, pd: FakeAgent()
+    a._set_workspace_for = lambda path: str(out)
+
+    events, artifacts, final_text = a.run_headless("sess-x", "/ws/A", "go")
+    assert a._agent == "FOREGROUND_AGENT"
+    names = {(art["kind"], art["name"]) for art in artifacts}
+    assert ("file", "report.xlsx") in names
+    assert ("image", "chart.png") in names
+    assert any(e["type"] == "artifact" and e["name"] == "report.xlsx" for e in events)
+    assert final_text == "ok"

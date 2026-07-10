@@ -1,5 +1,3 @@
-import json
-
 from floodmind_desktop_sidecar.agent import StubAgent
 from floodmind_desktop_sidecar.app import create_app
 from floodmind.agent.scheduled_task_runtime import ScheduledTaskRuntime
@@ -54,6 +52,17 @@ def test_update_enable_disable_and_delete(tmp_path, monkeypatch):
     assert r.get_json()["task"]["enabled"] is False
     assert client.delete(f"/api/scheduled-tasks/{task['id']}").status_code == 200
     assert client.get(f"/api/scheduled-tasks/{task['id']}").status_code == 404
+
+
+def test_update_ignores_status_field(tmp_path, monkeypatch):
+    client, rt, idx, rs = _client(tmp_path, monkeypatch)
+    task = client.post("/api/scheduled-tasks", json={
+        "workspace": "/ws/A", "command": "c", "repeat": "none",
+        "scheduled_at": "2099-01-01T00:00:00"}).get_json()
+    r = client.patch(f"/api/scheduled-tasks/{task['id']}", json={"status": "completed"})
+    assert r.status_code == 200
+    # Status must remain pending; clients cannot override the runner state machine.
+    assert r.get_json()["task"]["status"] == "pending"
 
 
 def test_run_now_returns_run_id_via_runner(tmp_path, monkeypatch):
