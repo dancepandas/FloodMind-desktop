@@ -1,6 +1,57 @@
 import pytest
 
+from floodmind_desktop_sidecar.app import create_app
+from floodmind_desktop_sidecar.agent import StubAgent
 from floodmind_desktop_sidecar.workspace import session_id_for, resolve_user_dir, WorkspaceManager
+
+
+def test_workspace_files_endpoint(tmp_path, monkeypatch):
+    """GET /api/workspace/files returns directory listing, rejects escape."""
+    monkeypatch.chdir(tmp_path)
+    mgr = WorkspaceManager()
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "readme.txt").write_text("hi")
+    (ws / "data").mkdir()
+    (ws / "data" / "info.csv").write_text("a,b")
+    (ws / ".hidden").write_text("nope")
+
+    client = create_app(StubAgent(), workspace_manager=mgr).test_client()
+    client.post("/api/workspace/open", json={"path": str(ws)})
+
+    # Root listing — .hidden excluded, .floodmind (if any) allowed.
+    r = client.get("/api/workspace/files")
+    assert r.status_code == 200
+    entries = r.get_json()["entries"]
+    names = [e["name"] for e in entries]
+    assert "readme.txt" in names
+    assert "data" in names
+    assert ".hidden" not in names
+    for e in entries:
+        assert "name" in e and "type" in e and "path" in e
+
+    # Subdirectory.
+    r = client.get("/api/workspace/files?path=data")
+    subs = r.get_json()["entries"]
+    assert len(subs) == 1
+    assert subs[0]["name"] == "info.csv"
+
+    # No workspace open → empty (use a separate dir so mgr2 doesn't pick up
+    # the config.json persisted by mgr).
+    empty_home = tmp_path / "empty"; empty_home.mkdir()
+    monkeypatch.chdir(empty_home)
+    mgr2 = WorkspaceManager()
+    client2 = create_app(StubAgent(), workspace_manager=mgr2).test_client()
+    assert client2.get("/api/workspace/files").get_json()["entries"] == []
+
+
+def test_workspace_files_rejects_escape(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    mgr = WorkspaceManager()
+    ws = tmp_path / "ws"; ws.mkdir()
+    client = create_app(StubAgent(), workspace_manager=mgr).test_client()
+    client.post("/api/workspace/open", json={"path": str(ws)})
+    assert client.get("/api/workspace/files?path=../../etc").status_code == 403
 
 
 def test_session_id_for_is_stable_and_unique():

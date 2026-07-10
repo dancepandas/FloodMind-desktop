@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from flask import Flask, Response, jsonify, request
 from flask_cors import CORS
@@ -143,5 +144,33 @@ def create_app(agent: Agent, workspace_manager=None) -> Flask:
             except Exception as e:  # pragma: no cover - defensive
                 app.logger.warning("agent.rebind_workspace failed: %s", e)
             return jsonify(summary)
+
+        @app.get("/api/workspace/files")
+        def workspace_files():
+            current = workspace_manager.current_path()
+            if not current:
+                return jsonify({"entries": [], "root": ""})
+            root = Path(current).resolve()
+            rel = request.args.get("path", ".")
+            try:
+                target = (root / rel).resolve()
+            except (ValueError, OSError):
+                return jsonify({"entries": [], "error": "invalid path"}), 400
+            # Prevent escape outside the workspace.
+            if root not in target.parents and target != root:
+                return jsonify({"entries": [], "error": "outside workspace"}), 403
+            entries = []
+            try:
+                for p in sorted(target.iterdir()):
+                    if p.name.startswith(".") and p.name != ".floodmind":
+                        continue
+                    entries.append({
+                        "name": p.name,
+                        "type": "dir" if p.is_dir() else "file",
+                        "path": str(p.relative_to(root)).replace("\\", "/"),
+                    })
+            except OSError:
+                pass
+            return jsonify({"entries": entries, "root": str(root)})
 
     return app

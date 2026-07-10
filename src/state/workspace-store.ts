@@ -6,13 +6,20 @@ export interface WorkspaceSummary {
   path: string;
   name: string;
 }
+export interface FileEntry {
+  name: string;
+  type: "file" | "dir";
+  path: string;
+}
 
 interface WorkspaceState {
   current: WorkspaceSummary | null;
   recent: WorkspaceSummary[];
+  filesRoot: string;
   load: () => Promise<void>;
   pickAndOpen: () => Promise<boolean>;
   openPath: (path: string) => Promise<void>;
+  listFiles: (relPath?: string) => Promise<FileEntry[]>;
 }
 
 async function postOpen(path: string): Promise<boolean> {
@@ -28,6 +35,7 @@ async function postOpen(path: string): Promise<boolean> {
 export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   current: null,
   recent: [],
+  filesRoot: "",
 
   async load() {
     try {
@@ -52,5 +60,18 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   async openPath(path) {
     const ok = await postOpen(path);
     if (ok) await get().load();
+  },
+
+  async listFiles(relPath = ".") {
+    try {
+      const b = await getBaseUrl();
+      const r = await fetch(`${b}/api/workspace/files?path=${encodeURIComponent(relPath)}`);
+      if (!r.ok) return [];
+      const data = await r.json();
+      if (relPath === ".") set({ filesRoot: data.root || "" });
+      return data.entries || [];
+    } catch {
+      return [];
+    }
   },
 }));
