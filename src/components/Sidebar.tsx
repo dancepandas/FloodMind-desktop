@@ -86,9 +86,7 @@ export default function Sidebar() {
 
         {/* react-arborist file tree */}
         {current && rootFiles && rootFiles.length > 0 && (
-          <div className="sidebar-tree">
-            <WorkspaceFileTree rootFiles={rootFiles} />
-          </div>
+          <WorkspaceFileTree rootFiles={rootFiles} workspaceName={current.name} />
         )}
         {current && rootFiles && rootFiles.length === 0 && (
           <div className="tree-empty">工作区为空</div>

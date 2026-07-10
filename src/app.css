@@ -76,6 +76,8 @@ button:focus-visible,
   border-right: 1px solid var(--border);
   padding: 1rem 0.85rem;
   user-select: none;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .sidebar-brand {
@@ -218,6 +220,12 @@ button:focus-visible,
   justify-content: center;
 }
 
+/* root workspace node in the file tree */
+.tree-root-node {
+  font-weight: 600;
+  color: var(--fg);
+}
+
 .tree-node-name {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -228,6 +236,15 @@ button:focus-visible,
   font-size: 11px;
   color: var(--muted);
   padding: 0.15rem 0.5rem;
+}
+
+/* hide the react-arborist internal scrollbar */
+.sidebar-tree div::-webkit-scrollbar {
+  display: none;
+}
+
+.sidebar-tree {
+  scrollbar-width: none;
 }
 
 .sidebar-item.active {
