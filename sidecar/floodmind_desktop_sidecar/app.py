@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import sys
-import threading
 import uuid
 from pathlib import Path
 
@@ -21,18 +20,8 @@ def _first_user_text(turns: list) -> str:
     return ""
 
 
-def _apply_title(store, title_fn, conv_id: str, user_text: str) -> None:
-    """Call title_fn(user_text); on a non-empty result, persist it. Swallows errors."""
-    try:
-        title = title_fn(user_text)
-        if title:
-            store.update_title(conv_id, title)
-    except Exception as e:  # pragma: no cover - defensive
-        print(f"[sidecar] title apply failed: {e}", file=sys.stderr)
-
-
 def create_app(agent: Agent, workspace_manager=None, conversation_store=None,
-               title_spawner=None, task_runtime=None, task_index=None,
+               task_runtime=None, task_index=None,
                task_run_store=None, task_runner=None, start_runner=True) -> Flask:
     app = Flask(__name__)
 
@@ -48,9 +37,6 @@ def create_app(agent: Agent, workspace_manager=None, conversation_store=None,
         from .workspace import _app_data_dir
         from .conversation_store import ConversationStore
         conversation_store = ConversationStore(_app_data_dir())
-    if title_spawner is None:
-        def title_spawner(fn):
-            threading.Thread(target=fn, daemon=True, name="conv-title").start()
 
     if task_runtime is None:
         from floodmind.agent.scheduled_task_runtime import get_scheduled_task_runtime
@@ -139,12 +125,19 @@ def create_app(agent: Agent, workspace_manager=None, conversation_store=None,
         rec = conversation_store.append_turns(conv_id, turns)
         if rec is None:
             return jsonify({"error": "not found"}), 404
-        # First-turn background title generation: nothing was persisted before this append.
+        # First-turn title generation: run synchronously so the UI can show the
+        # generated title immediately. Swallow failures so persistence never breaks.
         if len(rec.get("turns", [])) <= len(turns):
             user_text = _first_user_text(turns)
             if user_text:
-                title_spawner(lambda: _apply_title(conversation_store, agent.generate_title, conv_id, user_text))
-        return jsonify({"ok": True})
+                try:
+                    title = agent.generate_title(user_text)
+                    if title:
+                        conversation_store.update_title(conv_id, title)
+                        rec["title"] = title
+                except Exception as e:  # pragma: no cover - defensive
+                    print(f"[sidecar] title apply failed: {e}", file=sys.stderr)
+        return jsonify({"ok": True, "title": rec.get("title", "")})
 
     @app.delete("/api/conversations/<conv_id>")
     def conversations_delete(conv_id):

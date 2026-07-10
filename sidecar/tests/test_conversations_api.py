@@ -15,10 +15,10 @@ class SpyAgent(StubAgent):
         return "生成的标题"
 
 
-def _client(tmp_path, monkeypatch, spy=None, spawner=None):
+def _client(tmp_path, monkeypatch, spy=None):
     monkeypatch.chdir(tmp_path)          # _app_data_dir() == cwd
     spy = spy or SpyAgent()
-    client = create_app(spy, title_spawner=spawner).test_client()
+    client = create_app(spy).test_client()
     return client, spy
 
 
@@ -68,33 +68,30 @@ def test_activate_endpoint_rebuilds_and_sets_active(tmp_path, monkeypatch):
     assert items[b["id"]]["active"] is False
 
 
-def test_append_turns_and_background_title(tmp_path, monkeypatch):
-    # Synchronous spawner so the title side-effect is observable in-test.
-    ran = []
-    client, spy = _client(
-        tmp_path, monkeypatch, spawner=lambda fn: (fn(), ran.append(True))[0]
-    )
+def test_append_turns_and_title(tmp_path, monkeypatch):
+    client, spy = _client(tmp_path, monkeypatch)
     conv = client.post("/api/conversations", json={"workspace": "/ws/A"}).get_json()
 
     r = client.post(f"/api/conversations/{conv['id']}/turns", json={
         "turns": [{"role": "user", "content": "帮我画图"}, {"role": "assistant", "blocks": []}]
     })
     assert r.status_code == 200
-    assert ran == [True]                              # title job ran
-    assert spy.title_input == "帮我画图"              # first user message used
+    data = r.get_json()
+    assert data["ok"] is True
+    assert data["title"] == "生成的标题"          # generated title returned immediately
+    assert spy.title_input == "帮我画图"          # first user message used
     rec = client.get(f"/api/conversations/{conv['id']}").get_json()
-    assert rec["title"] == "生成的标题"               # title applied
+    assert rec["title"] == "生成的标题"           # title persisted
     assert len(rec["turns"]) == 2
 
 
-def test_append_turns_only_schedules_title_on_first_turn(tmp_path, monkeypatch):
-    runs = []
-    client, _ = _client(tmp_path, monkeypatch, spawner=lambda fn: (fn(), runs.append(True))[0])
+def test_append_turns_only_generates_title_on_first_turn(tmp_path, monkeypatch):
+    client, spy = _client(tmp_path, monkeypatch)
     conv = client.post("/api/conversations", json={"workspace": "/ws/A"}).get_json()
     client.post(f"/api/conversations/{conv['id']}/turns", json={"turns": [{"role": "user", "content": "a"}]})
-    runs.clear()
+    spy.title_input = None
     client.post(f"/api/conversations/{conv['id']}/turns", json={"turns": [{"role": "user", "content": "b"}]})
-    assert runs == []                                 # no title gen on 2nd append
+    assert spy.title_input is None                  # no title gen on 2nd append
 
 
 def test_append_turns_404_for_missing(tmp_path, monkeypatch):

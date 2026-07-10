@@ -247,13 +247,23 @@ export const useChatStore = create<ChatState>((set, get) => ({
               last,
             ];
             getBaseUrl()
-              .then((b) =>
-                fetch(`${b}/api/conversations/${cid}/turns`, {
+              .then(async (b) => {
+                const r = await fetch(`${b}/api/conversations/${cid}/turns`, {
                   method: "POST",
                   headers: { "Content-Type": "application/json" },
                   body: JSON.stringify({ turns: pair }),
-                })
-              )
+                });
+                if (!r.ok) return;
+                const data = await r.json().catch(() => ({}));
+                const title = data?.title;
+                if (title) {
+                  useConversationStore.setState((s) => ({
+                    list: s.list.map((c) =>
+                      c.id === cid ? { ...c, title } : c
+                    ),
+                  }));
+                }
+              })
               .catch(() => {
                 /* persistence is best-effort; the local transcript is the live source */
               });
