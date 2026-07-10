@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { FolderClosedIcon } from "./FileTreeIcons";
 import { useChatStore } from "../state/chat-store";
+import { useConversationStore } from "../state/conversation-store";
 import { useUiStore, type View } from "../state/ui-store";
 import { useWorkspaceStore, type FileEntry } from "../state/workspace-store";
 import Logo from "./Logo";
@@ -29,6 +30,12 @@ export default function Sidebar() {
   const listFiles = useWorkspaceStore((s) => s.listFiles);
   const reset = useChatStore((s) => s.reset);
   const streaming = useChatStore((s) => s.streaming);
+  const conversationId = useChatStore((s) => s.conversationId);
+  const startNew = useChatStore((s) => s.startNew);
+  const loadConversation = useChatStore((s) => s.loadConversation);
+  const convList = useConversationStore((s) => s.list);
+  const loadList = useConversationStore((s) => s.loadList);
+  const removeConv = useConversationStore((s) => s.remove);
   const view = useUiStore((s) => s.view);
   const setView = useUiStore((s) => s.setView);
 
@@ -55,10 +62,55 @@ export default function Sidebar() {
         FloodMind
       </div>
 
-      <button className="new-thread" onClick={reset} type="button">
+      <button
+        className="new-thread"
+        onClick={() => current && startNew(current.path)}
+        type="button"
+        disabled={streaming || !current}
+        title={current ? undefined : "请先打开一个工作区"}
+      >
         <span>＋</span>
         新会话
       </button>
+
+      {current && convList.length > 0 && (
+        <div className="sidebar-section">
+          <div className="sidebar-label">会话</div>
+          {convList.map((c) => (
+            <div
+              key={c.id}
+              className={c.id === conversationId ? "sidebar-item conv-item active" : "sidebar-item conv-item"}
+            >
+              <button
+                className="conv-open"
+                onClick={() => loadConversation(c.id)}
+                disabled={streaming}
+                title={c.title}
+                type="button"
+              >
+                <span className="item-name">{c.title}</span>
+              </button>
+              <button
+                className="conv-del"
+                onClick={() => {
+                  const wasActive = c.id === conversationId;
+                  removeConv(c.id).then(() => {
+                    if (!current) return;
+                    // Spec: deleting the active conversation activates another
+                    // (here: a fresh one); otherwise just refresh the list.
+                    if (wasActive) startNew(current.path);
+                    else loadList(current.path);
+                  });
+                }}
+                title="删除会话"
+                type="button"
+              >
+                ✕
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* 最近 — above 工作区 per user preference */}
       {switchable.length > 0 && (

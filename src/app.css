@@ -1305,3 +1305,49 @@ button:focus-visible,
     padding: 0 1rem 1rem;
   }
 }
+
+.conv-item {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding-right: 4px;
+}
+.conv-item .conv-open {
+  flex: 1;
+  min-width: 0;
+  background: none;
+  border: none;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  padding: 0;
+  font: inherit;
+}
+.conv-item .conv-open:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+.conv-item .conv-open .item-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.conv-item .conv-del {
+  flex: 0 0 auto;
+  background: none;
+  border: none;
+  color: var(--muted, #9ca3af);
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+  padding: 2px 4px;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.conv-item:hover .conv-del,
+.conv-item .conv-del:focus {
+  opacity: 1;
+}
+.conv-item .conv-del:hover {
+  color: #ef4444;
+}
