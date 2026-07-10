@@ -30,7 +30,9 @@ def _apply_title(store, title_fn, conv_id: str, user_text: str) -> None:
         print(f"[sidecar] title apply failed: {e}", file=sys.stderr)
 
 
-def create_app(agent: Agent, workspace_manager=None, conversation_store=None, title_spawner=None) -> Flask:
+def create_app(agent: Agent, workspace_manager=None, conversation_store=None,
+               title_spawner=None, task_runtime=None, task_index=None,
+               task_run_store=None, task_runner=None, start_runner=True) -> Flask:
     app = Flask(__name__)
 
     # The Tauri WebView (origin http://127.0.0.1:1420 in dev, tauri://localhost in
@@ -48,6 +50,22 @@ def create_app(agent: Agent, workspace_manager=None, conversation_store=None, ti
     if title_spawner is None:
         def title_spawner(fn):
             threading.Thread(target=fn, daemon=True, name="conv-title").start()
+
+    if task_runtime is None:
+        from floodmind.agent.scheduled_task_runtime import get_scheduled_task_runtime
+        task_runtime = get_scheduled_task_runtime()
+    if task_index is None:
+        from .task_index import TaskIndex
+        from .workspace import _app_data_dir
+        task_index = TaskIndex(_app_data_dir())
+    if task_run_store is None:
+        from .task_run_store import TaskRunStore
+        from .workspace import _app_data_dir
+        task_run_store = TaskRunStore(_app_data_dir())
+    if task_runner is None and start_runner:
+        from .scheduled_runner import ScheduledRunner
+        task_runner = ScheduledRunner(task_runtime, task_index, task_run_store, agent)
+        task_runner.start()
 
     @app.get("/api/health")
     def health():
@@ -133,6 +151,94 @@ def create_app(agent: Agent, workspace_manager=None, conversation_store=None, ti
         if session_id is None:
             return jsonify({"error": "not found"}), 404
         return jsonify({"ok": True})
+
+    # ── Scheduled tasks ───────────────────────────────────────
+    @app.get("/api/scheduled-tasks")
+    def scheduled_tasks_list():
+        ws = request.args.get("workspace", "")
+        tasks = task_runtime.list_tasks("")
+        if ws:
+            index = task_index.all()
+            tasks = [t for t in tasks if index.get(t["id"]) == ws]
+        return jsonify({"tasks": tasks})
+
+    @app.post("/api/scheduled-tasks")
+    def scheduled_tasks_create():
+        body = request.get_json(silent=True) or {}
+        ws = body.get("workspace", "")
+        command = str(body.get("command", "")).strip()
+        repeat = str(body.get("repeat", "none")).strip().lower()
+        run_time = body.get("run_time", "")
+        scheduled_at = body.get("scheduled_at", "")
+        if not ws or not command:
+            return jsonify({"error": "workspace and command required"}), 400
+        if repeat == "daily" and not run_time:
+            return jsonify({"error": "daily tasks require run_time"}), 400
+        if repeat == "none" and not scheduled_at:
+            return jsonify({"error": "one-shot tasks require scheduled_at"}), 400
+        try:
+            import uuid
+            task = task_runtime.create_task(
+                session_id=uuid.uuid4().hex,
+                command=command,
+                repeat=repeat,
+                run_time=run_time,
+                scheduled_at=scheduled_at,
+                timezone=body.get("timezone", "Asia/Shanghai"),
+                enabled=bool(body.get("enabled", True)),
+            )
+        except Exception as e:
+            return jsonify({"error": str(e)}), 400
+        task_index.set(task["id"], ws)
+        return jsonify(task)
+
+    @app.get("/api/scheduled-tasks/<task_id>")
+    def scheduled_tasks_get(task_id):
+        task = task_runtime.get_task(task_id)
+        if not task:
+            return jsonify({"error": "not found"}), 404
+        return jsonify(task)
+
+    @app.patch("/api/scheduled-tasks/<task_id>")
+    def scheduled_tasks_update(task_id):
+        body = request.get_json(silent=True) or {}
+        updates = {k: body[k] for k in
+                   ("command", "enabled", "run_time", "scheduled_at", "repeat", "status")
+                   if k in body}
+        try:
+            task = task_runtime.update_task(task_id, **updates)
+        except Exception as e:
+            return jsonify({"error": str(e)}), 400
+        return jsonify({"task": task})
+
+    @app.delete("/api/scheduled-tasks/<task_id>")
+    def scheduled_tasks_delete(task_id):
+        try:
+            task_runtime.delete_task(task_id)
+        except Exception as e:
+            return jsonify({"error": str(e)}), 400
+        task_index.remove(task_id)
+        return jsonify({"ok": True})
+
+    @app.post("/api/scheduled-tasks/<task_id>/run")
+    def scheduled_tasks_run_now(task_id):
+        if task_runner is None:
+            return jsonify({"error": "runner not available"}), 503
+        run_id = task_runner.run_now(task_id)
+        if run_id is None:
+            return jsonify({"error": "task not runnable (missing, already running, or no workspace)"}), 409
+        return jsonify({"run_id": run_id})
+
+    @app.get("/api/scheduled-tasks/<task_id>/runs")
+    def scheduled_tasks_runs(task_id):
+        return jsonify({"runs": task_run_store.list(task_id)})
+
+    @app.get("/api/scheduled-tasks/<task_id>/runs/<run_id>")
+    def scheduled_tasks_run_detail(task_id, run_id):
+        run = task_run_store.get(task_id, run_id)
+        if run is None:
+            return jsonify({"error": "not found"}), 404
+        return jsonify(run)
 
     # ── Skills & MCP catalog (read-only browse) ────────────────
     # SDK imports are lazy + inside try/except so the endpoints degrade to an
