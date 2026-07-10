@@ -318,6 +318,12 @@ button:focus-visible,
   color: var(--muted);
   margin-left: 0.5rem;
   font-weight: 400;
+  animation: status-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes status-pulse {
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 1; }
 }
 
 .stream-cursor {
