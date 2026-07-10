@@ -4,8 +4,10 @@ import { useChatStore } from "../state/chat-store";
 import { useConversationStore } from "../state/conversation-store";
 import { useUiStore, type View } from "../state/ui-store";
 import { useWorkspaceStore, type FileEntry } from "../state/workspace-store";
+import { useScheduledTaskStore } from "../state/scheduled-task-store";
 import Logo from "./Logo";
 import WorkspaceFileTree from "./WorkspaceFileTree";
+import TaskEditModal from "./TaskEditModal";
 
 function FolderIcon() {
   return (
@@ -23,10 +25,8 @@ const NAV: { view: View; label: string }[] = [
 
 export default function Sidebar() {
   const current = useWorkspaceStore((s) => s.current);
-  const recent = useWorkspaceStore((s) => s.recent);
   const load = useWorkspaceStore((s) => s.load);
   const pickAndOpen = useWorkspaceStore((s) => s.pickAndOpen);
-  const openPath = useWorkspaceStore((s) => s.openPath);
   const listFiles = useWorkspaceStore((s) => s.listFiles);
   const streaming = useChatStore((s) => s.streaming);
   const conversationId = useChatStore((s) => s.conversationId);
@@ -38,7 +38,12 @@ export default function Sidebar() {
   const view = useUiStore((s) => s.view);
   const setView = useUiStore((s) => s.setView);
 
+  const tasks = useScheduledTaskStore((s) => s.tasks);
+  const loadTasks = useScheduledTaskStore((s) => s.load);
+  const setSelectedTaskId = useUiStore((s) => s.setSelectedTaskId);
+
   const [rootFiles, setRootFiles] = useState<FileEntry[] | null>(null);
+  const [taskModalOpen, setTaskModalOpen] = useState(false);
 
   useEffect(() => {
     load();
@@ -52,7 +57,9 @@ export default function Sidebar() {
     }
   }, [current?.path]);
 
-  const switchable = recent.filter((r) => !current || r.path !== current.path);
+  useEffect(() => {
+    if (current) loadTasks(current.path);
+  }, [current?.path]);
 
   return (
     <aside className="sidebar">
@@ -111,21 +118,23 @@ export default function Sidebar() {
         </div>
       )}
 
-      {/* 最近 — above 工作区 per user preference */}
-      {switchable.length > 0 && (
+      {current && (
         <div className="sidebar-section">
-          <div className="sidebar-label">最近</div>
-          {switchable.map((r) => (
+          <div className="sidebar-label">
+            定时任务
+            <button className="label-add" onClick={() => setTaskModalOpen(true)} type="button" title="新建定时任务">＋</button>
+          </div>
+          {tasks.length === 0 && <div className="tree-empty">暂无定时任务</div>}
+          {tasks.map((t) => (
             <button
-              key={r.path}
-              className="sidebar-item"
-              onClick={() => openPath(r.path)}
-              title={streaming ? "生成中，请稍候再切换工作区" : r.path}
+              key={t.id}
+              className="sidebar-item task-item"
+              onClick={() => { setSelectedTaskId(t.id); setView("tasks"); }}
+              title={t.command}
               type="button"
-              disabled={streaming}
             >
-              <FolderIcon />
-              <span className="item-name">{r.name}</span>
+              <span className={"task-dot task-" + t.status} aria-hidden="true" />
+              <span className="item-name">{t.command}</span>
             </button>
           ))}
         </div>
@@ -168,6 +177,10 @@ export default function Sidebar() {
           </button>
         ))}
       </div>
+
+      {taskModalOpen && current && (
+        <TaskEditModal workspace={current.path} editing={null} onClose={() => setTaskModalOpen(false)} />
+      )}
     </aside>
   );
 }
