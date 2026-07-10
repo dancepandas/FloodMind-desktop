@@ -1398,3 +1398,17 @@ button:focus-visible,
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .modal-actions .btn-primary { background: var(--accent, #0d9488); color: #fff; border: none; padding: 8px 14px; border-radius: 8px; cursor: pointer; }
 .modal-actions .btn-secondary { background: transparent; border: 1px solid var(--border, #e5e7eb); padding: 8px 14px; border-radius: 8px; cursor: pointer; }
+
+.tasks-view { padding: 16px 20px; overflow-y: auto; height: 100%; display: flex; flex-direction: column; gap: 12px; }
+.tasks-header { display: flex; align-items: center; gap: 12px; }
+.tasks-note { font-size: 12px; color: var(--muted, #9ca3af); }
+.task-detail-head { display: flex; flex-direction: column; gap: 6px; padding-bottom: 10px; border-bottom: 1px solid var(--border, #e5e7eb); }
+.task-detail-command { font-weight: 600; font-size: 15px; }
+.task-detail-meta { font-size: 13px; color: var(--muted, #6b7280); }
+.task-err { color: #ef4444; }
+.task-detail-actions { display: flex; gap: 8px; }
+.task-detail-actions .btn-primary { background: var(--accent, #0d9488); color: #fff; border: none; padding: 6px 12px; border-radius: 8px; cursor: pointer; }
+.task-detail-actions .btn-secondary { background: transparent; border: 1px solid var(--border, #e5e7eb); padding: 6px 12px; border-radius: 8px; cursor: pointer; }
+.task-runs, .task-run-transcript { display: flex; flex-direction: column; gap: 4px; }
+.task-artifacts { margin-top: 8px; }
+.task-artifact { font-family: var(--mono, monospace); font-size: 13px; padding: 2px 0; }
