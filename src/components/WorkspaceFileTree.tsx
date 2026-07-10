@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Tree, type NodeApi, type TreeApi } from "react-arborist";
+import { FileIcon } from "react-material-vscode-icons";
 import { useWorkspaceStore, type FileEntry } from "../state/workspace-store";
 
 type TreeNode = {
@@ -18,7 +19,9 @@ function Node({ node, style }: { node: NodeApi<TreeNode>; style: React.CSSProper
   const isDir = data.type === "dir";
   return (
     <div className={`tree-node ${isDir ? "" : "tree-leaf"}`} style={style} tabIndex={0}>
-      <span className="tree-node-icon">{isDir ? (node.isOpen ? "▾" : "▸") : " "}</span>
+      <span className="tree-node-icon">
+        <FileIcon fileName={data.name} isFolder={isDir} isExpanded={isDir && node.isOpen} size={16} />
+      </span>
       <span className="tree-node-name">{data.name}</span>
     </div>
   );
@@ -29,7 +32,6 @@ export default function WorkspaceFileTree({ rootFiles }: { rootFiles: FileEntry[
   const treeRef = useRef<TreeApi<TreeNode>>(null);
   const [data, setData] = useState<TreeNode[]>(() => buildRoot(rootFiles));
 
-  // Refresh when the root file list changes (workspace switch).
   useEffect(() => { setData(buildRoot(rootFiles)); }, [rootFiles]);
 
   const handleToggle = useCallback(
@@ -57,9 +59,9 @@ export default function WorkspaceFileTree({ rootFiles }: { rootFiles: FileEntry[
       data={data}
       onToggle={handleToggle}
       width="100%"
-      height={Math.max(180, Math.min(400, data.length * 24))}
-      indent={14}
-      rowHeight={24}
+      height={Math.max(200, Math.min(420, data.length * 28))}
+      indent={16}
+      rowHeight={28}
       disableDrag
       disableDrop
       disableEdit
@@ -70,7 +72,6 @@ export default function WorkspaceFileTree({ rootFiles }: { rootFiles: FileEntry[
   );
 }
 
-/** Immutable replace: set `children` on the node at `targetId` within the tree. */
 function replace(targetId: string, nodes: TreeNode[], children: TreeNode[]): TreeNode[] {
   return nodes.map((n) => {
     if (n.id === targetId) return { ...n, children };
