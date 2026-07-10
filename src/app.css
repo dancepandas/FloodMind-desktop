@@ -498,6 +498,17 @@ button:focus-visible,
   white-space: pre-wrap;
 }
 
+/* "已收起 N 个步骤" indicator during streaming */
+.steps-collapsed {
+  font-size: 11px;
+  color: var(--muted);
+  padding: 0.15rem 0.5rem;
+  margin-bottom: 0.35rem;
+  border-radius: 4px;
+  background: var(--surface-2);
+  display: inline-block;
+}
+
 /* tool row + detail */
 .tool-row {
   display: flex;

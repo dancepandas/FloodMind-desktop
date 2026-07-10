@@ -43,8 +43,21 @@ function TurnView({ turn, isLast, streaming }: { turn: Msg; isLast: boolean; str
     );
   }
 
-  // The last block of an in-progress turn is the live tail (expanded).
-  const liveIdx = isLast && streaming && !turn.done ? turn.blocks.length - 1 : -1;
+  // During execution, only show the latest cycle (from the last thinking block
+  // onward). Everything before that is fully hidden — the user sees a single
+  // live step, not a growing list of collapsed chips.
+  let startIdx = 0;
+  if (isLast && streaming && !turn.done && turn.blocks.length > 1) {
+    for (let i = turn.blocks.length - 1; i >= 0; i--) {
+      if (turn.blocks[i].kind === "thinking") {
+        startIdx = i;
+        break;
+      }
+    }
+  }
+  const visible = startIdx > 0 ? turn.blocks.slice(startIdx) : turn.blocks;
+  const hiddenCount = startIdx;
+  const liveIdx = isLast && streaming && !turn.done ? visible.length - 1 : -1;
 
   return (
     <div className="turn assistant-turn">
@@ -53,9 +66,13 @@ function TurnView({ turn, isLast, streaming }: { turn: Msg; isLast: boolean; str
         <span className="assistant-name">FloodMind</span>
       </div>
 
+      {hiddenCount > 0 && (
+        <div className="steps-collapsed">已收起 {hiddenCount} 个步骤</div>
+      )}
+
       {turn.blocks.length === 0 && !turn.done && <div className="thinking-body">…</div>}
 
-      {turn.blocks.map((b: Block, j: number) => (
+      {visible.map((b: Block, j: number) => (
         <BlockView key={b.id} block={b} isLive={j === liveIdx} />
       ))}
 
