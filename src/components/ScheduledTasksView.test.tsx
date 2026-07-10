@@ -27,14 +27,12 @@ vi.mock("../state/scheduled-task-store", () => ({
 }));
 
 const setViewMock = vi.fn();
-const setSelectedTaskIdMock = vi.fn();
 let selectedTaskId: string | null = null;
 
 vi.mock("../state/ui-store", () => ({
   useUiStore: (selector: (s: any) => any) =>
     selector({
       selectedTaskId,
-      setSelectedTaskId: setSelectedTaskIdMock,
       setView: setViewMock,
     }),
 }));

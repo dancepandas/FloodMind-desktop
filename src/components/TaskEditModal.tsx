@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useScheduledTaskStore, type SchedTask, type TaskCreateBody } from "../state/scheduled-task-store";
+import { useScheduledTaskStore, type SchedTask } from "../state/scheduled-task-store";
 
 interface Props {
   workspace: string;
@@ -23,13 +23,12 @@ export default function TaskEditModal({ workspace, editing, onClose }: Props) {
     if (!command.trim()) return setError("请填写任务描述");
     if (repeat === "daily" && !runTime) return setError("每日任务需要运行时间");
     if (repeat === "none" && !scheduledAt) return setError("一次性任务需要执行时间");
-    if (editing) {
-      await update(editing.id, { command, repeat, run_time: runTime, scheduled_at: scheduledAt, enabled });
-    } else {
-      const body: TaskCreateBody = { workspace, command, repeat, enabled };
-      if (repeat === "daily") body.run_time = runTime;
-      else body.scheduled_at = scheduledAt;
-      await create(body);
+    const result = editing
+      ? await update(editing.id, { command, repeat, run_time: runTime, scheduled_at: scheduledAt, enabled })
+      : await create({ workspace, command, repeat, enabled, ...(repeat === "daily" ? { run_time: runTime } : { scheduled_at: scheduledAt }) });
+    if (!result) {
+      setError("保存失败，请检查网络或输入");
+      return;
     }
     onClose();
   }

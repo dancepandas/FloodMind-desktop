@@ -61,7 +61,7 @@ describe("TaskEditModal", () => {
     expect(html).toContain('value="08:30"');
   });
 
-  it("shows daily time input when daily is selected", () => {
+  it("does not show daily time input in default one-shot create mode", () => {
     const html = render({ workspace: "/ws/A", editing: null });
     // Default is one-shot, so daily time input should not appear.
     expect(html).toContain("datetime-local");
