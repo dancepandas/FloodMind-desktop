@@ -142,7 +142,8 @@ describe("chat-store.send", () => {
   });
 
   it("reset clears local turns without a sidecar call", () => {
-    const fetchMock = vi.fn();
+    const fetchMock = vi.fn(async () => new Response("{}", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
     useChatStore.setState({
       turns: [{ role: "user", content: "x" }, { role: "assistant", blocks: [], usage: null, done: true }],
       streaming: false,
@@ -150,6 +151,7 @@ describe("chat-store.send", () => {
     useChatStore.getState().reset();
     expect(useChatStore.getState().turns).toEqual([]);
     expect(fetchMock).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
   });
 
   it("startNew creates a conversation, clears turns, sets conversationId", async () => {

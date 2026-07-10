@@ -275,7 +275,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       turns: [],
       streaming: false,
       abortController: null,
-      conversationId: conv ? conv.id : get().conversationId,
+      conversationId: conv ? conv.id : null,
     });
     await useConversationStore.getState().loadList(workspace);
   },
