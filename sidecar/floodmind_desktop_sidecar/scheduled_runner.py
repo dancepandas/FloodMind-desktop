@@ -9,16 +9,26 @@ from __future__ import annotations
 
 import threading
 import uuid
-from datetime import datetime
-from typing import Callable, Optional
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 
 def _now_iso() -> str:
-    return datetime.now().replace(microsecond=0).isoformat()
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
 def _due_tasks(tasks: list[dict], now_iso: str) -> list[dict]:
-    """Enabled, past-due, not-currently-running tasks (ISO next_run_at <= now)."""
+    """Enabled, past-due, not-currently-running tasks (next_run_at <= now).
+
+    `next_run_at` is produced by the SDK in the task's `timezone`. `now_iso`
+    is UTC. Both are normalized to UTC before comparison so the runner fires at
+    the correct wall-clock time regardless of the system timezone.
+    """
+    now = datetime.fromisoformat(now_iso)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    now_utc = now.astimezone(timezone.utc)
+
     out = []
     for t in tasks:
         if not t.get("enabled", True):
@@ -26,13 +36,28 @@ def _due_tasks(tasks: list[dict], now_iso: str) -> list[dict]:
         if t.get("status") == "running":
             continue
         nr = str(t.get("next_run_at") or "").strip()
-        if nr and nr <= now_iso:
+        if not nr:
+            continue
+        try:
+            next_run = datetime.fromisoformat(nr)
+        except ValueError:
+            continue
+        tz_name = t.get("timezone") or "UTC"
+        try:
+            tz = ZoneInfo(tz_name)
+        except Exception:
+            tz = timezone.utc
+        if next_run.tzinfo is None:
+            next_run = next_run.replace(tzinfo=tz)
+        if next_run.tzinfo != timezone.utc:
+            next_run = next_run.astimezone(timezone.utc)
+        if next_run <= now_utc:
             out.append(t)
     return out
 
 
 def _execute_task(runtime, run_store, agent, task: dict, workspace_path: str,
-                  run_id: Optional[str] = None) -> dict:
+                  run_id: str | None = None) -> dict:
     """Run one task synchronously: record run, run_headless, complete_task, finalize.
 
     The caller is responsible for having claimed the task (status='running').
@@ -80,7 +105,7 @@ class ScheduledRunner:
         self._agent = agent
         self._poll_seconds = poll_seconds
         self._stop = threading.Event()
-        self._thread: Optional[threading.Thread] = None
+        self._thread: threading.Thread | None = None
 
     def start(self) -> None:
         # Reclaim tasks stuck in 'running' from a prior sidecar crash.
@@ -127,7 +152,7 @@ class ScheduledRunner:
                 name=f"task-{task['id'][:8]}",
             ).start()
 
-    def run_now(self, task_id: str) -> Optional[str]:
+    def run_now(self, task_id: str) -> str | None:
         """Trigger a task immediately. Returns run_id, or None if not runnable."""
         task = self._runtime.get_task(task_id)
         if not task or task.get("status") == "running":

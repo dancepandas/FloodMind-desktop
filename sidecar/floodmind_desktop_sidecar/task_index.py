@@ -32,7 +32,8 @@ class TaskIndex:
             self._save(data)
 
     def get(self, task_id: str) -> str | None:
-        return self._load().get(task_id)
+        with self._lock:
+            return self._load().get(task_id)
 
     def remove(self, task_id: str) -> None:
         with self._lock:
@@ -42,4 +43,5 @@ class TaskIndex:
                 self._save(data)
 
     def all(self) -> dict:
-        return self._load()
+        with self._lock:
+            return self._load()

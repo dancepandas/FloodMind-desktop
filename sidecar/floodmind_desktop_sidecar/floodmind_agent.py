@@ -198,25 +198,28 @@ class FloodMindAgent:
                   file=sys.stderr)
 
     # ── artifact detection (output-dir diff) ───────────────────
-    def _snapshot_outputs(self) -> dict[str, float]:
-        if not self._output_dir:
+    def _snapshot_outputs(self, output_dir: str | None = None) -> dict[str, float]:
+        output_dir = output_dir or getattr(self, "_output_dir", None)
+        if not output_dir:
             return {}
         try:
             return {
-                f: os.path.getmtime(os.path.join(self._output_dir, f))
-                for f in os.listdir(self._output_dir)
+                f: os.path.getmtime(os.path.join(output_dir, f))
+                for f in os.listdir(output_dir)
             }
         except OSError:
             return {}
 
-    def _diff_outputs(self, before: dict[str, float]) -> Iterator[dict]:
+    def _diff_outputs(self, before: dict[str, float],
+                      output_dir: str | None = None) -> Iterator[dict]:
         """Yield one artifact event per file added to the output dir since `before`."""
-        if not self._output_dir:
+        output_dir = output_dir or getattr(self, "_output_dir", None)
+        if not output_dir:
             return
         try:
             now = {
-                f: os.path.getmtime(os.path.join(self._output_dir, f))
-                for f in os.listdir(self._output_dir)
+                f: os.path.getmtime(os.path.join(output_dir, f))
+                for f in os.listdir(output_dir)
             }
         except OSError:
             return
@@ -228,7 +231,7 @@ class FloodMindAgent:
                 "kind": kind,
                 "name": name,
                 # Absolute path — desktop can later "open in system app".
-                "path": os.path.join(self._output_dir, name),
+                "path": os.path.join(output_dir, name),
             }
 
     # ── permission: unblock ASK-policy tools without a UI round-trip ──
@@ -331,12 +334,14 @@ class FloodMindAgent:
         except Exception as e:
             print(f"[sidecar] activate_conversation failed for {session_id}: {e}", file=sys.stderr)
 
-    def _set_workspace_for(self, workspace_path: str) -> None:
+    def _set_workspace_for(self, workspace_path: str) -> str | None:
         """Inject `workspace_path` into the CURRENT thread's contextvars.
 
         Mirrors _set_workspace but for an explicit path (used by run_headless so
         a background task runs in its own workspace without disturbing the
         foreground conversation's contextvars, which are per-thread).
+
+        Returns the resolved output directory, or None if workspace setup failed.
         """
         from .workspace import _app_data_dir, session_id_for
         try:
@@ -354,9 +359,12 @@ class FloodMindAgent:
                 sandbox_strategy="user_dir",
             )
             set_workspace(ws.ensure())
-            set_session_context(sid, output_dir=str(ws.user_dir))
+            output_dir = str(ws.user_dir)
+            set_session_context(sid, output_dir=output_dir)
+            return output_dir
         except Exception as e:
             print(f"[sidecar] _set_workspace_for failed for {workspace_path}: {e}", file=sys.stderr)
+            return None
 
     def run_headless(self, session_id: str, workspace_path: str, command: str):
         """Execute `command` in an isolated background session.
@@ -370,9 +378,10 @@ class FloodMindAgent:
         artifacts: list[dict] = []
         final_text = ""
         try:
-            self._set_workspace_for(workspace_path)
+            output_dir = self._set_workspace_for(workspace_path)
             sid, persist_dir = self._memory_target(session_id)
             agent = self._build_agent(sid, persist_dir)
+            before = self._snapshot_outputs(output_dir)
             for raw in agent.stream(command):
                 for ev in translate_event(raw):
                     if ev.get("type") == "done":
@@ -386,6 +395,15 @@ class FloodMindAgent:
                         )
                     elif ev.get("type") == "text":
                         final_text += ev.get("content", "")
+            # The SDK does not reliably emit file_generated/image_generated to
+            # stream consumers, so diff the output dir the same way stream() does.
+            for ev in self._diff_outputs(before, output_dir):
+                events.append(ev)
+                artifacts.append(
+                    {"kind": ev.get("kind", "file"),
+                     "name": ev.get("name", ""),
+                     "path": ev.get("path", "")}
+                )
         except Exception as e:
             events.append({"type": "error", "content": f"后台执行出错：{e}"})
         return events, artifacts, final_text

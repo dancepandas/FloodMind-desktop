@@ -39,14 +39,15 @@ class TaskRunStore:
     def list(self, task_id: str) -> list[dict]:
         out = []
         d = self._root / task_id
-        if not d.exists():
-            return []
-        for p in d.glob("*.json"):
-            try:
-                rec = json.loads(p.read_text(encoding="utf-8"))
-            except Exception:
-                continue
-            out.append(rec)
+        with self._lock:
+            if not d.exists():
+                return []
+            for p in d.glob("*.json"):
+                try:
+                    rec = json.loads(p.read_text(encoding="utf-8"))
+                except Exception:
+                    continue
+                out.append(rec)
         out.sort(key=lambda r: r.get("started_at", ""), reverse=True)
         return [
             {
@@ -59,9 +60,10 @@ class TaskRunStore:
         ]
 
     def get(self, task_id: str, run_id: str) -> dict | None:
-        try:
-            return json.loads(self._path(task_id, run_id).read_text(encoding="utf-8"))
-        except FileNotFoundError:
-            return None
-        except Exception:
-            return None
+        with self._lock:
+            try:
+                return json.loads(self._path(task_id, run_id).read_text(encoding="utf-8"))
+            except FileNotFoundError:
+                return None
+            except Exception:
+                return None

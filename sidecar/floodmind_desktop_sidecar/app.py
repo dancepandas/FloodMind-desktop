@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sys
 import threading
+import uuid
 from pathlib import Path
 
 from flask import Flask, Response, jsonify, request
@@ -177,7 +178,6 @@ def create_app(agent: Agent, workspace_manager=None, conversation_store=None,
         if repeat == "none" and not scheduled_at:
             return jsonify({"error": "one-shot tasks require scheduled_at"}), 400
         try:
-            import uuid
             task = task_runtime.create_task(
                 session_id=uuid.uuid4().hex,
                 command=command,
@@ -203,7 +203,7 @@ def create_app(agent: Agent, workspace_manager=None, conversation_store=None,
     def scheduled_tasks_update(task_id):
         body = request.get_json(silent=True) or {}
         updates = {k: body[k] for k in
-                   ("command", "enabled", "run_time", "scheduled_at", "repeat", "status")
+                   ("command", "enabled", "run_time", "scheduled_at", "repeat")
                    if k in body}
         try:
             task = task_runtime.update_task(task_id, **updates)
