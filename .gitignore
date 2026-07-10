@@ -31,3 +31,7 @@ __pycache__/
 
 # local research artifacts (not part of the project)
 research/
+
+# stray reference screenshots pasted at the repo root (never source)
+/codex.png
+/截图*.png
