@@ -3,6 +3,7 @@ import { useChatStore } from "../state/chat-store";
 import { useUiStore, type View } from "../state/ui-store";
 import { useWorkspaceStore, type FileEntry } from "../state/workspace-store";
 import Logo from "./Logo";
+import WorkspaceFileTree from "./WorkspaceFileTree";
 
 const NAV: { view: View; label: string }[] = [
   { view: "skills", label: "Skills" },
@@ -10,47 +11,6 @@ const NAV: { view: View; label: string }[] = [
   { view: "settings", label: "设置" },
 ];
 
-/* ── lazy file tree ──────────────────────────────────────── */
-function TreeEntry({ entry }: { entry: FileEntry }) {
-  const listFiles = useWorkspaceStore((s) => s.listFiles);
-  const [expanded, setExpanded] = useState(false);
-  const [children, setChildren] = useState<FileEntry[] | null>(null);
-  const isDir = entry.type === "dir";
-
-  async function toggle() {
-    if (!isDir) return;
-    if (!expanded) {
-      if (!children) {
-        const c = await listFiles(entry.path);
-        setChildren(c);
-      }
-      setExpanded(true);
-    } else {
-      setExpanded(false);
-    }
-  }
-
-  return (
-    <li>
-      <button className="tree-entry" onClick={toggle} title={entry.path} type="button">
-        <span className="tree-caret">{isDir ? (expanded ? "▾" : "▸") : " "}</span>
-        <span className="tree-name">{isDir ? `${entry.name}/` : entry.name}</span>
-      </button>
-      {isDir && expanded && children && children.length > 0 && (
-        <ul className="tree-children">
-          {children.map((c) => (
-            <TreeEntry key={c.path} entry={c} />
-          ))}
-        </ul>
-      )}
-      {isDir && expanded && children && children.length === 0 && (
-        <div className="tree-empty">（空）</div>
-      )}
-    </li>
-  );
-}
-
-/* ── Sidebar ──────────────────────────────────────────────── */
 export default function Sidebar() {
   const current = useWorkspaceStore((s) => s.current);
   const recent = useWorkspaceStore((s) => s.recent);
@@ -63,14 +23,12 @@ export default function Sidebar() {
   const view = useUiStore((s) => s.view);
   const setView = useUiStore((s) => s.setView);
 
-  // root entries for the workspace file tree
   const [rootFiles, setRootFiles] = useState<FileEntry[] | null>(null);
 
   useEffect(() => {
     load();
   }, [load]);
 
-  // reload the file tree whenever the workspace changes
   useEffect(() => {
     if (current) {
       listFiles(".").then(setRootFiles);
@@ -126,13 +84,11 @@ export default function Sidebar() {
           <span className="item-name">{current ? current.name : "打开工作区…"}</span>
         </button>
 
-        {/* file tree under the workspace */}
+        {/* react-arborist file tree */}
         {current && rootFiles && rootFiles.length > 0 && (
-          <ul className="tree-root">
-            {rootFiles.map((f) => (
-              <TreeEntry key={f.path} entry={f} />
-            ))}
-          </ul>
+          <div className="sidebar-tree">
+            <WorkspaceFileTree rootFiles={rootFiles} />
+          </div>
         )}
         {current && rootFiles && rootFiles.length === 0 && (
           <div className="tree-empty">工作区为空</div>
