@@ -317,6 +317,47 @@ class FloodMindAgent:
             print(f"[sidecar] reload_model failed: {e}", file=sys.stderr)
             return False
 
+    def activate_conversation(self, session_id: str) -> None:
+        """Rebuild the SDK agent bound to this conversation's session_id.
+
+        Reuses _build_agent + _memory_target so the conversation's DualMemory chat
+        history is loaded from its own persist_dir. The experience library and
+        long-term memory stay global (see docs/memory-model). A fresh agent also
+        means an in-flight stream holding the old agent is untouched.
+        """
+        try:
+            sid, persist_dir = self._memory_target(session_id)
+            self._agent = self._build_agent(sid, persist_dir)
+        except Exception as e:
+            print(f"[sidecar] activate_conversation failed for {session_id}: {e}", file=sys.stderr)
+
+    def generate_title(self, message: str) -> str:
+        """LLM-generate a short Chinese title (mirrors the SDK server-layer prompt).
+
+        Uses a dedicated low-temperature ModelClient; '' on any failure so callers
+        can keep a fallback title.
+        """
+        import re
+        try:
+            from floodmind.agent.native.model_client import ModelClient
+
+            llm = ModelClient.from_settings(temperature=0.2, max_tokens=60, enable_thinking=False)
+            prompt = (
+                "请根据用户问题拟一个简短的中文会话标题，用于左侧历史会话列表展示。"
+                "要求：10到18个字，突出任务目标，不要带引号，不要解释，不要句号。\n\n"
+                f"用户问题：{message}"
+            )
+            result = llm.invoke(prompt)
+            if result is None or not hasattr(result, "content"):
+                return ""
+            raw = (getattr(result, "content", "") or "").strip()
+            title = raw.splitlines()[0].strip().strip('"""')
+            title = re.sub(r"^[#\-*\d.\s]+", "", title).strip()
+            return title[:24] if title else ""
+        except Exception as e:
+            print(f"[sidecar] generate_title failed: {e}", file=sys.stderr)
+            return ""
+
     # ── main entry ─────────────────────────────────────────────
     def stream(self, messages: list[Message]) -> Iterator[dict]:
         user_text = messages[-1]["content"] if messages else ""

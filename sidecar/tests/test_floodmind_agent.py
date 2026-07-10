@@ -189,3 +189,76 @@ def test_stream_surfaces_artifacts_via_output_dir_diff(tmp_path, monkeypatch):
     assert "text" in types
     assert any(e["type"] == "artifact" and e["name"] == "result.xlsx" for e in events)
     assert types[-1] == "done"
+
+
+def test_activate_conversation_rebuilds_with_session_id(tmp_path, monkeypatch):
+    # _memory_target uses _app_data_dir() == cwd.
+    monkeypatch.chdir(tmp_path)
+    from floodmind_desktop_sidecar.floodmind_agent import FloodMindAgent
+
+    built = []
+    a = FloodMindAgent.__new__(FloodMindAgent)
+    a._build_agent = lambda sid, pd: built.append((sid, pd)) or ("AGENT", sid, pd)
+
+    a.activate_conversation("sess-xyz")
+
+    assert built == [("sess-xyz", str(tmp_path / "sess-xyz" / "memory"))]
+    assert a._agent == ("AGENT", "sess-xyz", str(tmp_path / "sess-xyz" / "memory"))
+
+
+def test_activate_conversation_swallows_errors(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    from floodmind_desktop_sidecar.floodmind_agent import FloodMindAgent
+
+    a = FloodMindAgent.__new__(FloodMindAgent)
+    a._agent = "ORIGINAL"
+    a._build_agent = lambda sid, pd: (_ for _ in ()).throw(RuntimeError("nope"))
+
+    a.activate_conversation("sess-1")     # must not raise
+    assert a._agent == "ORIGINAL"         # left untouched on failure
+
+
+def test_generate_title_invokes_llm_and_cleans_output(monkeypatch):
+    import importlib
+    from floodmind_desktop_sidecar.floodmind_agent import FloodMindAgent
+
+    class FakeResult:
+        content = "  1. 帮我画个销售折线图\nignore me"
+
+    class FakeMC:
+        last_prompt = None
+
+        @classmethod
+        def from_settings(cls, **kw):
+            cls.last_kwargs = kw
+            llm = type("L", (), {"invoke": lambda self, p: setattr(FakeMC, "last_prompt", p) or FakeResult()})()
+            return llm
+
+    monkeypatch.setattr(
+        importlib.import_module("floodmind.agent.native.model_client"), "ModelClient", FakeMC
+    )
+
+    a = FloodMindAgent.__new__(FloodMindAgent)
+    title = a.generate_title("帮我画个销售折线图")
+
+    assert title == "帮我画个销售折线图"           # leading "1. " stripped, trailing line dropped, ≤24
+    assert FakeMC.last_kwargs["temperature"] == 0.2
+    assert FakeMC.last_kwargs["max_tokens"] == 60
+    assert FakeMC.last_kwargs["enable_thinking"] is False
+    assert "销售折线图" in FakeMC.last_prompt
+
+
+def test_generate_title_returns_empty_on_failure(monkeypatch):
+    import importlib
+    from floodmind_desktop_sidecar.floodmind_agent import FloodMindAgent
+
+    class FakeMC:
+        @classmethod
+        def from_settings(cls, **kw):
+            raise RuntimeError("llm down")
+
+    monkeypatch.setattr(
+        importlib.import_module("floodmind.agent.native.model_client"), "ModelClient", FakeMC
+    )
+    a = FloodMindAgent.__new__(FloodMindAgent)
+    assert a.generate_title("anything") == ""    # swallowed, not raised

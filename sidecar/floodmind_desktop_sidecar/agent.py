@@ -31,6 +31,14 @@ class Agent(Protocol):
         """
         ...
 
+    def activate_conversation(self, session_id: str) -> None:
+        """Rebuild the agent bound to this conversation's session_id (memory isolation)."""
+        ...
+
+    def generate_title(self, message: str) -> str:
+        """Return a short LLM-generated title for the conversation, or '' on failure."""
+        ...
+
 
 class StubAgent:
     """Deterministic stub used until the real FloodMind agent is wired in."""
@@ -52,3 +60,9 @@ class StubAgent:
 
     def reload_model(self) -> bool:
         return True
+
+    def activate_conversation(self, session_id: str) -> None:
+        pass
+
+    def generate_title(self, message: str) -> str:
+        return ""
