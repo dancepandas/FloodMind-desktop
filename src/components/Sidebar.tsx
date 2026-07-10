@@ -28,7 +28,6 @@ export default function Sidebar() {
   const pickAndOpen = useWorkspaceStore((s) => s.pickAndOpen);
   const openPath = useWorkspaceStore((s) => s.openPath);
   const listFiles = useWorkspaceStore((s) => s.listFiles);
-  const reset = useChatStore((s) => s.reset);
   const streaming = useChatStore((s) => s.streaming);
   const conversationId = useChatStore((s) => s.conversationId);
   const startNew = useChatStore((s) => s.startNew);

@@ -17,9 +17,11 @@ export default function App() {
 
   useEffect(() => {
     if (!currentPath) return;
+    let stale = false;
     // On workspace change: load its conversations and ensure one is active+loaded.
     (async () => {
       const items = await useConversationStore.getState().loadList(currentPath);
+      if (stale) return;             // workspace switched while loading — abandon
       const active = items.find((i) => i.active);
       if (active) {
         await useChatStore.getState().loadConversation(active.id);
@@ -29,6 +31,7 @@ export default function App() {
         await useChatStore.getState().startNew(currentPath);
       }
     })();
+    return () => { stale = true; };
   }, [currentPath]);
 
   return (
