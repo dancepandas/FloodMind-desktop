@@ -27,6 +27,24 @@ from typing import Iterator
 
 from .agent import Message
 
+# The SDK's ToolExecutionService runs tool functions in a ThreadPoolExecutor but
+# does not copy contextvars into the worker thread. On the desktop we rely on
+# SESSION_CONTEXT (output_dir/session_id) and the workspace contextvar being
+# visible inside tools; without this patch the agent falls back to
+# data/sessions/<id>/outputs instead of the user's workspace. Monkey-patch the
+# executor class so every submit carries the caller's contextvars into the worker.
+import concurrent.futures
+import contextvars
+
+
+class _ContextAwareThreadPoolExecutor(concurrent.futures.ThreadPoolExecutor):
+    def submit(self, fn, /, *args, **kwargs):
+        ctx = contextvars.copy_context()
+        return super().submit(ctx.run, fn, *args, **kwargs)
+
+
+concurrent.futures.ThreadPoolExecutor = _ContextAwareThreadPoolExecutor
+
 
 _IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp")
 
@@ -137,6 +155,25 @@ class FloodMindAgent:
             llm=self._llm,
             context_window=32768,
         )
+
+        # Desktop has an explicit workspace; tell the agent to search the whole
+        # tree, not just the output/upload directory roots highlighted by the SDK
+        # default system prompt.
+        workspace_path = (
+            self._workspace_manager.current_path()
+            if self._workspace_manager else None
+        )
+        if workspace_path:
+            system_prompt = (
+                "你是一个智能助手，使用可用工具帮助用户完成任务。\n"
+                f"当前工作区是：{workspace_path}\n"
+                "用户提到的文件、数据或附件可能位于工作区的任何子目录中。"
+                "搜索文件时，请以该工作区根目录为 path 参数进行递归搜索（例如 Glob 的 "
+                f"path='{workspace_path}', pattern='**/*.xlsx'），不要只搜索输出目录或上传目录的根。"
+            )
+        else:
+            system_prompt = "你是一个智能助手，使用可用工具帮助用户完成任务。"
+
         return create_flood_agent(
             llm_service=self._llm,
             memory=memory,
@@ -145,6 +182,7 @@ class FloodMindAgent:
             max_iterations=50,
             enable_reasoning=bool(m.get("enableReasoning", False)),
             enable_search=bool(m.get("enableSearch", False)),
+            system_prompt=system_prompt,
         )
 
     @staticmethod

@@ -27,6 +27,15 @@ def main() -> None:
     args = parser.parse_args()
 
     port = args.port if args.port is not None else find_free_port()
+
+    # Ensure subprocesses spawned by the SDK (exec_bash / skill scripts) use the
+    # same Python interpreter as this sidecar. The Tauri launch sets
+    # FLOODMIND_PYTHON, but the inherited PATH may still resolve 'python' to a
+    # different interpreter (e.g. C:\Python314); prepending the sidecar's own
+    # Python directory fixes that.
+    sidecar_python_dir = os.path.dirname(os.path.abspath(sys.executable))
+    os.environ["PATH"] = sidecar_python_dir + os.pathsep + os.environ.get("PATH", "")
+
     workspace_manager = WorkspaceManager()
     app = create_app(
         FloodMindAgent(workspace_manager=workspace_manager),
