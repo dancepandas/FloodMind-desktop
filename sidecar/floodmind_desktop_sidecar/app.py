@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import sys
+import threading
 from pathlib import Path
 
 from flask import Flask, Response, jsonify, request
@@ -10,7 +12,25 @@ from .agent import Agent, Message
 from . import __version__
 
 
-def create_app(agent: Agent, workspace_manager=None) -> Flask:
+def _first_user_text(turns: list) -> str:
+    """First user-message content in a turn pair (for title generation)."""
+    for t in turns or []:
+        if isinstance(t, dict) and t.get("role") == "user":
+            return str(t.get("content", ""))
+    return ""
+
+
+def _apply_title(store, title_fn, conv_id: str, user_text: str) -> None:
+    """Call title_fn(user_text); on a non-empty result, persist it. Swallows errors."""
+    try:
+        title = title_fn(user_text)
+        if title:
+            store.update_title(conv_id, title)
+    except Exception as e:  # pragma: no cover - defensive
+        print(f"[sidecar] title apply failed: {e}", file=sys.stderr)
+
+
+def create_app(agent: Agent, workspace_manager=None, conversation_store=None, title_spawner=None) -> Flask:
     app = Flask(__name__)
 
     # The Tauri WebView (origin http://127.0.0.1:1420 in dev, tauri://localhost in
@@ -20,6 +40,14 @@ def create_app(agent: Agent, workspace_manager=None) -> Flask:
     # so a wildcard is acceptable here; Plan 5 should restrict to the Tauri origin
     # or switch to tauri-plugin-http (requests via Rust, no CORS at all).
     CORS(app, resources={r"/api/*": {"origins": "*"}})
+
+    if conversation_store is None:
+        from .workspace import _app_data_dir
+        from .conversation_store import ConversationStore
+        conversation_store = ConversationStore(_app_data_dir())
+    if title_spawner is None:
+        def title_spawner(fn):
+            threading.Thread(target=fn, daemon=True, name="conv-title").start()
 
     @app.get("/api/health")
     def health():
@@ -45,6 +73,65 @@ def create_app(agent: Agent, workspace_manager=None) -> Flask:
             agent.clear_memory()
         except Exception as e:  # pragma: no cover - defensive
             return jsonify({"ok": False, "error": str(e)}), 500
+        return jsonify({"ok": True})
+
+    # ── Conversations (per-workspace history) ─────────────────
+    @app.get("/api/conversations")
+    def conversations_list():
+        ws = request.args.get("workspace", "")
+        return jsonify({"conversations": conversation_store.list(ws)})
+
+    @app.post("/api/conversations")
+    def conversations_create():
+        body = request.get_json(silent=True) or {}
+        ws = body.get("workspace", "")
+        if not ws:
+            return jsonify({"error": "workspace required"}), 400
+        rec = conversation_store.create(ws)
+        try:
+            agent.activate_conversation(rec["session_id"])
+        except Exception as e:  # pragma: no cover - defensive
+            app.logger.warning("activate_conversation failed: %s", e)
+        return jsonify(rec)
+
+    @app.get("/api/conversations/<conv_id>")
+    def conversations_get(conv_id):
+        rec = conversation_store.get(conv_id)
+        if rec is None:
+            return jsonify({"error": "not found"}), 404
+        return jsonify(rec)
+
+    @app.post("/api/conversations/<conv_id>/activate")
+    def conversations_activate(conv_id):
+        rec = conversation_store.get(conv_id)
+        if rec is None:
+            return jsonify({"error": "not found"}), 404
+        try:
+            agent.activate_conversation(rec["session_id"])
+            conversation_store.set_active(rec["workspace"], conv_id)
+        except Exception as e:  # pragma: no cover - defensive
+            app.logger.warning("activate failed: %s", e)
+        return jsonify({"ok": True})
+
+    @app.post("/api/conversations/<conv_id>/turns")
+    def conversations_append_turns(conv_id):
+        body = request.get_json(silent=True) or {}
+        turns = body.get("turns") or []
+        rec = conversation_store.append_turns(conv_id, turns)
+        if rec is None:
+            return jsonify({"error": "not found"}), 404
+        # First-turn background title generation: nothing was persisted before this append.
+        if len(rec.get("turns", [])) <= len(turns):
+            user_text = _first_user_text(turns)
+            if user_text:
+                title_spawner(lambda: _apply_title(conversation_store, agent.generate_title, conv_id, user_text))
+        return jsonify({"ok": True})
+
+    @app.delete("/api/conversations/<conv_id>")
+    def conversations_delete(conv_id):
+        session_id = conversation_store.delete(conv_id)
+        if session_id is None:
+            return jsonify({"error": "not found"}), 404
         return jsonify({"ok": True})
 
     # ── Skills & MCP catalog (read-only browse) ────────────────
