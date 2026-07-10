@@ -262,3 +262,48 @@ def test_generate_title_returns_empty_on_failure(monkeypatch):
     )
     a = FloodMindAgent.__new__(FloodMindAgent)
     assert a.generate_title("anything") == ""    # swallowed, not raised
+
+
+def test_run_headless_collects_events_artifacts_final_text(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)            # _app_data_dir() == cwd
+    from floodmind_desktop_sidecar.floodmind_agent import FloodMindAgent
+
+    class FakeAgent:
+        def stream(self, command):         # fresh agent .stream takes a string
+            yield {"type": "answer_delta", "content": "Hello "}
+            yield {"type": "answer_delta", "content": "world"}
+            yield {"type": "file_generated", "filename": "r.xlsx", "download_url": "/o/r.xlsx"}
+
+    a = FloodMindAgent.__new__(FloodMindAgent)
+    a._agent = "FOREGROUND_AGENT"          # must be left untouched
+    a._build_agent = lambda sid, pd: FakeAgent()
+    a._set_workspace_for = lambda path: None     # stubbed — no SDK workspace setup
+
+    events, artifacts, final_text = a.run_headless("sess-x", "/ws/A", "do the thing")
+
+    assert a._agent == "FOREGROUND_AGENT"                # foreground untouched
+    assert final_text == "Hello world"
+    assert any(e["type"] == "text" for e in events)
+    assert any(e["type"] == "artifact" and e["name"] == "r.xlsx" for e in events)
+    assert artifacts == [{"kind": "file", "name": "r.xlsx", "path": "/o/r.xlsx"}]
+    # no 'done' event in the collected list (terminal event is dropped)
+    assert all(e.get("type") != "done" for e in events)
+
+
+def test_run_headless_swallows_errors_into_an_error_event(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    from floodmind_desktop_sidecar.floodmind_agent import FloodMindAgent
+
+    class BoomAgent:
+        def stream(self, command):
+            yield {"type": "answer_delta", "content": "partial"}
+            raise RuntimeError("boom")
+
+    a = FloodMindAgent.__new__(FloodMindAgent)
+    a._agent = "FOREGROUND_AGENT"
+    a._build_agent = lambda sid, pd: BoomAgent()
+    a._set_workspace_for = lambda path: None
+
+    events, artifacts, final_text = a.run_headless("sess-x", "/ws/A", "go")
+    assert a._agent == "FOREGROUND_AGENT"
+    assert any(e["type"] == "error" and "boom" in e["content"] for e in events)

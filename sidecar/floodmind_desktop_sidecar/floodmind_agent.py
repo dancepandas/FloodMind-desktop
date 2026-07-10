@@ -331,6 +331,65 @@ class FloodMindAgent:
         except Exception as e:
             print(f"[sidecar] activate_conversation failed for {session_id}: {e}", file=sys.stderr)
 
+    def _set_workspace_for(self, workspace_path: str) -> None:
+        """Inject `workspace_path` into the CURRENT thread's contextvars.
+
+        Mirrors _set_workspace but for an explicit path (used by run_headless so
+        a background task runs in its own workspace without disturbing the
+        foreground conversation's contextvars, which are per-thread).
+        """
+        from .workspace import _app_data_dir, session_id_for
+        try:
+            from floodmind.agent.runtime.services.workspace_service import (
+                build_workspace,
+                set_workspace,
+            )
+            from floodmind.tools import set_session_context
+
+            sid = session_id_for(workspace_path)
+            ws = build_workspace(
+                sid,
+                session_root=_app_data_dir(),
+                user_dir=workspace_path,
+                sandbox_strategy="user_dir",
+            )
+            set_workspace(ws.ensure())
+            set_session_context(sid, output_dir=str(ws.user_dir))
+        except Exception as e:
+            print(f"[sidecar] _set_workspace_for failed for {workspace_path}: {e}", file=sys.stderr)
+
+    def run_headless(self, session_id: str, workspace_path: str, command: str):
+        """Execute `command` in an isolated background session.
+
+        Builds a FRESH agent (does not touch self._agent), sets the task's
+        workspace in this thread's contextvars, streams the command, and returns
+        (events, artifacts, final_text). Any failure is folded into an error
+        event so the caller can record complete_task(success=False).
+        """
+        events: list[dict] = []
+        artifacts: list[dict] = []
+        final_text = ""
+        try:
+            self._set_workspace_for(workspace_path)
+            sid, persist_dir = self._memory_target(session_id)
+            agent = self._build_agent(sid, persist_dir)
+            for raw in agent.stream(command):
+                for ev in translate_event(raw):
+                    if ev.get("type") == "done":
+                        continue
+                    events.append(ev)
+                    if ev.get("type") == "artifact":
+                        artifacts.append(
+                            {"kind": ev.get("kind", "file"),
+                             "name": ev.get("name", ""),
+                             "path": ev.get("path", "")}
+                        )
+                    elif ev.get("type") == "text":
+                        final_text += ev.get("content", "")
+        except Exception as e:
+            events.append({"type": "error", "content": f"后台执行出错：{e}"})
+        return events, artifacts, final_text
+
     def generate_title(self, message: str) -> str:
         """LLM-generate a short Chinese title (mirrors the SDK server-layer prompt).
 

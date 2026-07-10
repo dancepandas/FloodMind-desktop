@@ -39,6 +39,12 @@ class Agent(Protocol):
         """Return a short LLM-generated title for the conversation, or '' on failure."""
         ...
 
+    def run_headless(self, session_id: str, workspace_path: str, command: str):
+        """Run `command` in an isolated background session bound to `session_id`,
+        with `workspace_path` set in the calling thread's contextvars. Returns
+        (events, artifacts, final_text). Does NOT touch the foreground agent."""
+        ...
+
 
 class StubAgent:
     """Deterministic stub used until the real FloodMind agent is wired in."""
@@ -66,3 +72,6 @@ class StubAgent:
 
     def generate_title(self, message: str) -> str:
         return ""
+
+    def run_headless(self, session_id, workspace_path, command):
+        return [], [], ""
