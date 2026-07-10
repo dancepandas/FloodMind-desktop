@@ -20,6 +20,23 @@ describe("conversation-store", () => {
     expect(items).toHaveLength(1);
     expect(useConversationStore.getState().list[0].id).toBe("c1");
     expect(String((fetchMock as any).mock.calls[0][0])).toContain("/api/conversations?workspace=");
+    expect(((fetchMock as any).mock.calls[0][1] as RequestInit | undefined)?.method ?? "GET").toBe("GET");
+  });
+
+  it("open GETs /api/conversations/<id> and returns the record", async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response(JSON.stringify({ id: "c9", session_id: "s", workspace: "/ws", title: "T", created_at: "", updated_at: "", turns: [] }), { status: 200 })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const rec = await useConversationStore.getState().open("c9");
+    expect(rec).toEqual({ id: "c9", session_id: "s", workspace: "/ws", title: "T", created_at: "", updated_at: "", turns: [] });
+    expect(String((fetchMock as any).mock.calls[0][0])).toContain("/api/conversations/c9");
+    expect(((fetchMock as any).mock.calls[0][1] as RequestInit | undefined)?.method ?? "GET").toBe("GET");
+  });
+
+  it("open returns null on fetch failure", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("", { status: 500 })));
+    expect(await useConversationStore.getState().open("c9")).toBeNull();
   });
 
   it("create POSTs {workspace} and returns the record", async () => {

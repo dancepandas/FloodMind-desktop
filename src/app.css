@@ -171,7 +171,21 @@ button:focus-visible,
 }
 
 .sidebar-tree {
-  margin-top: 0.4rem;
+  position: relative;
+  margin-top: 0.2rem;
+  /* indent tree items so they read as children of the workspace button */
+  padding-left: 0.8rem;
+}
+
+/* subtle vertical guide line on the left of the file tree */
+.sidebar-tree::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--border);
 }
 
 .sidebar-nav {
@@ -220,12 +234,6 @@ button:focus-visible,
   justify-content: center;
 }
 
-/* root workspace node in the file tree */
-.tree-root-node {
-  font-weight: 600;
-  color: var(--fg);
-}
-
 .tree-node-name {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -253,8 +261,12 @@ button:focus-visible,
 }
 
 .sidebar-item .folder-icon {
-  font-size: 13px;
+  width: 16px;
+  height: 16px;
   flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .sidebar-item .item-name {
@@ -376,8 +388,13 @@ button:focus-visible,
   border-radius: 50%;
   background: var(--accent);
   color: #fff;
-  font-size: 10px;
-  font-weight: 700;
+  overflow: hidden;
+}
+
+.assistant-avatar-icon {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
 }
 
 .assistant-name {
@@ -722,9 +739,35 @@ button:focus-visible,
 }
 
 .usage-line {
+  margin-top: 0.45rem;
+  display: flex;
+  align-items: center;
+}
+
+.usage-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.25rem 0.65rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--fg-secondary);
+  font-size: 12px;
+  font-family: var(--font-sans);
+  line-height: 1.4;
+}
+
+.usage-seg {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.2rem;
+}
+
+.usage-unit {
   color: var(--muted);
-  font-size: 11.5px;
-  margin-top: 0.35rem;
+  font-size: 10.5px;
+  font-weight: 500;
 }
 
 .show-process {

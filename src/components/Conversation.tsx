@@ -62,7 +62,9 @@ function TurnView({ turn, isLast, streaming }: { turn: Msg; isLast: boolean; str
     return (
       <div className="turn assistant-turn">
         <div className="assistant-header">
-          <span className="assistant-avatar" aria-hidden="true">F</span>
+          <span className="assistant-avatar" aria-hidden="true">
+            <Logo className="assistant-avatar-icon" />
+          </span>
           <span className="assistant-name">FloodMind</span>
         </div>
         {finalBlock && <BlockView block={finalBlock} isLive={false} />}
@@ -92,7 +94,9 @@ function TurnView({ turn, isLast, streaming }: { turn: Msg; isLast: boolean; str
   return (
     <div className="turn assistant-turn">
       <div className="assistant-header">
-        <span className="assistant-avatar" aria-hidden="true">F</span>
+        <span className="assistant-avatar" aria-hidden="true">
+          <Logo className="assistant-avatar-icon" />
+        </span>
         <span className="assistant-name">FloodMind</span>
         {statusText && <span className="assistant-status">{statusText}</span>}
       </div>
@@ -109,9 +113,12 @@ function TurnView({ turn, isLast, streaming }: { turn: Msg; isLast: boolean; str
 }
 
 function UsageLine({ usage }: { usage: { prompt: number; completion: number; total: number } }) {
+  const fmt = (n: number) => new Intl.NumberFormat("en-US").format(n);
   return (
-    <div className="usage-line">
-      ↑ {usage.prompt} ↓ {usage.completion} · {usage.total} tok
+    <div className="usage-line" aria-label="token 统计">
+      <span className="usage-pill">
+        {fmt(usage.total)} <span className="usage-unit">tokens</span>
+      </span>
     </div>
   );
 }

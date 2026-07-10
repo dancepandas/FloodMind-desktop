@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Tree, type NodeApi, type TreeApi } from "react-arborist";
-import { FileIcon } from "react-material-vscode-icons";
+import { FileOutlineIcon, FolderClosedIcon, FolderOpenIcon } from "./FileTreeIcons";
 import { useWorkspaceStore, type FileEntry } from "../state/workspace-store";
 
 type TreeNode = {
@@ -10,56 +10,41 @@ type TreeNode = {
   children?: TreeNode[] | null;
 };
 
-/** Build a single root node for the workspace, pre-expanded, so the tree
- *  has clear hierarchy: workspace root -> files and folders. */
-function buildTree(name: string, files: FileEntry[]): TreeNode[] {
-  return [
-    {
-      id: ".",
-      name,
-      type: "dir",
-      children: files.map((f) => ({
-        id: f.path,
-        name: f.name,
-        type: f.type,
-        children: f.type === "dir" ? [] : null,
-      })),
-    },
-  ];
+/** The workspace button in the sidebar already represents the root, so the
+ *  tree only lists the files/folders directly under it. */
+function buildTree(files: FileEntry[]): TreeNode[] {
+  return files.map((f) => ({
+    id: f.path,
+    name: f.name,
+    type: f.type,
+    children: f.type === "dir" ? [] : null,
+  }));
 }
 
 function Node({ node, style }: { node: NodeApi<TreeNode>; style: React.CSSProperties }) {
   const data = node.data;
   const isDir = data.type === "dir";
-  const isRoot = node.isRoot;
+  const icon = isDir
+    ? node.isOpen
+      ? <FolderOpenIcon size={16} />
+      : <FolderClosedIcon size={16} />
+    : <FileOutlineIcon size={16} />;
   return (
-    <div
-      className={`tree-node ${isDir ? "" : "tree-leaf"} ${isRoot ? "tree-root-node" : ""}`}
-      style={style}
-      tabIndex={0}
-    >
-      <span className="tree-node-icon">
-        <FileIcon fileName={data.name} isFolder={isDir} isExpanded={isDir && node.isOpen} size={16} />
-      </span>
+    <div className={`tree-node ${isDir ? "" : "tree-leaf"}`} style={style} tabIndex={0}>
+      <span className="tree-node-icon">{icon}</span>
       <span className="tree-node-name">{data.name}</span>
     </div>
   );
 }
 
-export default function WorkspaceFileTree({
-  rootFiles,
-  workspaceName,
-}: {
-  rootFiles: FileEntry[];
-  workspaceName: string;
-}) {
+export default function WorkspaceFileTree({ rootFiles }: { rootFiles: FileEntry[] }) {
   const listFiles = useWorkspaceStore((s) => s.listFiles);
   const treeRef = useRef<TreeApi<TreeNode>>(null);
-  const [data, setData] = useState<TreeNode[]>(() => buildTree(workspaceName, rootFiles));
+  const [data, setData] = useState<TreeNode[]>(() => buildTree(rootFiles));
 
   useEffect(() => {
-    setData(buildTree(workspaceName, rootFiles));
-  }, [rootFiles, workspaceName]);
+    setData(buildTree(rootFiles));
+  }, [rootFiles]);
 
   const handleToggle = useCallback(
     async (id: string) => {
@@ -80,9 +65,8 @@ export default function WorkspaceFileTree({
     [listFiles],
   );
 
-  // Tree rows × rowHeight gives the content height; cap tight so the bottom nav
-  // (Skills/MCP/Settings) is never pushed off-screen.
-  const rows = data.reduce((n, d) => n + 1 + (d.children?.length ?? 0), 0);
+  // Tight height cap so the bottom nav (Skills/MCP/Settings) is never pushed off-screen.
+  const rows = data.length;
   const height = Math.max(60, Math.min(220, rows * 28));
 
   return (
@@ -99,7 +83,6 @@ export default function WorkspaceFileTree({
         disableDrag
         disableDrop
         disableEdit
-        initialOpenState={{ ".": true }}
       >
         {Node}
       </Tree>

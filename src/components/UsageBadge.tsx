@@ -10,9 +10,11 @@ export default function UsageBadge() {
     return null;
   });
   if (!usage) return null;
+
+  const fmt = (n: number) => new Intl.NumberFormat("en-US").format(n);
   return (
-    <span className="pill">
-      ↑{usage.prompt} ↓{usage.completion} · {usage.total} tok
+    <span className="usage-pill" title="当前回合 token 统计">
+      {fmt(usage.total)} <span className="usage-unit">tokens</span>
     </span>
   );
 }

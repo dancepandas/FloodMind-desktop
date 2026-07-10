@@ -1,9 +1,18 @@
 import { useEffect, useState } from "react";
+import { FolderClosedIcon } from "./FileTreeIcons";
 import { useChatStore } from "../state/chat-store";
 import { useUiStore, type View } from "../state/ui-store";
 import { useWorkspaceStore, type FileEntry } from "../state/workspace-store";
 import Logo from "./Logo";
 import WorkspaceFileTree from "./WorkspaceFileTree";
+
+function FolderIcon() {
+  return (
+    <span className="folder-icon">
+      <FolderClosedIcon size={16} />
+    </span>
+  );
+}
 
 const NAV: { view: View; label: string }[] = [
   { view: "skills", label: "Skills" },
@@ -64,7 +73,7 @@ export default function Sidebar() {
               type="button"
               disabled={streaming}
             >
-              <span className="folder-icon">📁</span>
+              <FolderIcon />
               <span className="item-name">{r.name}</span>
             </button>
           ))}
@@ -80,16 +89,18 @@ export default function Sidebar() {
           type="button"
           disabled={streaming}
         >
-          <span className="folder-icon">📁</span>
+          <FolderIcon />
           <span className="item-name">{current ? current.name : "打开工作区…"}</span>
         </button>
 
-        {/* react-arborist file tree */}
+        {/* react-arborist file tree (workspace button is the root) */}
         {current && rootFiles && rootFiles.length > 0 && (
-          <WorkspaceFileTree rootFiles={rootFiles} workspaceName={current.name} />
+          <WorkspaceFileTree rootFiles={rootFiles} />
         )}
         {current && rootFiles && rootFiles.length === 0 && (
-          <div className="tree-empty">工作区为空</div>
+          <div className="sidebar-tree">
+            <div className="tree-empty">工作区为空</div>
+          </div>
         )}
       </div>
 
