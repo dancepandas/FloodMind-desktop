@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import Logo from "./Logo";
 import BlockView from "./BlockView";
 import { useChatStore, type Block, type Msg } from "../state/chat-store";
@@ -43,9 +43,40 @@ function TurnView({ turn, isLast, streaming }: { turn: Msg; isLast: boolean; str
     );
   }
 
-  // During execution, only show the latest cycle (from the last thinking block
-  // onward). Everything before that is fully hidden — the user sees a single
-  // live step, not a growing list of collapsed chips.
+  // ── after the turn completes, only the final answer is visible ──
+  const finalBlock = turn.done ? turn.blocks.find((b) => b.kind === "text" && b.final) : null;
+  const hasProcess = turn.blocks.some((b) => b.kind !== "text" || !b.final);
+  const [showProcess, setShowProcess] = useState(false);
+
+  // ── status line while streaming ────────────────────────────
+  let statusText = "";
+  if (isLast && streaming && !turn.done && turn.blocks.length > 0) {
+    const live = turn.blocks[turn.blocks.length - 1];
+    if (live.kind === "thinking") statusText = "正在思考…";
+    else if (live.kind === "tool" && live.status === "running") statusText = "正在执行…";
+    else if (live.kind === "text" && !live.final) statusText = "正在回答…";
+  }
+
+  // ── completed turn, process hidden ──────────────────────────
+  if (turn.done && hasProcess && !showProcess) {
+    return (
+      <div className="turn assistant-turn">
+        <div className="assistant-header">
+          <span className="assistant-avatar" aria-hidden="true">F</span>
+          <span className="assistant-name">FloodMind</span>
+        </div>
+        {finalBlock && <BlockView block={finalBlock} isLive={false} />}
+        <button className="show-process" onClick={() => setShowProcess(true)} type="button">
+          展开执行过程
+        </button>
+        {turn.usage && <UsageLine usage={turn.usage} />}
+      </div>
+    );
+  }
+
+  // ── streaming / expanded-process display ────────────────────
+  // During execution, only the latest cycle (from the last thinking block
+  // onward) is visible — previous cycles are silently hidden.
   let startIdx = 0;
   if (isLast && streaming && !turn.done && turn.blocks.length > 1) {
     for (let i = turn.blocks.length - 1; i >= 0; i--) {
@@ -56,7 +87,6 @@ function TurnView({ turn, isLast, streaming }: { turn: Msg; isLast: boolean; str
     }
   }
   const visible = startIdx > 0 ? turn.blocks.slice(startIdx) : turn.blocks;
-  const hiddenCount = startIdx;
   const liveIdx = isLast && streaming && !turn.done ? visible.length - 1 : -1;
 
   return (
@@ -64,11 +94,8 @@ function TurnView({ turn, isLast, streaming }: { turn: Msg; isLast: boolean; str
       <div className="assistant-header">
         <span className="assistant-avatar" aria-hidden="true">F</span>
         <span className="assistant-name">FloodMind</span>
+        {statusText && <span className="assistant-status">{statusText}</span>}
       </div>
-
-      {hiddenCount > 0 && (
-        <div className="steps-collapsed">已收起 {hiddenCount} 个步骤</div>
-      )}
 
       {turn.blocks.length === 0 && !turn.done && <div className="thinking-body">…</div>}
 
@@ -76,11 +103,15 @@ function TurnView({ turn, isLast, streaming }: { turn: Msg; isLast: boolean; str
         <BlockView key={b.id} block={b} isLive={j === liveIdx} />
       ))}
 
-      {turn.usage && (
-        <div className="usage-line">
-          ↑ {turn.usage.prompt} ↓ {turn.usage.completion} · {turn.usage.total} tok
-        </div>
-      )}
+      {turn.usage && <UsageLine usage={turn.usage} />}
+    </div>
+  );
+}
+
+function UsageLine({ usage }: { usage: { prompt: number; completion: number; total: number } }) {
+  return (
+    <div className="usage-line">
+      ↑ {usage.prompt} ↓ {usage.completion} · {usage.total} tok
     </div>
   );
 }

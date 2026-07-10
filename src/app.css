@@ -313,6 +313,13 @@ button:focus-visible,
   color: var(--fg-secondary);
 }
 
+.assistant-status {
+  font-size: 11px;
+  color: var(--muted);
+  margin-left: 0.5rem;
+  font-weight: 400;
+}
+
 .stream-cursor {
   display: inline-block;
   color: var(--accent);
@@ -498,17 +505,6 @@ button:focus-visible,
   white-space: pre-wrap;
 }
 
-/* "已收起 N 个步骤" indicator during streaming */
-.steps-collapsed {
-  font-size: 11px;
-  color: var(--muted);
-  padding: 0.15rem 0.5rem;
-  margin-bottom: 0.35rem;
-  border-radius: 4px;
-  background: var(--surface-2);
-  display: inline-block;
-}
-
 /* tool row + detail */
 .tool-row {
   display: flex;
@@ -650,6 +646,24 @@ button:focus-visible,
   color: var(--muted);
   font-size: 11.5px;
   margin-top: 0.35rem;
+}
+
+.show-process {
+  display: inline-block;
+  margin-top: 0.35rem;
+  background: transparent;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  padding: 0.2rem 0.55rem;
+  color: var(--muted);
+  font-family: var(--font-sans);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.show-process:hover {
+  color: var(--fg-secondary);
+  border-color: var(--muted);
 }
 
 .empty-hint {
