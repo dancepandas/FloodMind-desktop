@@ -185,6 +185,7 @@ export const useCatalogStore = create<CatalogState>((set, get) => ({
       if (get().skillDetail?.name === name) await get().loadSkill(name);
     } catch (e) {
       set({ skillError: e instanceof Error ? e.message : "failed" });
+      throw e;
     } finally {
       set({ skillSaving: false });
     }
@@ -277,6 +278,10 @@ export const useCatalogStore = create<CatalogState>((set, get) => ({
     try {
       const b = await getBaseUrl();
       const r = await fetch(`${b}/api/mcp/${encodeURIComponent(name)}/test`, { method: "POST" });
+      if (!r.ok) {
+        const err = await r.text().catch(() => r.statusText || "request failed");
+        throw new Error(err);
+      }
       const data = await r.json();
       return { ok: !!data.ok, error: data.error };
     } catch (e) {

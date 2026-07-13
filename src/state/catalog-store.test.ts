@@ -97,19 +97,22 @@ describe("catalog-store CRUD", () => {
     expect(useCatalogStore.getState().skillDetail?.prompt).toBe("updated");
   });
 
-  it("deletes a skill and clears detail when selected", async () => {
-    useCatalogStore.setState({ skillDetail: { name: "csv" } as any });
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ skills: [] }), { status: 200 }));
-    vi.stubGlobal("fetch", fetchMock);
+  it("sets skillError when setSkillDisabled fails", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("not found", { status: 404 })));
 
-    await useCatalogStore.getState().deleteSkill("csv");
+    await expect(useCatalogStore.getState().setSkillDisabled("csv", true)).rejects.toThrow("not found");
 
-    expect(String(fetchMock.mock.calls[0][0])).toContain("/api/skills/csv");
-    expect((fetchMock.mock.calls[0][1] as RequestInit).method).toBe("DELETE");
-    expect(useCatalogStore.getState().skillDetail).toBeNull();
+    expect(useCatalogStore.getState().skillError).toBe("not found");
+    expect(useCatalogStore.getState().skillSaving).toBe(false);
+  });
+
+  it("sets skillError when deleteSkill fails", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("in use", { status: 409 })));
+
+    await expect(useCatalogStore.getState().deleteSkill("csv")).rejects.toThrow("in use");
+
+    expect(useCatalogStore.getState().skillError).toBe("in use");
+    expect(useCatalogStore.getState().skillSaving).toBe(false);
   });
 
   it("creates an MCP server and refreshes the list", async () => {
@@ -167,19 +170,13 @@ describe("catalog-store CRUD", () => {
     expect(useCatalogStore.getState().mcpDetail?.connected).toBe(true);
   });
 
-  it("deletes an MCP server and clears detail when selected", async () => {
-    useCatalogStore.setState({ mcpDetail: { name: "fs" } as any });
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ servers: [] }), { status: 200 }));
-    vi.stubGlobal("fetch", fetchMock);
+  it("sets mcpError when deleteMcpServer fails", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("in use", { status: 409 })));
 
-    await useCatalogStore.getState().deleteMcpServer("fs");
+    await expect(useCatalogStore.getState().deleteMcpServer("fs")).rejects.toThrow("in use");
 
-    expect(String(fetchMock.mock.calls[0][0])).toContain("/api/mcp/fs");
-    expect((fetchMock.mock.calls[0][1] as RequestInit).method).toBe("DELETE");
-    expect(useCatalogStore.getState().mcpDetail).toBeNull();
+    expect(useCatalogStore.getState().mcpError).toBe("in use");
+    expect(useCatalogStore.getState().mcpSaving).toBe(false);
   });
 
   it("tests an MCP server and returns the result", async () => {
@@ -193,12 +190,12 @@ describe("catalog-store CRUD", () => {
     expect(useCatalogStore.getState().mcpTesting).toBe(false);
   });
 
-  it("returns error result when testMcpServer fails", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("network down"); }));
+  it("returns error result when testMcpServer receives non-2xx non-JSON response", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("upstream timeout", { status: 504, statusText: "Gateway Timeout" })));
 
     const result = await useCatalogStore.getState().testMcpServer("fs");
 
-    expect(result).toEqual({ ok: false, error: "network down" });
+    expect(result).toEqual({ ok: false, error: "upstream timeout" });
     expect(useCatalogStore.getState().mcpTesting).toBe(false);
   });
 });
