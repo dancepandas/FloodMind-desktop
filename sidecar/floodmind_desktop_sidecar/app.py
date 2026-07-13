@@ -5,6 +5,7 @@ import json
 import sys
 import uuid
 from pathlib import Path
+from typing import Any
 
 from flask import Flask, Response, jsonify, request
 from flask_cors import CORS
@@ -263,25 +264,54 @@ def create_app(agent: Agent, workspace_manager=None, conversation_store=None,
             return jsonify({"error": "not found"}), 404
         return jsonify(run)
 
-    # ── Skills & MCP catalog (read-only browse) ────────────────
+    # ── Skills & MCP catalog (browse + CRUD) ───────────────────
     # SDK imports are lazy + inside try/except so the endpoints degrade to an
     # empty list instead of 500 when the registry isn't populated.
+
+    def _normalize_mcp_server(body: dict[str, Any], default_name: str | None = None) -> dict[str, Any] | str:
+        transport = str(body.get("transport", ""))
+        if transport not in ("stdio", "sse"):
+            return "transport must be stdio or sse"
+        name = default_name or str(body.get("name", ""))
+        if not name:
+            return "name is required"
+        out: dict[str, Any] = {"name": name, "transport": transport}
+        if transport == "stdio":
+            command = str(body.get("command", ""))
+            if not command:
+                return "command is required for stdio transport"
+            out["command"] = command
+            args = body.get("args", [])
+            out["args"] = [str(a) for a in args] if isinstance(args, list) else []
+            env = body.get("env", {})
+            out["env"] = {str(k): str(v) for k, v in env.items()} if isinstance(env, dict) else {}
+        else:
+            url = str(body.get("url", ""))
+            if not url:
+                return "url is required for sse transport"
+            out["url"] = url
+        return out
+
     @app.get("/api/skills")
     def skills_list():
+        from .catalog_api import list_builtin_skills, read_skills_disabled, list_custom_skills
         try:
             from floodmind.skills.registry import get_skill_registry
-            return jsonify({"skills": get_skill_registry().list_skills()})
+            registry_skills = get_skill_registry().list_skills()
         except Exception as e:
             return jsonify({"skills": [], "error": str(e)})
+        disabled_set = set(read_skills_disabled())
+        for s in registry_skills:
+            s["disabled"] = s.get("name") in disabled_set
+        return jsonify({"skills": registry_skills + list_custom_skills()})
 
     @app.get("/api/skills/<name>")
     def skill_detail(name):
         try:
             from floodmind.skills.registry import get_skill_registry
+            from .catalog_api import read_skills_disabled
             s = get_skill_registry().get_skill(name)
         except Exception:
-            # Registry unavailable (e.g. SDK not fully initialized) -> not found,
-            # consistent with the list endpoint degrading to empty.
             return jsonify({"error": "skill registry unavailable"}), 404
         if s is None:
             return jsonify({"error": "skill not found"}), 404
@@ -292,15 +322,78 @@ def create_app(agent: Agent, workspace_manager=None, conversation_store=None,
             "category": s.category,
             "provides_tools": s.provides_tools,
             "version": s.version,
+            "disabled": s.name in set(read_skills_disabled()),
         })
+
+    @app.post("/api/skills/<name>/disabled")
+    def skill_set_disabled(name):
+        from .catalog_api import read_skills_disabled, write_skills_disabled, apply_skills_disabled
+        body = request.get_json(silent=True) or {}
+        disabled = bool(body.get("disabled"))
+        current = set(read_skills_disabled())
+        if disabled:
+            current.add(name)
+        else:
+            current.discard(name)
+        write_skills_disabled(sorted(current))
+        apply_skills_disabled()
+        return jsonify({"ok": True, "disabled": disabled})
+
+    @app.post("/api/skills")
+    def skill_create():
+        from .catalog_api import create_skill
+        body = request.get_json(silent=True) or {}
+        try:
+            meta = create_skill(
+                name=str(body.get("name", "")),
+                description=str(body.get("description", "")),
+                category=str(body.get("category", "execution")),
+                version=str(body.get("version", "1.0")),
+                prompt=str(body.get("prompt", "")),
+            )
+            return jsonify(meta), 201
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+
+    @app.put("/api/skills/<name>")
+    def skill_update(name):
+        from .catalog_api import update_skill
+        body = request.get_json(silent=True) or {}
+        try:
+            meta = update_skill(
+                name=name,
+                description=str(body.get("description", "")),
+                category=str(body.get("category", "execution")),
+                version=str(body.get("version", "1.0")),
+                prompt=str(body.get("prompt", "")),
+            )
+            return jsonify(meta)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        except PermissionError as e:
+            return jsonify({"error": str(e)}), 403
+
+    @app.delete("/api/skills/<name>")
+    def skill_delete(name):
+        from .catalog_api import delete_skill
+        try:
+            delete_skill(name)
+            return jsonify({"ok": True})
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 404
+        except PermissionError as e:
+            return jsonify({"error": str(e)}), 403
 
     @app.get("/api/mcp")
     def mcp_list():
         try:
             from floodmind.agent.mcp_client import get_mcp_client_pool
-            return jsonify({"servers": get_mcp_client_pool().list_servers()})
+            from .catalog_api import read_mcp_config
+            servers = get_mcp_client_pool().list_servers()
         except Exception as e:
             return jsonify({"servers": [], "error": str(e)})
+        configured = {s.get("name"): s for s in read_mcp_config()}
+        return jsonify({"servers": servers, "configured": configured})
 
     @app.get("/api/mcp/<name>")
     def mcp_detail(name):
@@ -312,6 +405,51 @@ def create_app(agent: Agent, workspace_manager=None, conversation_store=None,
         if not info:
             return jsonify({"error": "server not found"}), 404
         return jsonify(info)
+
+    @app.post("/api/mcp")
+    def mcp_create():
+        from .catalog_api import read_mcp_config, write_mcp_config
+        body = request.get_json(silent=True) or {}
+        server = _normalize_mcp_server(body)
+        if isinstance(server, str):
+            return jsonify({"error": server}), 400
+        servers = read_mcp_config()
+        if any(s.get("name") == server["name"] for s in servers):
+            return jsonify({"error": "server already exists"}), 400
+        servers.append(server)
+        write_mcp_config(servers)
+        return jsonify(server), 201
+
+    @app.put("/api/mcp/<name>")
+    def mcp_update(name):
+        from .catalog_api import read_mcp_config, write_mcp_config
+        body = request.get_json(silent=True) or {}
+        server = _normalize_mcp_server(body, name)
+        if isinstance(server, str):
+            return jsonify({"error": server}), 400
+        servers = read_mcp_config()
+        for i, s in enumerate(servers):
+            if s.get("name") == name:
+                servers[i] = server
+                write_mcp_config(servers)
+                return jsonify(server)
+        return jsonify({"error": "server not found"}), 404
+
+    @app.delete("/api/mcp/<name>")
+    def mcp_delete(name):
+        from .catalog_api import read_mcp_config, write_mcp_config
+        servers = [s for s in read_mcp_config() if s.get("name") != name]
+        write_mcp_config(servers)
+        return jsonify({"ok": True})
+
+    @app.post("/api/mcp/<name>/test")
+    def mcp_test(name):
+        from .catalog_api import read_mcp_config, test_mcp_server
+        servers = read_mcp_config()
+        server = next((s for s in servers if s.get("name") == name), None)
+        if server is None:
+            return jsonify({"error": "server not found"}), 404
+        return jsonify(test_mcp_server(server))
 
     # ── Model configuration GUI ────────────────────────────────
     @app.get("/api/config/model")

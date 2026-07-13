@@ -108,6 +108,26 @@ def _register_custom_skills() -> None:
         pass
 
 
+def list_custom_skills() -> list[dict[str, Any]]:
+    """Return metadata for custom skills persisted under the skills home."""
+    home = _skills_home()
+    disabled = set(read_skills_disabled())
+    skills: list[dict[str, Any]] = []
+    for skill_dir in home.iterdir():
+        if not skill_dir.is_dir():
+            continue
+        meta_path = skill_dir / "meta.json"
+        if not meta_path.exists():
+            continue
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            meta["disabled"] = meta.get("name") in disabled
+            skills.append(meta)
+        except Exception:
+            continue
+    return skills
+
+
 def create_skill(name: str, description: str, category: str, version: str, prompt: str) -> dict[str, Any]:
     if not SKILL_NAME_RE.match(name):
         raise ValueError("skill name must match [a-z0-9_-]+")
