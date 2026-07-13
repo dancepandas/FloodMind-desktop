@@ -125,7 +125,15 @@ class FloodMindAgent:
         # Imported lazily so translate_event stays unit-testable without the SDK.
         from floodmind.agent.native.model_client import ModelClient
 
-        self._llm = ModelClient.from_settings()
+        # The desktop can start before the user has configured an API key.
+        # Degrade gracefully: the agent stays unbuilt until reload_model() succeeds
+        # (e.g. after the user fills in the Settings GUI and saves).
+        try:
+            self._llm = ModelClient.from_settings()
+        except Exception as e:
+            print(f"[sidecar] ModelClient init failed (model not configured): {e}", file=sys.stderr)
+            self._llm = None
+
         # Auto-approve by default; ASK-policy tools are handled in stream().
         self._permission_handler = permission_handler or (lambda tool_name, tool_input: True)
         self._workspace_manager = workspace_manager
@@ -146,9 +154,17 @@ class FloodMindAgent:
 
         persisted = workspace_manager.current_path() if workspace_manager else None
         initial_sid = session_id_for(persisted) if persisted else "desktop-default"
-        self._agent = self._build_agent(*self._memory_target(initial_sid))
 
-        # Apply user-disabled skills persisted in settings.json.
+        if self._llm is not None:
+            try:
+                self._agent = self._build_agent(*self._memory_target(initial_sid))
+            except Exception as e:
+                print(f"[sidecar] initial agent build failed: {e}", file=sys.stderr)
+                self._agent = None
+        else:
+            self._agent = None
+
+        # Apply user-disabled skills persisted under ~/.floodmind/skills/.
         try:
             from .catalog_api import apply_skills_disabled
             apply_skills_disabled()
@@ -573,6 +589,11 @@ class FloodMindAgent:
 
     # ── main entry ─────────────────────────────────────────────
     def stream(self, messages: list[Message]) -> Iterator[dict]:
+        if getattr(self, "_agent", None) is None:
+            yield {"type": "error", "content": "模型未配置，请先在左侧「设置」中配置 API Key 后保存。"}
+            yield {"type": "done"}
+            return
+
         user_text = messages[-1]["content"] if messages else ""
         # Fresh run: clear any stale pause signal, then let the SDK poll
         # self._abort.is_set as its abort_check. (_abort is created in __init__;
