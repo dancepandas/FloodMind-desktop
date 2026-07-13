@@ -360,3 +360,34 @@ def test_reload_persona_rebuilds_and_rebinds_workspace():
     assert built == ["sid-1"]          # rebuilt with the SAME session_id
     assert rebinds == [True]           # workspace re-bound (+ prompt refreshed)
     assert a._agent.session_id == "sid-1"
+
+
+def test_mcp_tool_names_sanitized_for_openai_endpoints():
+    """MCP tool names are namespaced with ':' which OpenAI-compatible endpoints reject.
+
+    The desktop patches build_mcp_tool_specs so the model sees a sanitized name
+    while the bound function keeps the original 'mcp:server:tool' call signature.
+    """
+    import re
+    from floodmind.agent.mcp_client import build_mcp_tool_specs
+
+    class FakeConn:
+        def list_tools(self):
+            return [
+                {"name": "search:docs", "description": "d", "inputSchema": {"type": "object", "properties": {}}},
+                {"name": "ok_tool", "description": "d", "inputSchema": {"type": "object", "properties": {}}},
+            ]
+
+    calls = []
+    def call_tool(full_name, kwargs):
+        calls.append(full_name)
+        return "done"
+
+    specs = build_mcp_tool_specs(FakeConn(), "hydro-rag", call_tool)
+    names = [s.name for s in specs]
+    assert all(re.fullmatch(r"[a-zA-Z0-9_-]+", n) for n in names)
+    assert "mcp_hydro-rag_search_docs" in names
+    assert "mcp_hydro-rag_ok_tool" in names
+    # The bound function still uses the original colon-separated full name.
+    specs[names.index("mcp_hydro-rag_search_docs")].func()
+    assert calls == ["mcp:hydro-rag:search:docs"]

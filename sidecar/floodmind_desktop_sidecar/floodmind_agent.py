@@ -47,6 +47,34 @@ class _ContextAwareThreadPoolExecutor(concurrent.futures.ThreadPoolExecutor):
 concurrent.futures.ThreadPoolExecutor = _ContextAwareThreadPoolExecutor
 
 
+# OpenAI-compatible endpoints (and several vLLM/one-api deployments) require tool
+# names to match ^[a-zA-Z0-9_-]+$. The SDK namespaces MCP tools as
+# "mcp:server_name:tool_name", which contains colons. We keep the internal
+# "mcp:server:tool" call signature unchanged (the bound function still calls the
+# pool with the original full name) but sanitize the model-visible ToolSpec.name.
+def _patch_mcp_tool_names():
+    import re
+    try:
+        from floodmind.agent import mcp_client
+    except Exception:
+        return
+
+    _orig_build = mcp_client.build_mcp_tool_specs
+    _valid_name = re.compile(r"^[a-zA-Z0-9_-]+$")
+
+    def _build(conn, server_name, call_tool_fn):
+        specs = _orig_build(conn, server_name, call_tool_fn)
+        for spec in specs:
+            if not _valid_name.match(spec.name):
+                spec.name = re.sub(r"[^a-zA-Z0-9_-]+", "_", spec.name)
+        return specs
+
+    mcp_client.build_mcp_tool_specs = _build
+
+
+_patch_mcp_tool_names()
+
+
 _IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp")
 
 
