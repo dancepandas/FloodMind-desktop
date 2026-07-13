@@ -148,6 +148,13 @@ class FloodMindAgent:
         initial_sid = session_id_for(persisted) if persisted else "desktop-default"
         self._agent = self._build_agent(*self._memory_target(initial_sid))
 
+        # Apply user-disabled skills persisted in settings.json.
+        try:
+            from .catalog_api import apply_skills_disabled
+            apply_skills_disabled()
+        except Exception as e:
+            print(f"[sidecar] apply disabled skills failed: {e}", file=sys.stderr)
+
     def _build_agent(self, session_id: str, persist_dir: str):
         """Construct a fresh SDK agent bound to a per-session DualMemory."""
         from floodmind.agent import create_flood_agent

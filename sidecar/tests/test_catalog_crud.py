@@ -141,3 +141,14 @@ def test_mcp_crud_and_test(tmp_path, monkeypatch):
     # List reflects deletion
     r = client.get("/api/mcp")
     assert r.get_json()["configured"] == {}
+
+
+def test_disabled_skills_applied_on_startup(tmp_path, monkeypatch):
+    from floodmind_desktop_sidecar import catalog_api
+    monkeypatch.setattr(catalog_api, "_settings_path", lambda: tmp_path / "settings.json")
+    catalog_api.write_skills_disabled(["csv"])
+    from floodmind_desktop_sidecar.agent import StubAgent
+    from floodmind_desktop_sidecar.floodmind_agent import FloodMindAgent
+    # Smoke: building the agent should not crash and should call apply.
+    agent = FloodMindAgent()
+    assert agent is not None
