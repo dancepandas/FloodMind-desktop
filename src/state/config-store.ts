@@ -37,9 +37,20 @@ interface ConfigState {
   savedAt: number | null;
   reloadFailed: boolean;
   error: string | null;
+  // persona slice
+  soul: string;
+  soulIsDefault: boolean;
+  agents: string;
+  personaLoading: boolean;
+  personaSaving: boolean;
+  personaError: string | null;
   load: () => Promise<void>;
   save: (form: ModelForm) => Promise<boolean>;
   clearSaved: () => void;
+  loadPersona: () => Promise<void>;
+  saveSoul: (text: string) => Promise<boolean>;
+  saveAgents: (text: string) => Promise<boolean>;
+  resetSoul: () => Promise<void>;
 }
 
 export const useConfigStore = create<ConfigState>((set) => ({
@@ -53,6 +64,12 @@ export const useConfigStore = create<ConfigState>((set) => ({
   savedAt: null,
   reloadFailed: false,
   error: null,
+  soul: "",
+  soulIsDefault: true,
+  agents: "",
+  personaLoading: false,
+  personaSaving: false,
+  personaError: null,
 
   async load() {
     set({ loading: true, error: null });
@@ -132,4 +149,81 @@ export const useConfigStore = create<ConfigState>((set) => ({
   },
 
   clearSaved: () => set({ savedAt: null, reloadFailed: false }),
+
+  async loadPersona() {
+    set({ personaLoading: true, personaError: null });
+    try {
+      const b = await getBaseUrl();
+      const [sr, ar] = await Promise.all([
+        fetch(`${b}/api/config/soul`),
+        fetch(`${b}/api/config/agents`),
+      ]);
+      const soul = sr.ok ? await sr.json() : { content: "", isDefault: true };
+      const agents = ar.ok ? await ar.json() : { content: "" };
+      set({
+        soul: soul.content || "",
+        soulIsDefault: !!soul.isDefault,
+        agents: agents.content || "",
+        personaLoading: false,
+      });
+    } catch {
+      set({ personaLoading: false, personaError: "无法加载身份/规则" });
+    }
+  },
+
+  async saveSoul(text) {
+    if (text.length > 20000) {
+      set({ personaError: "SOUL.md 不得超过 20000 字符" });
+      return false;
+    }
+    set({ personaSaving: true, personaError: null });
+    try {
+      const b = await getBaseUrl();
+      const r = await fetch(`${b}/api/config/soul`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: text }),
+      });
+      if (!r.ok) {
+        set({ personaSaving: false, personaError: "保存失败" });
+        return false;
+      }
+      const data = await r.json();
+      set({
+        soul: data.content || "",
+        soulIsDefault: !!data.isDefault,
+        personaSaving: false,
+      });
+      return true;
+    } catch {
+      set({ personaSaving: false, personaError: "无法连接到 sidecar" });
+      return false;
+    }
+  },
+
+  async saveAgents(text) {
+    set({ personaSaving: true, personaError: null });
+    try {
+      const b = await getBaseUrl();
+      const r = await fetch(`${b}/api/config/agents`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: text }),
+      });
+      if (!r.ok) {
+        set({ personaSaving: false, personaError: "保存失败" });
+        return false;
+      }
+      const data = await r.json();
+      set({ agents: data.content || "", personaSaving: false });
+      return true;
+    } catch {
+      set({ personaSaving: false, personaError: "无法连接到 sidecar" });
+      return false;
+    }
+  },
+
+  async resetSoul() {
+    await this.saveSoul("");
+  },
 }));

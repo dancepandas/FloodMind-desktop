@@ -339,3 +339,24 @@ def test_run_headless_diffs_output_dir_for_artifacts(tmp_path, monkeypatch):
     assert ("image", "chart.png") in names
     assert any(e["type"] == "artifact" and e["name"] == "report.xlsx" for e in events)
     assert final_text == "ok"
+
+
+def test_reload_persona_rebuilds_and_rebinds_workspace():
+    """reload_persona builds a fresh agent (same session) and re-binds the
+    workspace so the new SOUL.md/AGENTS.md takes effect immediately."""
+    import types
+    from floodmind_desktop_sidecar.floodmind_agent import FloodMindAgent
+
+    a = FloodMindAgent.__new__(FloodMindAgent)
+    a._agent = types.SimpleNamespace(session_id="sid-1")
+
+    built = []
+    a._memory_target = lambda sid: (sid, "/tmp/mem")
+    a._build_agent = lambda sid, persist_dir: built.append(sid) or types.SimpleNamespace(session_id=sid)
+    rebinds = []
+    a._set_workspace = lambda: rebinds.append(True)
+
+    assert a.reload_persona() is True
+    assert built == ["sid-1"]          # rebuilt with the SAME session_id
+    assert rebinds == [True]           # workspace re-bound (+ prompt refreshed)
+    assert a._agent.session_id == "sid-1"

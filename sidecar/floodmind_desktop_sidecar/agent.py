@@ -48,6 +48,14 @@ class Agent(Protocol):
         """
         ...
 
+    def reload_persona(self) -> bool:
+        """Rebuild the agent so SOUL.md / AGENTS.md edits take effect now.
+
+        Returns True if rebuilt, False on failure (files are still saved; a
+        restart will apply them).
+        """
+        ...
+
     def activate_conversation(self, session_id: str) -> None:
         """Rebuild the agent bound to this conversation's session_id (memory isolation)."""
         ...
@@ -88,6 +96,9 @@ class StubAgent:
         pass
 
     def reload_model(self) -> bool:
+        return True
+
+    def reload_persona(self) -> bool:
         return True
 
     def activate_conversation(self, session_id: str) -> None:

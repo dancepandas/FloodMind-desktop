@@ -7,7 +7,14 @@ import json
 
 import pytest
 
-from floodmind_desktop_sidecar.config_api import read_model_config, write_model_config
+from floodmind_desktop_sidecar.config_api import (
+    read_model_config,
+    write_model_config,
+    read_soul,
+    write_soul,
+    read_agents_md,
+    write_agents_md,
+)
 
 
 @pytest.fixture
@@ -69,3 +76,51 @@ def test_env_overrides_detected(isolated_home, monkeypatch):
     monkeypatch.setenv("FLOODMIND_MODEL", "override-model")
     cfg = read_model_config()
     assert "FLOODMIND_MODEL" in cfg["envOverrides"]
+
+
+def test_read_soul_returns_default_when_absent(isolated_home):
+    res = read_soul()
+    assert res["isDefault"] is True
+    assert "FloodMind" in res["content"]
+    assert res["path"].endswith("SOUL.md")
+
+
+def test_write_then_read_soul(isolated_home):
+    res = write_soul("你是 TestBot，一个测试助手。")
+    assert res["isDefault"] is False
+    assert res["content"] == "你是 TestBot，一个测试助手。"
+    again = read_soul()
+    assert again["content"] == "你是 TestBot，一个测试助手。"
+    assert again["isDefault"] is False
+
+
+def test_write_soul_empty_deletes_back_to_default(isolated_home):
+    write_soul("临时身份")
+    res = write_soul("   ")
+    assert res["isDefault"] is True
+    assert not (isolated_home / "SOUL.md").exists()
+
+
+def test_write_soul_rejects_too_long(isolated_home):
+    with pytest.raises(ValueError):
+        write_soul("x" * 20001)
+
+
+def test_read_agents_md_absent_returns_empty(isolated_home):
+    res = read_agents_md()
+    assert res["content"] == ""
+    assert res["path"].endswith("AGENTS.md")
+
+
+def test_write_then_read_agents_md(isolated_home):
+    res = write_agents_md("## 绘图风格\n- 必须有图例")
+    assert res["content"] == "## 绘图风格\n- 必须有图例"
+    assert "图例" in read_agents_md()["content"]
+
+
+def test_write_agents_md_empty_deletes(isolated_home):
+    write_agents_md("规则")
+    assert read_agents_md()["content"] == "规则"
+    res = write_agents_md("")
+    assert res["content"] == ""
+    assert not (isolated_home / "AGENTS.md").exists()

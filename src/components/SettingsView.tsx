@@ -1,8 +1,31 @@
 import { useEffect, useState } from "react";
 import PageHeader from "./PageHeader";
 import { useConfigStore, type ModelForm } from "../state/config-store";
+import { useChatStore } from "../state/chat-store";
+
+type Tab = "model" | "identity" | "rules";
 
 export default function SettingsView() {
+  const [tab, setTab] = useState<Tab>("model");
+  return (
+    <div className="page">
+      <PageHeader title="设置" />
+      <div className="page-body settings-body">
+        <div className="settings-tabs" role="tablist">
+          <button role="tab" className={`settings-tab${tab === "model" ? " active" : ""}`} onClick={() => setTab("model")}>模型</button>
+          <button role="tab" className={`settings-tab${tab === "identity" ? " active" : ""}`} onClick={() => setTab("identity")}>身份</button>
+          <button role="tab" className={`settings-tab${tab === "rules" ? " active" : ""}`} onClick={() => setTab("rules")}>规则</button>
+        </div>
+        {tab === "model" && <ModelTab />}
+        {tab === "identity" && <IdentityTab />}
+        {tab === "rules" && <RulesTab />}
+      </div>
+    </div>
+  );
+}
+
+/* ── 模型 tab：原 SettingsView 表单 ───────────────────────────── */
+function ModelTab() {
   const model = useConfigStore((s) => s.model);
   const providers = useConfigStore((s) => s.providers);
   const apiKeyPresent = useConfigStore((s) => s.apiKeyPresent);
@@ -23,7 +46,6 @@ export default function SettingsView() {
     load();
   }, [load]);
 
-  // Seed the form when the loaded model arrives (or the provider list changes).
   useEffect(() => {
     if (model) {
       setForm({
@@ -40,18 +62,10 @@ export default function SettingsView() {
   }, [model, baseURL]);
 
   if (loading || !form) {
-    return (
-      <div className="page">
-        <PageHeader title="模型配置" />
-        <div className="page-body">
-          <div className="cat-empty">{error || "加载中…"}</div>
-        </div>
-      </div>
-    );
+    return <div className="cat-empty">{error || "加载中…"}</div>;
   }
 
   const providerModels = providers.find((p) => p.id === form.provider)?.models || [];
-  // Editing any field dismisses the stale save toast.
   const set = (patch: Partial<ModelForm>) => {
     clearSaved();
     setForm((f) => (f ? { ...f, ...patch } : f));
@@ -63,121 +77,151 @@ export default function SettingsView() {
   }
 
   return (
-    <div className="page">
-      <PageHeader title="模型配置" />
-      <div className="page-body settings-body">
-        {envOverrides.length > 0 && (
-          <div className="env-warn">
-            ⚠ 以下环境变量正在覆盖配置文件，GUI 修改不会生效：{envOverrides.join(", ")}
-          </div>
-        )}
-        {error && <div className="env-warn error">{error}</div>}
-        {savedAt && (
-          <div className={reloadFailed ? "env-warn" : "save-ok"}>
-            {reloadFailed ? "⚠ 已保存，但热重载失败——重启后生效" : "✓ 已保存并重载模型"}
-          </div>
-        )}
-
-        <form className="settings-form" onSubmit={onSubmit}>
+    <>
+      {envOverrides.length > 0 && (
+        <div className="env-warn">
+          ⚠ 以下环境变量正在覆盖配置文件，GUI 修改不会生效：{envOverrides.join(", ")}
+        </div>
+      )}
+      {error && <div className="env-warn error">{error}</div>}
+      {savedAt && (
+        <div className={reloadFailed ? "env-warn" : "save-ok"}>
+          {reloadFailed ? "⚠ 已保存，但热重载失败——重启后生效" : "✓ 已保存并重载模型"}
+        </div>
+      )}
+      <form className="settings-form" onSubmit={onSubmit}>
+        <label className="field">
+          <span className="field-label">服务商</span>
+          <select value={form.provider} onChange={(e) => {
+            const pid = e.target.value;
+            const p = providers.find((x) => x.id === pid);
+            clearSaved();
+            setForm((f) => f ? { ...f, provider: pid, apiKey: "", baseURL: p?.baseURL || "", model: p?.models?.[0] || "" } : f);
+          }}>
+            {providers.map((p) => (
+              <option key={p.id} value={p.id}>{p.name} ({p.id})</option>
+            ))}
+          </select>
+        </label>
+        <label className="field">
+          <span className="field-label">模型</span>
+          <input list="model-options" value={form.model} onChange={(e) => set({ model: e.target.value })} placeholder="模型 ID" />
+          <datalist id="model-options">
+            {providerModels.map((m) => (<option key={m} value={m} />))}
+          </datalist>
+        </label>
+        <label className="field">
+          <span className="field-label">API Key {apiKeyPresent && !form.apiKey && <em>（已设置，留空保持不变）</em>}</span>
+          <input type="password" value={form.apiKey} onChange={(e) => set({ apiKey: e.target.value })} placeholder={apiKeyPresent ? "••••••（留空不修改）" : "输入 API Key"} autoComplete="off" />
+        </label>
+        <label className="field">
+          <span className="field-label">Base URL</span>
+          <input value={form.baseURL} onChange={(e) => set({ baseURL: e.target.value })} placeholder="https://…" />
+        </label>
+        <div className="field-row">
           <label className="field">
-            <span className="field-label">服务商</span>
-            <select value={form.provider} onChange={(e) => {
-              const pid = e.target.value;
-              const p = providers.find((x) => x.id === pid);
-              // Switching provider resets the key (a key typed for A must not be
-              // written into B's options) and the base URL / model.
-              clearSaved();
-              setForm((f) => f ? { ...f, provider: pid, apiKey: "", baseURL: p?.baseURL || "", model: p?.models?.[0] || "" } : f);
-            }}>
-              {providers.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name} ({p.id})
-                </option>
-              ))}
-            </select>
+            <span className="field-label">温度（0–2）</span>
+            <input type="number" step="0.1" min="0" max="2" value={form.temperature} onChange={(e) => set({ temperature: parseFloat(e.target.value) || 0 })} />
           </label>
-
           <label className="field">
-            <span className="field-label">模型</span>
-            <input
-              list="model-options"
-              value={form.model}
-              onChange={(e) => set({ model: e.target.value })}
-              placeholder="模型 ID"
-            />
-            <datalist id="model-options">
-              {providerModels.map((m) => (
-                <option key={m} value={m} />
-              ))}
-            </datalist>
+            <span className="field-label">最大 Token</span>
+            <input type="number" step="1" min="1" value={form.maxTokens} onChange={(e) => set({ maxTokens: Math.trunc(parseInt(e.target.value, 10) || 0) })} />
           </label>
-
-          <label className="field">
-            <span className="field-label">
-              API Key {apiKeyPresent && !form.apiKey && <em>（已设置，留空保持不变）</em>}
-            </span>
-            <input
-              type="password"
-              value={form.apiKey}
-              onChange={(e) => set({ apiKey: e.target.value })}
-              placeholder={apiKeyPresent ? "••••••（留空不修改）" : "输入 API Key"}
-              autoComplete="off"
-            />
+        </div>
+        <div className="field-row toggles">
+          <label className="toggle">
+            <input type="checkbox" checked={form.enableReasoning} onChange={(e) => set({ enableReasoning: e.target.checked })} /> 推理模式
           </label>
-
-          <label className="field">
-            <span className="field-label">Base URL</span>
-            <input value={form.baseURL} onChange={(e) => set({ baseURL: e.target.value })} placeholder="https://…" />
+          <label className="toggle">
+            <input type="checkbox" checked={form.enableSearch} onChange={(e) => set({ enableSearch: e.target.checked })} /> 联网搜索
           </label>
+        </div>
+        <button className="save-btn" type="submit" disabled={saving}>{saving ? "保存中…" : "保存并重载"}</button>
+      </form>
+    </>
+  );
+}
 
-          <div className="field-row">
-            <label className="field">
-              <span className="field-label">温度（0–2）</span>
-              <input
-                type="number"
-                step="0.1"
-                min="0"
-                max="2"
-                value={form.temperature}
-                onChange={(e) => set({ temperature: parseFloat(e.target.value) || 0 })}
-              />
-            </label>
-            <label className="field">
-              <span className="field-label">最大 Token</span>
-              <input
-                type="number"
-                step="1"
-                min="1"
-                value={form.maxTokens}
-                onChange={(e) => set({ maxTokens: Math.trunc(parseInt(e.target.value, 10) || 0) })}
-              />
-            </label>
-          </div>
+/* ── 身份 tab：SOUL.md ───────────────────────────────────────── */
+function IdentityTab() {
+  const soul = useConfigStore((s) => s.soul);
+  const isDefault = useConfigStore((s) => s.soulIsDefault);
+  const loading = useConfigStore((s) => s.personaLoading);
+  const saving = useConfigStore((s) => s.personaSaving);
+  const error = useConfigStore((s) => s.personaError);
+  const loadPersona = useConfigStore((s) => s.loadPersona);
+  const saveSoul = useConfigStore((s) => s.saveSoul);
+  const resetSoul = useConfigStore((s) => s.resetSoul);
+  const streaming = useChatStore((s) => s.streaming);
+  const [draft, setDraft] = useState(soul);
 
-          <div className="field-row toggles">
-            <label className="toggle">
-              <input
-                type="checkbox"
-                checked={form.enableReasoning}
-                onChange={(e) => set({ enableReasoning: e.target.checked })}
-              />
-              推理模式
-            </label>
-            <label className="toggle">
-              <input
-                type="checkbox"
-                checked={form.enableSearch}
-                onChange={(e) => set({ enableSearch: e.target.checked })}
-              />
-              联网搜索
-            </label>
-          </div>
+  useEffect(() => { loadPersona(); }, [loadPersona]);
+  useEffect(() => { setDraft(soul); }, [soul]);
 
-          <button className="save-btn" type="submit" disabled={saving}>
-            {saving ? "保存中…" : "保存并重载"}
+  const over = draft.length > 20000;
+  const dirty = draft !== soul;
+  const canSave = !streaming && !saving && dirty && !over;
+
+  if (loading) return <div className="cat-empty">加载中…</div>;
+  return (
+    <div className="persona-editor">
+      <p className="persona-hint">SOUL.md 决定智能体的身份与职责，对所有会话生效。</p>
+      {error && <div className="env-warn error">{error}</div>}
+      <textarea
+        aria-label="SOUL.md 编辑器"
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        rows={16}
+      />
+      <div className="persona-bottom">
+        <span className={`char-counter${over ? " over" : ""}`}>{draft.length} / 20000</span>
+        <div className="persona-actions">
+          <button type="button" className="btn-secondary" onClick={() => resetSoul()} disabled={streaming || saving || isDefault}>恢复默认</button>
+          <button type="button" className="save-btn" onClick={() => saveSoul(draft)} disabled={!canSave}>
+            {saving ? "保存中…" : "保存"}
           </button>
-        </form>
+        </div>
       </div>
+      {streaming && <div className="env-warn">任务执行中，结束后保存生效。</div>}
+    </div>
+  );
+}
+
+/* ── 规则 tab：全局 AGENTS.md ────────────────────────────────── */
+function RulesTab() {
+  const agents = useConfigStore((s) => s.agents);
+  const loading = useConfigStore((s) => s.personaLoading);
+  const saving = useConfigStore((s) => s.personaSaving);
+  const error = useConfigStore((s) => s.personaError);
+  const loadPersona = useConfigStore((s) => s.loadPersona);
+  const saveAgents = useConfigStore((s) => s.saveAgents);
+  const streaming = useChatStore((s) => s.streaming);
+  const [draft, setDraft] = useState(agents);
+
+  useEffect(() => { loadPersona(); }, [loadPersona]);
+  useEffect(() => { setDraft(agents); }, [agents]);
+
+  const dirty = draft !== agents;
+  const canSave = !streaming && !saving && dirty;
+
+  if (loading) return <div className="cat-empty">加载中…</div>;
+  return (
+    <div className="persona-editor">
+      <p className="persona-hint">全局行为规则（AGENTS.md）：绘图风格、文档模板、用词偏好等。留空则无全局规则。</p>
+      {error && <div className="env-warn error">{error}</div>}
+      <textarea
+        aria-label="AGENTS.md 编辑器"
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        rows={16}
+      />
+      <div className="persona-bottom">
+        <span className="char-counter">{draft.length} 字符</span>
+        <button type="button" className="save-btn" onClick={() => saveAgents(draft)} disabled={!canSave}>
+          {saving ? "保存中…" : "保存"}
+        </button>
+      </div>
+      {streaming && <div className="env-warn">任务执行中，结束后保存生效。</div>}
     </div>
   );
 }

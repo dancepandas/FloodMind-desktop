@@ -337,6 +337,54 @@ def create_app(agent: Agent, workspace_manager=None, conversation_store=None,
             app.logger.warning("agent.reload_model failed: %s", e)
         return jsonify({"ok": True, "reloaded": reloaded, "model": snapshot})
 
+    @app.get("/api/config/soul")
+    def config_soul_get():
+        from .config_api import read_soul
+        try:
+            return jsonify(read_soul())
+        except Exception as e:  # pragma: no cover - defensive
+            return jsonify({"error": str(e)}), 500
+
+    @app.post("/api/config/soul")
+    def config_soul_set():
+        from .config_api import write_soul
+        body = request.get_json(silent=True) or {}
+        try:
+            snapshot = write_soul(body.get("content", ""))
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        except Exception as e:  # pragma: no cover - defensive
+            return jsonify({"error": str(e)}), 500
+        reloaded = False
+        try:
+            reloaded = bool(agent.reload_persona())
+        except Exception as e:  # pragma: no cover - defensive
+            app.logger.warning("agent.reload_persona failed: %s", e)
+        return jsonify({"ok": True, "reloaded": reloaded, **snapshot})
+
+    @app.get("/api/config/agents")
+    def config_agents_get():
+        from .config_api import read_agents_md
+        try:
+            return jsonify(read_agents_md())
+        except Exception as e:  # pragma: no cover - defensive
+            return jsonify({"error": str(e)}), 500
+
+    @app.post("/api/config/agents")
+    def config_agents_set():
+        from .config_api import write_agents_md
+        body = request.get_json(silent=True) or {}
+        try:
+            snapshot = write_agents_md(body.get("content", ""))
+        except Exception as e:  # pragma: no cover - defensive
+            return jsonify({"error": str(e)}), 500
+        reloaded = False
+        try:
+            reloaded = bool(agent.reload_persona())
+        except Exception as e:  # pragma: no cover - defensive
+            app.logger.warning("agent.reload_persona failed: %s", e)
+        return jsonify({"ok": True, "reloaded": reloaded, **snapshot})
+
     if workspace_manager is not None:
         @app.get("/api/workspace")
         def workspace_summary():

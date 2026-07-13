@@ -412,6 +412,26 @@ class FloodMindAgent:
             print(f"[sidecar] reload_model failed: {e}", file=sys.stderr)
             return False
 
+    def reload_persona(self) -> bool:
+        """Rebuild the agent so edited SOUL.md / global AGENTS.md take effect.
+
+        A fresh NativeFloodAgent re-reads SOUL.md via _build_stable_prompt and
+        gets a new ContextRuntime (AGENTS.md TTL cache cleared). Re-binding the
+        workspace then re-runs _init_executors, baking the new identity into the
+        cached prompt so the NEXT message sees it. History is preserved
+        (persist_dir reused). Safe to call mid-stream: the in-flight generator
+        holds the old agent; self._agent swaps on the next stream.
+        """
+        try:
+            sid = self._agent.session_id
+            _, persist_dir = self._memory_target(sid)
+            self._agent = self._build_agent(sid, persist_dir)
+            self._set_workspace()  # rebind workspace + refresh cached prompt
+            return True
+        except Exception as e:
+            print(f"[sidecar] reload_persona failed: {e}", file=sys.stderr)
+            return False
+
     def activate_conversation(self, session_id: str) -> None:
         """Rebuild the SDK agent bound to this conversation's session_id.
 

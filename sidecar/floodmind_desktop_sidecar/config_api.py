@@ -140,3 +140,83 @@ def write_model_config(body: dict[str, Any]) -> dict:
 
     save_config(raw)  # full write of the patched raw dict; clears the SDK cache
     return read_model_config()
+
+
+# ── Persona / rules files (SOUL.md + global AGENTS.md) ──────────────
+# Identity + behavior-rule editors for the Settings GUI. These edit ONLY the
+# ~/.floodmind/ files the runtime actually injects (NOT the legacy
+# ~/.config/floodmind/AGENTS.md). Empty content = delete (back to default / no
+# rules).
+
+SOUL_MAX_CHARS = 20_000  # mirrors SDK floodmind.profile.soul.SOUL_MD_MAX_CHARS
+
+
+def read_soul() -> dict:
+    """Return {content, isDefault, path} for ~/.floodmind/SOUL.md.
+
+    Missing/empty file → DEFAULT_SOUL_MD with isDefault=True.
+    """
+    from floodmind.config.settings import get_floodmind_home
+    from floodmind.profile.soul import DEFAULT_SOUL_MD
+
+    path = get_floodmind_home() / "SOUL.md"
+    try:
+        content = path.read_text(encoding="utf-8").strip() if path.exists() else ""
+    except Exception:
+        content = ""
+    if not content:
+        return {"content": DEFAULT_SOUL_MD, "isDefault": True, "path": str(path)}
+    return {"content": content, "isDefault": False, "path": str(path)}
+
+
+def write_soul(content: str) -> dict:
+    """Write SOUL.md. Empty/whitespace → delete file (back to default).
+
+    Raises ValueError if content exceeds SOUL_MAX_CHARS.
+    """
+    from floodmind.config.settings import get_floodmind_home
+
+    text = (content or "").strip()
+    if len(text) > SOUL_MAX_CHARS:
+        raise ValueError(f"SOUL.md 不得超过 {SOUL_MAX_CHARS} 字符")
+    home = get_floodmind_home()
+    home.mkdir(parents=True, exist_ok=True)
+    path = home / "SOUL.md"
+    if not text:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+    else:
+        path.write_text(text, encoding="utf-8")
+    return read_soul()
+
+
+def read_agents_md() -> dict:
+    """Return {content, path} for ~/.floodmind/AGENTS.md. Missing → content=''."""
+    from floodmind.config.settings import get_floodmind_home
+
+    path = get_floodmind_home() / "AGENTS.md"
+    try:
+        content = path.read_text(encoding="utf-8").strip() if path.exists() else ""
+    except Exception:
+        content = ""
+    return {"content": content, "path": str(path)}
+
+
+def write_agents_md(content: str) -> dict:
+    """Write global AGENTS.md. Empty/whitespace → delete file (no global rules)."""
+    from floodmind.config.settings import get_floodmind_home
+
+    text = (content or "").strip()
+    home = get_floodmind_home()
+    home.mkdir(parents=True, exist_ok=True)
+    path = home / "AGENTS.md"
+    if not text:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+    else:
+        path.write_text(text, encoding="utf-8")
+    return read_agents_md()
