@@ -69,15 +69,16 @@ def write_skills_disabled(disabled: list[str]) -> None:
 
 
 def apply_skills_disabled() -> None:
-    disabled = read_skills_disabled()
-    if not disabled:
-        return
+    disabled = set(read_skills_disabled())
     try:
         from floodmind.skills.registry import get_skill_registry
         reg = get_skill_registry()
-        for name in disabled:
+        for skill in reg.list_skills():
+            name = skill.get("name")
+            if not name:
+                continue
             try:
-                reg.set_disabled(name, True)
+                reg.set_disabled(name, name in disabled)
             except Exception:
                 pass
     except Exception:

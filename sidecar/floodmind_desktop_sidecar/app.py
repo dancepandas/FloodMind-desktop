@@ -294,7 +294,7 @@ def create_app(agent: Agent, workspace_manager=None, conversation_store=None,
 
     @app.get("/api/skills")
     def skills_list():
-        from .catalog_api import list_builtin_skills, read_skills_disabled, list_custom_skills
+        from .catalog_api import read_skills_disabled, list_custom_skills
         try:
             from floodmind.skills.registry import get_skill_registry
             registry_skills = get_skill_registry().list_skills()
@@ -303,7 +303,9 @@ def create_app(agent: Agent, workspace_manager=None, conversation_store=None,
         disabled_set = set(read_skills_disabled())
         for s in registry_skills:
             s["disabled"] = s.get("name") in disabled_set
-        return jsonify({"skills": registry_skills + list_custom_skills()})
+        registry_names = {s.get("name") for s in registry_skills}
+        custom_skills = [s for s in list_custom_skills() if s.get("name") not in registry_names]
+        return jsonify({"skills": registry_skills + custom_skills})
 
     @app.get("/api/skills/<name>")
     def skill_detail(name):
@@ -327,9 +329,19 @@ def create_app(agent: Agent, workspace_manager=None, conversation_store=None,
 
     @app.post("/api/skills/<name>/disabled")
     def skill_set_disabled(name):
-        from .catalog_api import read_skills_disabled, write_skills_disabled, apply_skills_disabled
+        from .catalog_api import read_skills_disabled, write_skills_disabled, apply_skills_disabled, list_custom_skills
         body = request.get_json(silent=True) or {}
         disabled = bool(body.get("disabled"))
+        exists = False
+        try:
+            from floodmind.skills.registry import get_skill_registry
+            exists = get_skill_registry().get_skill(name) is not None
+        except Exception:
+            pass
+        if not exists:
+            exists = any(s.get("name") == name for s in list_custom_skills())
+        if not exists:
+            return jsonify({"error": "skill not found"}), 404
         current = set(read_skills_disabled())
         if disabled:
             current.add(name)
@@ -438,8 +450,11 @@ def create_app(agent: Agent, workspace_manager=None, conversation_store=None,
     @app.delete("/api/mcp/<name>")
     def mcp_delete(name):
         from .catalog_api import read_mcp_config, write_mcp_config
-        servers = [s for s in read_mcp_config() if s.get("name") != name]
-        write_mcp_config(servers)
+        servers = read_mcp_config()
+        filtered = [s for s in servers if s.get("name") != name]
+        if len(filtered) == len(servers):
+            return jsonify({"error": "server not found"}), 404
+        write_mcp_config(filtered)
         return jsonify({"ok": True})
 
     @app.post("/api/mcp/<name>/test")
