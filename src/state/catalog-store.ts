@@ -7,6 +7,7 @@ export interface SkillSummary {
   category?: string;
   version?: string;
   source?: string;
+  builtin?: boolean;
   disabled?: boolean;
 }
 export interface SkillDetail extends SkillSummary {

@@ -294,15 +294,17 @@ def create_app(agent: Agent, workspace_manager=None, conversation_store=None,
 
     @app.get("/api/skills")
     def skills_list():
-        from .catalog_api import read_skills_disabled, list_custom_skills
+        from .catalog_api import read_skills_disabled, list_custom_skills, list_builtin_skills
         try:
             from floodmind.skills.registry import get_skill_registry
             registry_skills = get_skill_registry().list_skills()
         except Exception as e:
             return jsonify({"skills": [], "error": str(e)})
         disabled_set = set(read_skills_disabled())
+        builtin_names = set(list_builtin_skills())
         for s in registry_skills:
             s["disabled"] = s.get("name") in disabled_set
+            s["builtin"] = s.get("name") in builtin_names
         registry_names = {s.get("name") for s in registry_skills}
         custom_skills = [s for s in list_custom_skills() if s.get("name") not in registry_names]
         return jsonify({"skills": registry_skills + custom_skills})
@@ -311,7 +313,7 @@ def create_app(agent: Agent, workspace_manager=None, conversation_store=None,
     def skill_detail(name):
         try:
             from floodmind.skills.registry import get_skill_registry
-            from .catalog_api import read_skills_disabled
+            from .catalog_api import read_skills_disabled, list_builtin_skills
             s = get_skill_registry().get_skill(name)
         except Exception:
             return jsonify({"error": "skill registry unavailable"}), 404
@@ -325,6 +327,7 @@ def create_app(agent: Agent, workspace_manager=None, conversation_store=None,
             "provides_tools": s.provides_tools,
             "version": s.version,
             "disabled": s.name in set(read_skills_disabled()),
+            "builtin": s.name in set(list_builtin_skills()),
         })
 
     @app.post("/api/skills/<name>/disabled")

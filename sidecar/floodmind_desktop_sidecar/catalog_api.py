@@ -73,6 +73,9 @@ def apply_skills_disabled() -> None:
     try:
         from floodmind.skills.registry import get_skill_registry
         reg = get_skill_registry()
+        # Populate the built-in name cache before any custom skills are
+        # registered, so list_builtin_skills() stays accurate after startup.
+        _builtin_skill_names()
         for skill in reg.list_skills():
             name = skill.get("name")
             if not name:
@@ -86,11 +89,12 @@ def apply_skills_disabled() -> None:
 
 
 def list_builtin_skills() -> list[str]:
-    try:
-        from floodmind.skills.registry import get_skill_registry
-        return [s["name"] for s in get_skill_registry().list_skills()]
-    except Exception:
-        return []
+    """Return the names of SDK built-in skills.
+
+    Uses the cached set populated by `apply_skills_disabled()` so custom skills
+    registered later are not misclassified as built-in.
+    """
+    return sorted(_builtin_skill_names())
 
 
 def _register_custom_skills() -> None:
@@ -123,6 +127,7 @@ def list_custom_skills() -> list[dict[str, Any]]:
         try:
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
             meta["disabled"] = meta.get("name") in disabled
+            meta["builtin"] = False
             skills.append(meta)
         except Exception:
             continue

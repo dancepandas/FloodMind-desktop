@@ -149,7 +149,7 @@ def test_disabled_skills_applied_on_startup(tmp_path, monkeypatch):
 
     # Keep the test hermetic: both catalog_api and the SDK save_config must
     # read/write the same temporary settings.json, not ~/.floodmind/settings.json.
-    settings_mod = __import__("floodmind.config.settings", fromlist=["_config_path"])
+    settings_mod = importlib.import_module("floodmind.config.settings")
     monkeypatch.setattr(settings_mod, "_config_path", lambda: tmp_path / "settings.json")
     monkeypatch.setattr(catalog_api, "_settings_path", lambda: tmp_path / "settings.json")
 

@@ -28,10 +28,8 @@ export default function SkillsView() {
     if (selected) loadSkill(selected);
   }, [selected, loadSkill]);
 
-  const isBuiltIn = (name: string) => {
-    const s = skills.find((x) => x.name === name);
-    return !s?.source;
-  };
+  const isBuiltIn =
+    detail?.builtin ?? skills.find((s) => s.name === detail?.name)?.builtin ?? false;
 
   const handleEdit = () => {
     if (!detail) return;
@@ -125,7 +123,7 @@ export default function SkillsView() {
                 </div>
               )}
               <div className="task-detail-actions" style={{ marginTop: "1rem" }}>
-                {isBuiltIn(detail.name) ? (
+                {isBuiltIn ? (
                   <button
                     className="btn-secondary"
                     onClick={() => setSkillDisabled(detail.name, !detail.disabled)}

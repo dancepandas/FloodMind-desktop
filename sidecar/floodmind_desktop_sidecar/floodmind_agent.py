@@ -155,6 +155,13 @@ class FloodMindAgent:
         except Exception as e:
             print(f"[sidecar] apply disabled skills failed: {e}", file=sys.stderr)
 
+        # Register custom skills persisted under ~/.floodmind/skills/.
+        try:
+            from .catalog_api import _register_custom_skills
+            _register_custom_skills()
+        except Exception as e:
+            print(f"[sidecar] register custom skills failed: {e}", file=sys.stderr)
+
     def _build_agent(self, session_id: str, persist_dir: str):
         """Construct a fresh SDK agent bound to a per-session DualMemory."""
         from floodmind.agent import create_flood_agent
