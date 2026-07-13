@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import Composer from "./components/Composer";
 import Conversation from "./components/Conversation";
+import DropZone from "./components/DropZone";
 import McpView from "./components/McpView";
 import ScheduledTasksView from "./components/ScheduledTasksView";
 import SettingsView from "./components/SettingsView";
@@ -45,10 +46,12 @@ export default function App() {
         {view === "chat" && (
           <>
             <TopBar />
-            <div className="chat-stage">
-              <Conversation />
-              <PlanPanel />
-            </div>
+            <DropZone>
+              <div className="chat-stage">
+                <Conversation />
+                <PlanPanel />
+              </div>
+            </DropZone>
             <Composer />
           </>
         )}

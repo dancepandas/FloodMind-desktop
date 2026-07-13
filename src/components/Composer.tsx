@@ -1,13 +1,20 @@
 import { useRef, useState } from "react";
 import { useChatStore } from "../state/chat-store";
 import { useWorkspaceStore } from "../state/workspace-store";
+import { useAttachmentStore } from "../state/attachment-store";
+import FilePickerModal from "./FilePickerModal";
 
 export default function Composer() {
   const [text, setText] = useState("");
+  const [pickerOpen, setPickerOpen] = useState(false);
   const streaming = useChatStore((s) => s.streaming);
   const send = useChatStore((s) => s.send);
   const pause = useChatStore((s) => s.pause);
   const current = useWorkspaceStore((s) => s.current);
+  const attachments = useAttachmentStore((s) => s.pending);
+  const addAttachments = useAttachmentStore((s) => s.add);
+  const removeAttachment = useAttachmentStore((s) => s.remove);
+  const clearAttachments = useAttachmentStore((s) => s.clear);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   function resize() {
@@ -17,10 +24,20 @@ export default function Composer() {
     el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
   }
 
+  function buildMessage(): string {
+    const trimmed = text.trim();
+    if (attachments.length === 0) return trimmed;
+    const refs = attachments.map((p) => `- ${p}`).join("\n");
+    if (!trimmed) return `请处理以下文件：\n${refs}`;
+    return `${trimmed}\n\n[引用文件]\n${refs}`;
+  }
+
   function doSend() {
-    if (!text.trim()) return;
-    send(text);
+    const msg = buildMessage();
+    if (!msg) return;
+    send(msg);
     setText("");
+    clearAttachments();
     if (textareaRef.current) textareaRef.current.style.height = "auto";
   }
 
@@ -39,6 +56,23 @@ export default function Composer() {
   return (
     <div className="composer-wrap">
       <form className="composer" onSubmit={submit}>
+        {attachments.length > 0 && (
+          <div className="composer-attachments">
+            {attachments.map((p) => (
+              <span key={p} className="attachment-pill" title={p}>
+                <span className="attachment-name">{p}</span>
+                <button
+                  type="button"
+                  className="attachment-remove"
+                  onClick={() => removeAttachment(p)}
+                  aria-label={`移除 ${p}`}
+                >
+                  ✕
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
         <textarea
           ref={textareaRef}
           rows={1}
@@ -57,18 +91,19 @@ export default function Composer() {
             <button
               className="ctx-pill"
               type="button"
-              disabled
-              title="添加附件（即将上线）"
-              aria-label="添加附件（即将上线）"
+              disabled={!current || streaming}
+              onClick={() => setPickerOpen(true)}
+              title={current ? "引用工作区文件" : "请先打开一个工作区"}
+              aria-label="引用工作区文件"
             >
-              +
+              ＋
             </button>
             <span className="ctx-pill model">deepseek-v4-flash</span>
           </div>
           <button
             className="send"
             type="submit"
-            disabled={!text.trim()}
+            disabled={!buildMessage().trim()}
             aria-label="发送"
           >
             <svg
@@ -114,6 +149,16 @@ export default function Composer() {
         <span>·</span>
         <span>Enter 发送，Shift+Enter 换行</span>
       </div>
+
+      {pickerOpen && (
+        <FilePickerModal
+          onClose={() => setPickerOpen(false)}
+          onConfirm={(paths) => {
+            addAttachments(paths);
+            setPickerOpen(false);
+          }}
+        />
+      )}
     </div>
   );
 }

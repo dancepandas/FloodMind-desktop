@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import sys
 import uuid
@@ -435,5 +436,40 @@ def create_app(agent: Agent, workspace_manager=None, conversation_store=None,
             except OSError:
                 pass
             return jsonify({"entries": entries, "root": str(root)})
+
+        @app.post("/api/workspace/files")
+        def workspace_files_upload():
+            """Upload one or more files into the current workspace.
+
+            Body: {"files": [{"path": "rel/path", "content": "base64"}, ...]}
+            Paths must be relative and stay inside the workspace.
+            """
+            current = workspace_manager.current_path()
+            if not current:
+                return jsonify({"error": "no workspace open"}), 400
+            root = Path(current).resolve()
+            body = request.get_json(silent=True) or {}
+            files = body.get("files") or []
+            if not isinstance(files, list) or not files:
+                return jsonify({"error": "files list required"}), 400
+
+            written: list[str] = []
+            for f in files:
+                rel = str(f.get("path", "")).strip().replace("\\", "/")
+                if not rel or rel.startswith("/") or ".." in rel.split("/"):
+                    return jsonify({"error": f"invalid path: {rel}"}), 400
+                try:
+                    target = (root / rel).resolve()
+                except (ValueError, OSError):
+                    return jsonify({"error": f"invalid path: {rel}"}), 400
+                if root not in target.parents and target != root:
+                    return jsonify({"error": f"outside workspace: {rel}"}), 403
+                try:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(base64.b64decode(f.get("content", "")))
+                    written.append(rel)
+                except Exception as e:
+                    return jsonify({"error": f"write failed for {rel}: {e}"}), 500
+            return jsonify({"ok": True, "files": written})
 
     return app

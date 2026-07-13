@@ -54,6 +54,41 @@ def test_workspace_files_rejects_escape(tmp_path, monkeypatch):
     assert client.get("/api/workspace/files?path=../../etc").status_code == 403
 
 
+def test_workspace_files_upload(tmp_path, monkeypatch):
+    """POST /api/workspace/files writes base64 files into the workspace."""
+    import base64
+    monkeypatch.chdir(tmp_path)
+    mgr = WorkspaceManager()
+    ws = tmp_path / "ws"; ws.mkdir()
+    client = create_app(StubAgent(), workspace_manager=mgr).test_client()
+    client.post("/api/workspace/open", json={"path": str(ws)})
+
+    content = base64.b64encode(b"hello").decode("ascii")
+    r = client.post("/api/workspace/files", json={
+        "files": [
+            {"path": "notes.txt", "content": content},
+            {"path": "sub/dir/data.csv", "content": base64.b64encode(b"a,b").decode("ascii")},
+        ]
+    })
+    assert r.status_code == 200
+    body = r.get_json()
+    assert set(body["files"]) == {"notes.txt", "sub/dir/data.csv"}
+    assert (ws / "notes.txt").read_bytes() == b"hello"
+    assert (ws / "sub" / "dir" / "data.csv").read_bytes() == b"a,b"
+
+
+def test_workspace_files_upload_rejects_escape(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    mgr = WorkspaceManager()
+    ws = tmp_path / "ws"; ws.mkdir()
+    client = create_app(StubAgent(), workspace_manager=mgr).test_client()
+    client.post("/api/workspace/open", json={"path": str(ws)})
+
+    assert client.post("/api/workspace/files", json={
+        "files": [{"path": "../outside.txt", "content": ""}]
+    }).status_code == 400
+
+
 def test_session_id_for_is_stable_and_unique():
     a = session_id_for("D:/work/foo")
     b = session_id_for("D:/work/foo")
