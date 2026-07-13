@@ -145,10 +145,30 @@ def test_mcp_crud_and_test(tmp_path, monkeypatch):
 
 def test_disabled_skills_applied_on_startup(tmp_path, monkeypatch):
     from floodmind_desktop_sidecar import catalog_api
-    monkeypatch.setattr(catalog_api, "_settings_path", lambda: tmp_path / "settings.json")
-    catalog_api.write_skills_disabled(["csv"])
-    from floodmind_desktop_sidecar.agent import StubAgent
     from floodmind_desktop_sidecar.floodmind_agent import FloodMindAgent
-    # Smoke: building the agent should not crash and should call apply.
+
+    # Keep the test hermetic: both catalog_api and the SDK save_config must
+    # read/write the same temporary settings.json, not ~/.floodmind/settings.json.
+    settings_mod = __import__("floodmind.config.settings", fromlist=["_config_path"])
+    monkeypatch.setattr(settings_mod, "_config_path", lambda: tmp_path / "settings.json")
+    monkeypatch.setattr(catalog_api, "_settings_path", lambda: tmp_path / "settings.json")
+
+    catalog_api.write_skills_disabled(["csv"])
+
+    calls = []
+    monkeypatch.setattr(catalog_api, "apply_skills_disabled", lambda: calls.append(True))
+
+    # Avoid needing a real FloodMind API key / model config.
+    monkeypatch.setattr(
+        "floodmind.agent.native.model_client.ModelClient", MagicMock()
+    )
+    # Avoid constructing a real SDK agent; return a lightweight stub.
+    monkeypatch.setattr(
+        FloodMindAgent,
+        "_build_agent",
+        lambda self, session_id, persist_dir: MagicMock(session_id=session_id),
+    )
+
     agent = FloodMindAgent()
     assert agent is not None
+    assert len(calls) == 1
