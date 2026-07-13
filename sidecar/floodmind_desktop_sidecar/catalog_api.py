@@ -42,7 +42,12 @@ def _builtin_skill_names() -> set[str]:
     return _BUILTIN_SKILL_NAMES
 
 
-def read_skills_disabled() -> list[str]:
+def _skills_disabled_path() -> Path:
+    return _skills_home() / "disabled.json"
+
+
+def _legacy_skills_disabled_from_settings() -> list[str]:
+    """Fallback: read disabled list from settings.json (pre-migration)."""
     path = _settings_path()
     if not path.exists():
         return []
@@ -54,18 +59,25 @@ def read_skills_disabled() -> list[str]:
         return []
 
 
-def write_skills_disabled(disabled: list[str]) -> None:
-    from floodmind.config.settings import save_config
-
-    path = _settings_path()
-    raw: dict[str, Any] = {}
+def read_skills_disabled() -> list[str]:
+    path = _skills_disabled_path()
     if path.exists():
         try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
+            data = json.loads(path.read_text(encoding="utf-8"))
+            disabled = data.get("disabled") or []
+            return [str(x) for x in disabled if isinstance(x, str)]
         except Exception:
-            raw = {}
-    raw["skills"] = {"disabled": list(dict.fromkeys(disabled))}
-    save_config(raw)
+            return []
+    # One-time migration from settings.json; next write will create disabled.json.
+    return _legacy_skills_disabled_from_settings()
+
+
+def write_skills_disabled(disabled: list[str]) -> None:
+    path = _skills_disabled_path()
+    path.write_text(
+        json.dumps({"disabled": list(dict.fromkeys(disabled))}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
 
 
 def apply_skills_disabled() -> None:

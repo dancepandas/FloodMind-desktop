@@ -1,5 +1,6 @@
 """Tests for the catalog CRUD helpers."""
 import importlib
+import json
 from unittest.mock import MagicMock
 
 from floodmind_desktop_sidecar import catalog_api
@@ -12,14 +13,34 @@ def _client():
 
 
 def test_read_write_skills_disabled(tmp_path, monkeypatch):
-    settings_mod = importlib.import_module("floodmind.config.settings")
-    monkeypatch.setattr(settings_mod, "_config_path", lambda: tmp_path / "settings.json")
+    monkeypatch.setattr(catalog_api, "_skills_disabled_path", lambda: tmp_path / "disabled.json")
+    monkeypatch.setattr(catalog_api, "_settings_path", lambda: tmp_path / "settings.json")
 
     assert catalog_api.read_skills_disabled() == []
     catalog_api.write_skills_disabled(["csv", "pdf"])
     assert catalog_api.read_skills_disabled() == ["csv", "pdf"]
     catalog_api.write_skills_disabled([])
     assert catalog_api.read_skills_disabled() == []
+
+
+def test_read_skills_disabled_migrates_from_settings(tmp_path, monkeypatch):
+    settings_mod = importlib.import_module("floodmind.config.settings")
+    settings_path = tmp_path / "settings.json"
+    settings_path.write_text(
+        json.dumps({"model": {"provider": "x"}, "skills": {"disabled": ["csv"]}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(settings_mod, "_config_path", lambda: settings_path)
+    monkeypatch.setattr(catalog_api, "_skills_disabled_path", lambda: tmp_path / "disabled.json")
+
+    # First read falls back to settings.json and preserves the disabled list.
+    assert catalog_api.read_skills_disabled() == ["csv"]
+    # Subsequent writes go to disabled.json, never touching settings.json.
+    catalog_api.write_skills_disabled(["csv", "pdf"])
+    assert "pdf" in (tmp_path / "disabled.json").read_text(encoding="utf-8")
+    cfg = json.loads(settings_path.read_text(encoding="utf-8"))
+    assert cfg.get("skills", {}).get("disabled") == ["csv"]  # unchanged
+    assert cfg.get("model") == {"provider": "x"}  # untouched
 
 
 def test_skill_create_update_delete(tmp_path, monkeypatch):
@@ -147,11 +168,9 @@ def test_disabled_skills_applied_on_startup(tmp_path, monkeypatch):
     from floodmind_desktop_sidecar import catalog_api
     from floodmind_desktop_sidecar.floodmind_agent import FloodMindAgent
 
-    # Keep the test hermetic: both catalog_api and the SDK save_config must
-    # read/write the same temporary settings.json, not ~/.floodmind/settings.json.
-    settings_mod = importlib.import_module("floodmind.config.settings")
-    monkeypatch.setattr(settings_mod, "_config_path", lambda: tmp_path / "settings.json")
-    monkeypatch.setattr(catalog_api, "_settings_path", lambda: tmp_path / "settings.json")
+    # Keep the test hermetic: skill disabled state lives under the skills home,
+    # not in ~/.floodmind/settings.json.
+    monkeypatch.setattr(catalog_api, "_skills_disabled_path", lambda: tmp_path / "disabled.json")
 
     catalog_api.write_skills_disabled(["csv"])
 
