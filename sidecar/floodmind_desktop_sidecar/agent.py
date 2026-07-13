@@ -15,6 +15,23 @@ class Agent(Protocol):
         """Yield event dicts, e.g. {"type": "text", "content": "..."} and {"type": "done"}."""
         ...
 
+    def append_instruction(self, text: str) -> None:
+        """Append a user instruction to the agent's memory mid-run.
+
+        The SDK's executor polls memory between iterations and injects any new
+        user message into the active run (steering) or revives at terminal state
+        (queued follow-up). No-op when the agent has no memory.
+        """
+        ...
+
+    def pause(self) -> None:
+        """Signal the running stream to abort at the next LLM/tool boundary.
+
+        The partial round is discarded (not written to memory); the next
+        stream() resumes from memory.
+        """
+        ...
+
     def clear_memory(self) -> None:
         """Forget conversation history (New Session). No-op when the agent has no memory."""
         ...
@@ -59,6 +76,12 @@ class StubAgent:
         yield {"type": "done"}
 
     def clear_memory(self) -> None:
+        pass
+
+    def append_instruction(self, text: str) -> None:
+        pass
+
+    def pause(self) -> None:
         pass
 
     def rebind_workspace(self, path: str) -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import socket
 import sys
@@ -9,6 +10,18 @@ import sys
 # from Hugging Face (embeddings/models) it would hang on the default endpoint.
 # Default to the China mirror only when the user hasn't set their own.
 os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
+
+# Surface SDK internals on stderr — most importantly exec_bash's "执行命令: ..."
+# log line and workspace/path resolution — so CWD / wrong-drive issues are
+# visible in the sidecar log (stderr is inherited up to the tauri-dev console).
+_sdk_log = logging.getLogger("floodmind")
+if _sdk_log.level == logging.NOTSET or _sdk_log.level > logging.INFO:
+    _sdk_log.setLevel(logging.INFO)
+if not _sdk_log.handlers:
+    _h = logging.StreamHandler()  # default stream = stderr
+    _h.setFormatter(logging.Formatter("[floodmind] %(message)s"))
+    _sdk_log.addHandler(_h)
+    _sdk_log.propagate = False
 
 from .floodmind_agent import FloodMindAgent
 from .workspace import WorkspaceManager

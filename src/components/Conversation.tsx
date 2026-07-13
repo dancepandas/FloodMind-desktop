@@ -67,7 +67,11 @@ function TurnView({ turn, isLast, streaming }: { turn: Msg; isLast: boolean; str
           </span>
           <span className="assistant-name">FloodMind</span>
         </div>
-        {finalBlock && <BlockView block={finalBlock} isLive={false} />}
+        {finalBlock && (
+          <div data-block-id={finalBlock.id}>
+            <BlockView block={finalBlock} isLive={false} />
+          </div>
+        )}
         <button className="show-process" onClick={() => setShowProcess(true)} type="button">
           展开执行过程
         </button>
@@ -104,7 +108,9 @@ function TurnView({ turn, isLast, streaming }: { turn: Msg; isLast: boolean; str
       {turn.blocks.length === 0 && !turn.done && <div className="thinking-body">…</div>}
 
       {visible.map((b: Block, j: number) => (
-        <BlockView key={b.id} block={b} isLive={j === liveIdx} />
+        <div key={b.id} data-block-id={b.id}>
+          <BlockView block={b} isLive={j === liveIdx} />
+        </div>
       ))}
 
       {turn.usage && <UsageLine usage={turn.usage} />}

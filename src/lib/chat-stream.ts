@@ -13,6 +13,24 @@ export type ChatEvent =
   | { type: "error"; content: string }
   | { type: "done" };
 
+export async function appendInstruction(baseUrl: string, text: string): Promise<void> {
+  const res = await fetch(`${baseUrl}/api/chat/append`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ messages: [{ role: "user", content: text }] }),
+  });
+  if (!res.ok) {
+    throw new Error(`append request failed: ${res.status}`);
+  }
+}
+
+export async function pauseChat(baseUrl: string): Promise<void> {
+  const res = await fetch(`${baseUrl}/api/chat/pause`, { method: "POST" });
+  if (!res.ok) {
+    throw new Error(`pause request failed: ${res.status}`);
+  }
+}
+
 export async function* streamChat(
   baseUrl: string,
   messages: ChatMessage[],

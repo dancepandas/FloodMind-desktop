@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 from typing import Iterator
 
 from .agent import Message
@@ -130,6 +131,11 @@ class FloodMindAgent:
         self._workspace_manager = workspace_manager
         # Output dir captured during _set_workspace; used by the artifact diff.
         self._output_dir = None
+        # Pause signal: set by pause(), polled by the SDK's abort_check during a
+        # run. The executor aborts at the next LLM/tool boundary, discards the
+        # partial round (not written to memory), and the next stream() resumes
+        # from memory. Cleared at the start of each stream().
+        self._abort = threading.Event()
         # The SDK's executor captures `memory` BY REFERENCE at construction
         # (NativeAgentExecutor(memory=self.memory)), so swapping self.memory later
         # is invisible to it. Per-workspace isolation therefore requires building
@@ -215,7 +221,6 @@ class FloodMindAgent:
         try:
             from floodmind.agent.runtime.services.workspace_service import (
                 build_workspace,
-                set_workspace,
             )
             from floodmind.tools import set_session_context
 
@@ -224,13 +229,33 @@ class FloodMindAgent:
                 session_root=_app_data_dir(),
                 user_dir=user_dir,
                 sandbox_strategy="user_dir",
-            )
-            set_workspace(ws.ensure())
-            # SESSION_CONTEXT["output_dir"] is the #1-priority output dir resolver
-            # (ahead of workspace.user_dir). Without it the SDK falls back to
-            # data/sessions/<sid>/outputs.
+            ).ensure()
+            # Bind the workspace as an INSTANCE attribute on the agent (not the
+            # contextvar). The SDK's agent loop runs in a child thread that does
+            # not inherit the floodmind_workspace contextvar; the SDK now reads
+            # self._workspace (_effective_workspace) and re-binds the contextvar
+            # inside _run_loop, so output_dir / upload_dir / PathService write &
+            # read roots all resolve to the real workspace (fixes the C-drive bug).
+            self._agent.bind_workspace(ws)
             set_session_context(sid, output_dir=str(ws.user_dir))
             self._output_dir = str(ws.user_dir)
+            # The SDK bakes `会话输出目录: <output_dir>` into the cached prompt at
+            # __init__ (_init_executors), BEFORE bind_workspace sets _workspace —
+            # so at that moment _get_output_dir() returns the AppData fallback and
+            # the LLM is permanently told to write under C:\...\data\sessions\<sid>
+            # \outputs. Re-run _init_executors() now that _workspace is bound so the
+            # prompt reflects the real workspace. (SDK-side fix pending: refresh the
+            # cached prompt/session_env inside bind_workspace itself.)
+            try:
+                self._agent._init_executors()
+            except Exception as e:
+                print(f"[sidecar] _init_executors refresh failed: {e}", file=sys.stderr)
+            print(
+                f"[sidecar] workspace bound: user_dir={ws.user_dir} sid={sid} | "
+                f"agent={type(self._agent).__name__} id={id(self._agent)} "
+                f"_workspace_set={getattr(self._agent, '_workspace', None) is not None}",
+                file=sys.stderr,
+            )
         except Exception:
             print(f"[sidecar] workspace setup failed for {user_dir}; using SDK default",
                   file=sys.stderr)
@@ -295,6 +320,35 @@ class FloodMindAgent:
             print(f"[sidecar] auto-approve failed for ask {ask_id}: {e}", file=sys.stderr)
 
     # ── memory: per-workspace isolation + New Session ──────────
+    def pause(self) -> None:
+        """Signal the running stream to abort at the next LLM/tool boundary.
+
+        The SDK executor polls the abort_check passed to stream(); when it fires
+        the current (partial) round is discarded — NOT written to memory — and
+        the run ends (terminal failed). The next stream() resumes from memory,
+        so the user pauses, appends an instruction, and sends to resume.
+        """
+        self._abort.set()
+
+    def append_instruction(self, text: str) -> None:
+        """Append a user instruction to the agent's memory mid-run.
+
+        The SDK's NativeAgentExecutor polls memory between iterations
+        (`_inject_queued_user_messages`) and injects any new user message into
+        the active run — steering the current turn if it has more iterations,
+        or reviving at terminal state for a queued follow-up. DualMemory is
+        RLock-guarded, so this is safe to call from the Flask thread while the
+        agent's run-loop thread is streaming.
+        """
+        if not text or not text.strip():
+            return
+        try:
+            mem = getattr(self._agent, "memory", None)
+            if mem is not None and hasattr(mem, "add_user_message"):
+                mem.add_user_message(text.strip())
+        except Exception as e:
+            print(f"[sidecar] append_instruction failed: {e}", file=sys.stderr)
+
     def rebind_workspace(self, path: str) -> None:
         """Rebuild the agent against a DualMemory keyed to this workspace.
 
@@ -379,13 +433,13 @@ class FloodMindAgent:
         a background task runs in its own workspace without disturbing the
         foreground conversation's contextvars, which are per-thread).
 
-        Returns the resolved output directory, or None if workspace setup failed.
+        Returns the resolved Workspace object (caller binds it to its agent via
+        bind_workspace, since headless builds a fresh agent), or None on failure.
         """
         from .workspace import _app_data_dir, session_id_for
         try:
             from floodmind.agent.runtime.services.workspace_service import (
                 build_workspace,
-                set_workspace,
             )
             from floodmind.tools import set_session_context
 
@@ -395,11 +449,9 @@ class FloodMindAgent:
                 session_root=_app_data_dir(),
                 user_dir=workspace_path,
                 sandbox_strategy="user_dir",
-            )
-            set_workspace(ws.ensure())
-            output_dir = str(ws.user_dir)
-            set_session_context(sid, output_dir=output_dir)
-            return output_dir
+            ).ensure()
+            set_session_context(sid, output_dir=str(ws.user_dir))
+            return ws
         except Exception as e:
             print(f"[sidecar] _set_workspace_for failed for {workspace_path}: {e}", file=sys.stderr)
             return None
@@ -416,9 +468,21 @@ class FloodMindAgent:
         artifacts: list[dict] = []
         final_text = ""
         try:
-            output_dir = self._set_workspace_for(workspace_path)
+            ws = self._set_workspace_for(workspace_path)
+            output_dir = str(ws.user_dir) if ws else None
             sid, persist_dir = self._memory_target(session_id)
             agent = self._build_agent(sid, persist_dir)
+            # Bind the task workspace to the fresh agent (instance attribute,
+            # not contextvar) — see _set_workspace for why this is required.
+            if ws:
+                agent.bind_workspace(ws)
+                # Refresh the cached prompt (see _set_workspace): _init_executors ran
+                # at construction with _workspace=None, baking the AppData fallback
+                # output dir into the prompt the LLM sees.
+                try:
+                    agent._init_executors()
+                except Exception as e:
+                    print(f"[sidecar] headless _init_executors refresh failed: {e}", file=sys.stderr)
             before = self._snapshot_outputs(output_dir)
             for raw in agent.stream(command):
                 for ev in translate_event(raw):
@@ -476,12 +540,23 @@ class FloodMindAgent:
     # ── main entry ─────────────────────────────────────────────
     def stream(self, messages: list[Message]) -> Iterator[dict]:
         user_text = messages[-1]["content"] if messages else ""
+        # Fresh run: clear any stale pause signal, then let the SDK poll
+        # self._abort.is_set as its abort_check. (_abort is created in __init__;
+        # the getattr guard keeps the unit tests' bare __new__ instances working.)
+        abort = getattr(self, "_abort", None)
+        if abort is not None:
+            abort.clear()
+        abort_check = abort.is_set if abort is not None else None
         before: dict[str, float] = {}
         errored = False
         try:
             self._set_workspace()
             before = self._snapshot_outputs()
-            for raw in self._agent.stream(user_text):
+            # Pass abort_check only when armed (production always sets _abort in
+            # __init__). Test stubs mimic the SDK stream() signature optionally,
+            # so we avoid forcing the kwarg on them.
+            stream_kwargs = {"abort_check": abort_check} if abort_check is not None else {}
+            for raw in self._agent.stream(user_text, **stream_kwargs):
                 for ev in translate_event(raw):
                     if ev.get("type") == "permission":
                         # Unblock ASK-policy tools before yielding the ask to the UI.

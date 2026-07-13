@@ -7,6 +7,8 @@ vi.mock("../lib/sidecar-client", () => ({
 }));
 vi.mock("../lib/chat-stream", () => ({
   streamChat: vi.fn(),
+  appendInstruction: vi.fn(async () => {}),
+  pauseChat: vi.fn(async () => {}),
 }));
 vi.mock("./conversation-store", () => ({
   useConversationStore: {
@@ -26,7 +28,7 @@ vi.mock("./conversation-store", () => ({
 }));
 
 // Import after mocks are registered.
-import { streamChat } from "../lib/chat-stream";
+import { streamChat, appendInstruction as postAppendInstruction, pauseChat } from "../lib/chat-stream";
 
 function emptyTurn(): AssistantTurn {
   return { role: "assistant", blocks: [], usage: null, done: false };
@@ -94,6 +96,57 @@ describe("chat-store.send", () => {
   it("ignores empty / whitespace input", async () => {
     await useChatStore.getState().send("   ");
     expect(useChatStore.getState().turns).toEqual([]);
+  });
+
+  it("while streaming, send routes to appendInstruction — inserts a user bubble BEFORE the active assistant turn (keeps assistant last so events still reduce)", async () => {
+    useChatStore.setState({
+      streaming: true,
+      turns: [
+        { role: "user", content: "first" },
+        { role: "assistant", blocks: [], usage: null, done: false },
+      ],
+    });
+
+    await useChatStore.getState().send("also do X");
+
+    expect(streamChat).not.toHaveBeenCalled();
+    expect(postAppendInstruction).toHaveBeenCalledWith("http://test", "also do X");
+    // The appended instruction becomes a normal user bubble inserted before
+    // the assistant turn — so the assistant turn stays last (reducer invariant)
+    // and the instruction shows immediately below the original request.
+    const turns = useChatStore.getState().turns;
+    expect(turns).toHaveLength(3);
+    expect(turns[0]).toMatchObject({ role: "user", content: "first" });
+    expect(turns[1]).toMatchObject({ role: "user", content: "also do X" });
+    expect(turns[2].role).toBe("assistant");
+    // The original stream stays active — streaming flag untouched.
+    expect(useChatStore.getState().streaming).toBe(true);
+  });
+
+  it("appendInstruction rolls back the optimistic user bubble when the POST fails", async () => {
+    (postAppendInstruction as any).mockRejectedValueOnce(new Error("boom"));
+    useChatStore.setState({
+      streaming: true,
+      turns: [
+        { role: "user", content: "first" },
+        { role: "assistant", blocks: [], usage: null, done: false },
+      ],
+    });
+
+    await useChatStore.getState().appendInstruction("lost in transit");
+
+    // Rolled back — the SDK never received it, so the transcript must not keep it.
+    const turns = useChatStore.getState().turns;
+    expect(turns).toHaveLength(2);
+    expect(turns[1].role).toBe("assistant");
+  });
+
+  it("pause posts /api/chat/pause and aborts the active stream", async () => {
+    const ctl = new AbortController();
+    useChatStore.setState({ streaming: true, abortController: ctl });
+    await useChatStore.getState().pause();
+    expect(pauseChat).toHaveBeenCalledWith("http://test");
+    expect(ctl.signal.aborted).toBe(true);
   });
 
   it("surfaces a stream error as an error block", async () => {

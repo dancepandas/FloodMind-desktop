@@ -6,6 +6,7 @@ export default function Composer() {
   const [text, setText] = useState("");
   const streaming = useChatStore((s) => s.streaming);
   const send = useChatStore((s) => s.send);
+  const pause = useChatStore((s) => s.pause);
   const current = useWorkspaceStore((s) => s.current);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -17,7 +18,7 @@ export default function Composer() {
   }
 
   function doSend() {
-    if (!text.trim() || streaming) return;
+    if (!text.trim()) return;
     send(text);
     setText("");
     if (textareaRef.current) textareaRef.current.style.height = "auto";
@@ -42,13 +43,12 @@ export default function Composer() {
           ref={textareaRef}
           rows={1}
           value={text}
-          placeholder={streaming ? "正在生成…" : "给 FloodMind 一个任务…"}
+          placeholder={streaming ? "追加指令到当前任务…" : "给 FloodMind 一个任务…"}
           onChange={(e) => {
             setText(e.target.value);
             resize();
           }}
           onKeyDown={onKeyDown}
-          disabled={streaming}
           autoFocus
           aria-label="任务输入"
         />
@@ -68,7 +68,7 @@ export default function Composer() {
           <button
             className="send"
             type="submit"
-            disabled={streaming || !text.trim()}
+            disabled={!text.trim()}
             aria-label="发送"
           >
             <svg
@@ -85,6 +85,26 @@ export default function Composer() {
               <path d="M12 19V5M5 12l7-7 7 7" />
             </svg>
           </button>
+          {streaming && (
+            <button
+              className="pause"
+              type="button"
+              onClick={() => pause()}
+              title="暂停（暂停后可追加指令，再发送即恢复）"
+              aria-label="暂停"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                fill="currentColor"
+                width="14"
+                height="14"
+                aria-hidden="true"
+              >
+                <rect x="6" y="5" width="4" height="14" rx="1" />
+                <rect x="14" y="5" width="4" height="14" rx="1" />
+              </svg>
+            </button>
+          )}
         </div>
       </form>
       <div className="composer-hint">

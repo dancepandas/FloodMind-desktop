@@ -319,6 +319,8 @@ def test_run_headless_diffs_output_dir_for_artifacts(tmp_path, monkeypatch):
     out.mkdir()
 
     class FakeAgent:
+        def bind_workspace(self, ws):
+            pass
         def stream(self, command):
             (out / "report.xlsx").write_bytes(b"data")
             (out / "chart.png").write_bytes(b"img")
@@ -327,7 +329,8 @@ def test_run_headless_diffs_output_dir_for_artifacts(tmp_path, monkeypatch):
     a = FloodMindAgent.__new__(FloodMindAgent)
     a._agent = "FOREGROUND_AGENT"
     a._build_agent = lambda sid, pd: FakeAgent()
-    a._set_workspace_for = lambda path: str(out)
+    import types
+    a._set_workspace_for = lambda path: types.SimpleNamespace(user_dir=str(out))
 
     events, artifacts, final_text = a.run_headless("sess-x", "/ws/A", "go")
     assert a._agent == "FOREGROUND_AGENT"

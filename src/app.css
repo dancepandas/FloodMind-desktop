@@ -284,6 +284,138 @@ button:focus-visible,
   background: var(--bg);
 }
 
+.chat-stage {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* ── Plan panel (right side) ─────────────────────────────── */
+.plan-panel {
+  width: 280px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border-left: 1px solid var(--border);
+  overflow-y: auto;
+}
+
+.plan-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.plan-panel-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.plan-panel-close {
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.plan-panel-close:hover {
+  background: var(--surface-2);
+  color: var(--fg-secondary);
+}
+
+.plan-panel-subtitle {
+  padding: 0.6rem 1rem 0.2rem;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.plan-panel-progress {
+  padding: 0.5rem 1rem;
+}
+
+.plan-progress-bar {
+  height: 4px;
+  background: var(--surface-2);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.plan-progress-fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.3s ease;
+}
+
+.plan-progress-text {
+  margin-top: 0.35rem;
+  font-size: 11.5px;
+  color: var(--muted);
+  text-align: right;
+}
+
+.plan-panel-steps {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0.25rem 0.6rem 0.8rem;
+}
+
+.plan-panel-step {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.45rem 0.5rem;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.plan-panel-step:hover {
+  background: var(--surface-2);
+}
+
+.plan-step-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.plan-step-outcome {
+  font-size: 11.5px;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+
+.plan-panel-empty {
+  padding: 1rem;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.plan-chip .plan-chip-icon {
+  font-size: 11px;
+}
+
 /* ── Top bar ────────────────────────────────────────────── */
 .topbar {
   display: flex;
@@ -339,6 +471,32 @@ button:focus-visible,
 .topbar-actions .icon-btn:hover {
   background: var(--surface-2);
   color: var(--fg);
+}
+
+.topbar-plan-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.18rem 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--fg-secondary);
+  font-family: var(--font-sans);
+  font-size: 11.5px;
+  cursor: pointer;
+  transition: background 0.1s, border-color 0.1s, color 0.1s;
+}
+
+.topbar-plan-pill:hover {
+  background: var(--surface-2);
+  border-color: var(--muted);
+}
+
+.topbar-plan-pill.active {
+  background: var(--accent-light);
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 /* ── Conversation ───────────────────────────────────────── */
@@ -925,6 +1083,25 @@ button:focus-visible,
   cursor: not-allowed;
 }
 
+.composer .pause {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--surface);
+  color: var(--fg-secondary);
+  cursor: pointer;
+  transition: background 0.1s, border-color 0.1s, color 0.1s;
+}
+
+.composer .pause:hover {
+  background: var(--surface-2);
+  border-color: var(--amber);
+  color: var(--amber);
+}
+
 .composer-hint {
   display: flex;
   align-items: center;
@@ -1294,6 +1471,10 @@ button:focus-visible,
 /* ── Responsive guard ───────────────────────────────────── */
 @media (max-width: 640px) {
   .sidebar {
+    display: none;
+  }
+
+  .plan-panel {
     display: none;
   }
 

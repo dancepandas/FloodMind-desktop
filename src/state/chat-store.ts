@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { getBaseUrl } from "../lib/sidecar-client";
-import { streamChat, type ChatEvent, type ChatMessage } from "../lib/chat-stream";
+import { streamChat, appendInstruction as postAppendInstruction, pauseChat, type ChatEvent, type ChatMessage } from "../lib/chat-stream";
 import { useConversationStore } from "./conversation-store";
 
 export interface PlanStep {
@@ -46,6 +46,8 @@ interface ChatState {
   abortController: AbortController | null;
   conversationId: string | null;
   send: (text: string) => Promise<void>;
+  appendInstruction: (text: string) => Promise<void>;
+  pause: () => Promise<void>;
   reset: () => void;
   startNew: (workspace: string) => Promise<void>;
   loadConversation: (id: string) => Promise<void>;
@@ -180,9 +182,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
   conversationId: null,
 
   async send(text: string) {
-    if (!text.trim() || get().streaming) return;
+    if (!text.trim()) return;
+    // While a stream is active, route to the append path: the message is added
+    // to the agent's memory and the SDK executor injects it into the running
+    // loop (mid-run steering / queued follow-up).
+    if (get().streaming) return get().appendInstruction(text);
 
     const controller = new AbortController();
+    // Index of the first turn belonging to THIS send, so the finally block can
+    // persist the whole [user, …promoted appends, assistant] slice in one shot.
+    const startLen = get().turns.length;
     set((s) => ({
       turns: [
         ...s.turns,
@@ -235,17 +244,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
         }
         return { turns, streaming: false, abortController: null };
       });
-      // Persist the completed user+assistant pair to the active conversation.
+      // Persist this send's slice — the original user turn, any appended user
+      // turns inserted during the run, and the final assistant turn — together.
       if (finalize && text.trim()) {
         const cid = get().conversationId;
         if (cid) {
-          const turns = get().turns;
-          const last = turns[turns.length - 1];
+          const pair = get().turns.slice(startLen);
+          const last = pair[pair.length - 1];
           if (last && last.role === "assistant") {
-            const pair = [
-              { role: "user", content: text } as Msg,
-              last,
-            ];
             getBaseUrl()
               .then(async (b) => {
                 const r = await fetch(`${b}/api/conversations/${cid}/turns`, {
@@ -271,6 +277,54 @@ export const useChatStore = create<ChatState>((set, get) => ({
         }
       }
     }
+  },
+
+  async appendInstruction(text: string) {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    // Insert the appended instruction as a normal user bubble placed just
+    // BEFORE the active assistant turn (NOT at the end). The streaming reducer
+    // only updates turns[last] when it is the assistant's, so appending at the
+    // end would freeze the UI — inserting before keeps the assistant turn last
+    // while showing the instruction immediately, below the original request.
+    // The SDK picks the text up at the next iteration boundary; the still-open
+    // /api/chat stream keeps reducing into the assistant turn.
+    const marker: Msg = { role: "user", content: trimmed };
+    set((s) => {
+      const turns = s.turns.slice();
+      const lastIdx = turns.length - 1;
+      if (lastIdx >= 0 && turns[lastIdx].role === "assistant") {
+        turns.splice(lastIdx, 0, marker);
+      } else {
+        turns.push(marker);
+      }
+      return { turns };
+    });
+    try {
+      const baseUrl = await getBaseUrl();
+      await postAppendInstruction(baseUrl, trimmed);
+    } catch {
+      // The SDK never received it — roll back the optimistic bubble so the
+      // transcript doesn't record an instruction that was never queued. The
+      // running stream is unaffected.
+      set((s) => ({ turns: s.turns.filter((t) => t !== marker) }));
+    }
+  },
+
+  async pause() {
+    const ctl = get().abortController;
+    if (!ctl) return;
+    // Tell the server to abort the agent at the next LLM/tool boundary (the
+    // partial round is discarded, not written to memory).
+    try {
+      const baseUrl = await getBaseUrl();
+      await pauseChat(baseUrl);
+    } catch {
+      // best-effort — still abort the client stream below
+    }
+    // Stop reading the stream; the in-flight send()'s finally finalizes the
+    // turn (aborted → not final, done). The next send() resumes from memory.
+    ctl.abort();
   },
 
   reset: () => {

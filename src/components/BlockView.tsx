@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { type Block, type PlanStep } from "../state/chat-store";
+import { useUiStore } from "../state/ui-store";
+import { scrollToBlock } from "../lib/scroll-to-block";
 import Markdown from "./Markdown";
 
 /**
@@ -115,27 +117,26 @@ function TextBlock({
 }
 
 /* ── Plan ────────────────────────────────────────────────── */
-function PlanBlock({ block, isLive }: { block: Extract<Block, { kind: "plan" }>; isLive: boolean }) {
-  const [collapsed, toggle] = useCollapse(true, isLive);
-  const done = block.steps.filter((s) => ["completed", "ok", "done", "finished"].includes((s.status || "").toLowerCase())).length;
+function PlanBlock({ block }: { block: Extract<Block, { kind: "plan" }> }) {
+  const setOpen = useUiStore((s) => s.setPlanPanelOpen);
+  const done = block.steps.filter((s) =>
+    ["completed", "ok", "done", "finished"].includes((s.status || "").toLowerCase())
+  ).length;
   return (
-    <div className="blk blk-plan">
-      <button className="blk-chip" onClick={toggle} type="button">
-        <span className="caret">{collapsed ? "▸" : "▾"}</span> 计划 · {block.steps.length} 步
+    <div className="blk blk-plan" data-block-id={block.id}>
+      <button
+        className="blk-chip plan-chip"
+        onClick={() => {
+          setOpen(true);
+          scrollToBlock(block.id);
+        }}
+        type="button"
+        title="查看执行计划"
+      >
+        <span className="plan-chip-icon" aria-hidden="true">☰</span>
+        计划 · {block.steps.length} 步
         <span className="plan-progress">（{done}/{block.steps.length}）</span>
       </button>
-      {!collapsed && (
-        <div className="plan-body">
-          {block.title && <div className="plan-title">{block.title}</div>}
-          {block.steps.map((s: PlanStep, i) => (
-            <div className="plan-step" key={s.key || i}>
-              <span className={`sdot sdot-${statusDot(s.status)}`} />
-              <span>{s.title || s.key}</span>
-              {s.outcome && <span className="label"> — {s.outcome}</span>}
-            </div>
-          ))}
-        </div>
-      )}
     </div>
   );
 }
@@ -178,7 +179,7 @@ export default function BlockView({
     case "text":
       return <TextBlock block={block} isLive={isLive} />;
     case "plan":
-      return <PlanBlock block={block} isLive={isLive} />;
+      return <PlanBlock block={block} />;
     case "artifact":
       return <ArtifactBlock block={block} />;
     case "permission":

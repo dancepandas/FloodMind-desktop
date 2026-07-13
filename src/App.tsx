@@ -7,6 +7,7 @@ import SettingsView from "./components/SettingsView";
 import Sidebar from "./components/Sidebar";
 import SkillsView from "./components/SkillsView";
 import TopBar from "./components/TopBar";
+import PlanPanel from "./components/PlanPanel";
 import { useUiStore } from "./state/ui-store";
 import { useWorkspaceStore } from "./state/workspace-store";
 import { useConversationStore } from "./state/conversation-store";
@@ -44,7 +45,10 @@ export default function App() {
         {view === "chat" && (
           <>
             <TopBar />
-            <Conversation />
+            <div className="chat-stage">
+              <Conversation />
+              <PlanPanel />
+            </div>
             <Composer />
           </>
         )}

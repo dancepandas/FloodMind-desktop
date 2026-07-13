@@ -71,6 +71,35 @@ def create_app(agent: Agent, workspace_manager=None, conversation_store=None,
 
         return Response(generate(), mimetype="application/x-ndjson")
 
+    @app.post("/api/chat/append")
+    def chat_append():
+        """Append an instruction to the running agent (mid-run steering / queue).
+
+        The frontend calls this when a stream is already active. The SDK executor
+        picks the new message up at the next iteration (steering) or revives at
+        terminal state (queued follow-up). Returns 202 regardless — the effects
+        arrive over the still-open /api/chat stream, not this response.
+        """
+        body = request.get_json(silent=True) or {}
+        messages: list[Message] = body.get("messages", [])
+        text = messages[-1].get("content", "") if messages else body.get("text", "")
+        if not text or not str(text).strip():
+            return jsonify({"error": "text must be non-empty"}), 400
+        agent.append_instruction(str(text))
+        return jsonify({"status": "queued"}), 202
+
+    @app.post("/api/chat/pause")
+    def chat_pause():
+        """Pause the running agent: abort at the next LLM/tool boundary.
+
+        The partial round is discarded (not written to memory). The frontend
+        stops reading the stream; the next /api/chat send resumes from memory.
+        """
+        agent.pause()
+        return jsonify({"status": "paused"})
+
+
+
     @app.post("/api/session/reset")
     def session_reset():
         """New Session: forget conversation history so the next turn starts clean."""
