@@ -1,16 +1,19 @@
 """Model/LLM configuration read+write for the desktop settings GUI.
 
 Wraps the SDK's `~/.floodmind/settings.json` so the GUI never hand-edits JSON.
-- Read uses `get_config()` (merged; creates the file from the template on first
-  call) so the GUI sees defaults even before the user saves anything.
+- Read uses the RAW on-disk JSON so the GUI always matches what was saved,
+  even if a legacy `~/.config/floodmind/config.json` is still on disk.
 - Write reads the RAW on-disk JSON, patches only `model.*` + the chosen
   provider's `options.{apiKey,baseURL}`, then `save_config()` — it never cements
-  unrelated DEFAULT_CONFIG keys into the file.
+  unrelated DEFAULT_CONFIG keys into the file. It also strips the legacy
+  config.json `model`/`providers` sections so the active model cannot be
+  overridden by the old file.
 """
 from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 from typing import Any
 
 _ENV_VARS = [
@@ -46,14 +49,103 @@ def _known_providers() -> list[dict]:
     return out
 
 
+def _settings_path() -> Path:
+    from floodmind.config.settings import _config_path
+
+    return _config_path()
+
+
+def _legacy_config_path() -> Path:
+    return Path.home() / ".config" / "floodmind" / "config.json"
+
+
+def _load_raw_settings() -> dict:
+    """Load the raw `~/.floodmind/settings.json` without SDK merging."""
+    path = _settings_path()
+    if path.exists():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            pass
+    return {}
+
+
+def _strip_legacy_model_config() -> None:
+    """Remove the legacy `model`/`providers` blocks so they cannot override settings.json.
+
+    The SDK still merges `~/.config/floodmind/config.json` on top of
+    `~/.floodmind/settings.json`. Because the desktop GUI writes to
+    `settings.json`, we neutralize the model-related parts of the legacy file.
+    """
+    path = _legacy_config_path()
+    if not path.exists():
+        return
+    try:
+        text = path.read_text(encoding="utf-8")
+        data = json.loads(text)
+        if not isinstance(data, dict):
+            return
+        changed = False
+        if "model" in data:
+            del data["model"]
+            changed = True
+        if "providers" in data:
+            del data["providers"]
+            changed = True
+        if changed:
+            path.write_text(
+                json.dumps(data, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+    except Exception:
+        pass
+
+
+def _provider_options(provider_cfg: dict, provider_id: str) -> dict:
+    """Return the `options` dict for a provider, or {} if missing/malformed."""
+    if not isinstance(provider_cfg, dict):
+        return {}
+    p = provider_cfg.get(provider_id)
+    if not isinstance(p, dict):
+        return {}
+    return p.get("options", {}) or {}
+
+
+def _effective_provider(cfg: dict) -> tuple[str, dict]:
+    """Return (provider_id, options) that the GUI should treat as active.
+
+    Normally this is `model.provider`. If that provider has no API key but
+    exactly one other on-disk provider does, we fall back to the one with the
+    key. Base URL alone is not treated as a credential because some providers
+    (e.g. dashscope) ship a default base URL in the template.
+    """
+    provider_cfg = cfg.get("provider", {}) or {}
+    declared = cfg.get("model", {}).get("provider", "dashscope")
+    declared_opts = _provider_options(provider_cfg, declared)
+    if declared_opts.get("apiKey"):
+        return declared, declared_opts
+
+    candidates = []
+    for pid, p in provider_cfg.items():
+        if pid == declared or not isinstance(p, dict):
+            continue
+        opts = p.get("options", {}) or {}
+        if opts.get("apiKey"):
+            candidates.append((pid, opts))
+
+    if len(candidates) == 1:
+        return candidates[0]
+    return declared, declared_opts
+
+
 def read_model_config() -> dict:
     """Build the GET payload: current model + provider catalog + env overrides."""
-    from floodmind.config.settings import get_config
-
-    cfg = get_config() or {}
-    model = cfg.get("model", {}) or {}
-    provider_cfg = cfg.get("provider", {}) or {}
-    current_provider = model.get("provider", "dashscope")
+    raw = _load_raw_settings()
+    model = raw.get("model", {}) or {}
+    provider_cfg = raw.get("provider", {}) or {}
+    current_provider, cur_opts = _effective_provider(raw)
 
     providers: list[dict] = []
     if isinstance(provider_cfg, dict):
@@ -77,8 +169,6 @@ def read_model_config() -> dict:
         if kp["id"] not in on_disk:
             providers.append(kp)
 
-    cur = provider_cfg.get(current_provider) if isinstance(provider_cfg, dict) else None
-    cur_opts = (cur.get("options", {}) or {}) if isinstance(cur, dict) else {}
     api_key = cur_opts.get("apiKey", "")
 
     return {
@@ -99,17 +189,9 @@ def read_model_config() -> dict:
 
 def write_model_config(body: dict[str, Any]) -> dict:
     """Safe-merge `body` into the raw settings file, save, return the new snapshot."""
-    from floodmind.config.settings import _config_path, save_config
+    from floodmind.config.settings import save_config
 
-    path = _config_path()
-    raw: dict = {}
-    if path.exists():
-        try:
-            loaded = json.loads(path.read_text(encoding="utf-8"))
-            if isinstance(loaded, dict):
-                raw = loaded
-        except Exception:
-            raw = {}
+    raw = _load_raw_settings()
 
     provider = body.get("provider")
     model_name = body.get("model")
@@ -139,6 +221,7 @@ def write_model_config(body: dict[str, Any]) -> dict:
             opts["baseURL"] = body["baseURL"]
 
     save_config(raw)  # full write of the patched raw dict; clears the SDK cache
+    _strip_legacy_model_config()  # keep the legacy file from overriding us
     return read_model_config()
 
 

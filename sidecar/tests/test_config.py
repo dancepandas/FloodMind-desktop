@@ -7,6 +7,7 @@ import json
 
 import pytest
 
+from floodmind_desktop_sidecar import config_api
 from floodmind_desktop_sidecar.config_api import (
     read_model_config,
     write_model_config,
@@ -20,6 +21,10 @@ from floodmind_desktop_sidecar.config_api import (
 @pytest.fixture
 def isolated_home(tmp_path, monkeypatch):
     monkeypatch.setenv("FLOODMIND_HOME", str(tmp_path))
+    # Keep tests from touching the host's legacy config.json.
+    monkeypatch.setattr(
+        config_api, "_legacy_config_path", lambda: tmp_path / "legacy_config.json"
+    )
     from floodmind.config.settings import reload_config
 
     reload_config()  # pick up the new FLOODMIND_HOME
@@ -76,6 +81,90 @@ def test_env_overrides_detected(isolated_home, monkeypatch):
     monkeypatch.setenv("FLOODMIND_MODEL", "override-model")
     cfg = read_model_config()
     assert "FLOODMIND_MODEL" in cfg["envOverrides"]
+
+
+def test_read_falls_back_to_provider_with_credentials(isolated_home):
+    """If model.provider has no credentials but another provider does, expose that one."""
+    settings_file = isolated_home / "settings.json"
+    settings_file.write_text(
+        json.dumps(
+            {
+                "model": {"provider": "dashscope", "model": "deepseek-v4-flash"},
+                "provider": {
+                    "dashscope": {"name": "dashscope", "options": {}, "models": {}},
+                    "custom": {
+                        "name": "custom",
+                        "options": {"apiKey": "sk-test", "baseURL": "http://localhost:3000/v1"},
+                        "models": {},
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    cfg = read_model_config()
+    assert cfg["model"]["provider"] == "custom"
+    assert cfg["apiKeyPresent"] is True
+    assert cfg["baseURL"] == "http://localhost:3000/v1"
+
+
+def test_read_does_not_fallback_when_ambiguous(isolated_home):
+    """With multiple credential-bearing providers, stick to the declared one."""
+    settings_file = isolated_home / "settings.json"
+    settings_file.write_text(
+        json.dumps(
+            {
+                "model": {"provider": "dashscope"},
+                "provider": {
+                    "dashscope": {"name": "dashscope", "options": {}, "models": {}},
+                    "custom": {"name": "custom", "options": {"apiKey": "sk-c"}, "models": {}},
+                    "openai": {"name": "openai", "options": {"apiKey": "sk-o"}, "models": {}},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    cfg = read_model_config()
+    assert cfg["model"]["provider"] == "dashscope"
+    assert cfg["apiKeyPresent"] is False
+
+
+def test_write_switches_active_provider_without_dropping_credentials(isolated_home):
+    """Saving with a new provider updates model.provider while preserving that provider's key."""
+    settings_file = isolated_home / "settings.json"
+    settings_file.write_text(
+        json.dumps(
+            {
+                "model": {"provider": "dashscope", "model": "old"},
+                "provider": {
+                    "dashscope": {"name": "dashscope", "options": {"apiKey": "old-key"}, "models": {}},
+                    "custom": {
+                        "name": "custom",
+                        "options": {"apiKey": "sk-c", "baseURL": "http://host/v1"},
+                        "models": {},
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    snapshot = write_model_config(
+        {
+            "provider": "custom",
+            "model": "m",
+            "temperature": 0.5,
+            "maxTokens": 100,
+            "enableReasoning": False,
+            "enableSearch": False,
+        }
+    )
+    assert snapshot["model"]["provider"] == "custom"
+    on_disk = json.loads(settings_file.read_text(encoding="utf-8"))
+    assert on_disk["model"]["provider"] == "custom"
+    # Credentials under the now-active provider stay intact.
+    assert on_disk["provider"]["custom"]["options"]["apiKey"] == "sk-c"
+    # Other providers are untouched.
+    assert on_disk["provider"]["dashscope"]["options"]["apiKey"] == "old-key"
 
 
 def test_read_soul_returns_default_when_absent(isolated_home):

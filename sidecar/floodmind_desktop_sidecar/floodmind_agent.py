@@ -132,7 +132,10 @@ class FloodMindAgent:
             self._llm = ModelClient.from_settings()
         except Exception as e:
             print(f"[sidecar] ModelClient init failed (model not configured): {e}", file=sys.stderr)
-            self._llm = None
+            # Fallback: if the declared provider has no credentials but another
+            # on-disk provider does, use that provider so an existing settings.json
+            # mismatch does not leave the app unconfigured.
+            self._llm = self._load_llm_fallback()
 
         # Auto-approve by default; ASK-policy tools are handled in stream().
         self._permission_handler = permission_handler or (lambda tool_name, tool_input: True)
@@ -177,6 +180,30 @@ class FloodMindAgent:
             _register_custom_skills()
         except Exception as e:
             print(f"[sidecar] register custom skills failed: {e}", file=sys.stderr)
+
+    def _load_llm_fallback(self):
+        """Try to build a ModelClient from the raw settings.json provider that has credentials."""
+        try:
+            from floodmind.agent.native.model_client import ModelClient
+            from .config_api import _effective_provider, _load_raw_settings
+
+            cfg = _load_raw_settings()
+            provider, opts = _effective_provider(cfg)
+            if not opts.get("apiKey"):
+                return None
+            m = cfg.get("model", {}) or {}
+            print(f"[sidecar] falling back to configured provider: {provider}", file=sys.stderr)
+            return ModelClient.from_settings(
+                api_key=opts.get("apiKey") or None,
+                base_url=opts.get("baseURL") or None,
+                model_name=m.get("model") or None,
+                temperature=m.get("temperature"),
+                max_tokens=m.get("maxTokens"),
+                enable_thinking=bool(m.get("enableReasoning", False)),
+            )
+        except Exception as e:
+            print(f"[sidecar] ModelClient fallback also failed: {e}", file=sys.stderr)
+            return None
 
     def _build_agent(self, session_id: str, persist_dir: str):
         """Construct a fresh SDK agent bound to a per-session DualMemory."""
