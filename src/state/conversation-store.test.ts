@@ -6,11 +6,11 @@ import { useConversationStore } from "./conversation-store";
 
 beforeEach(() => {
   vi.clearAllMocks();
-  useConversationStore.setState({ list: [] });
+  useConversationStore.setState({ list: [], byWorkspace: {} });
 });
 
 describe("conversation-store", () => {
-  it("loadList hits GET /api/conversations?workspace= and stores items", async () => {
+  it("loadList hits GET /api/conversations?workspace= and stores items in both list and byWorkspace", async () => {
     const fetchMock = vi.fn(async () =>
       new Response(JSON.stringify({ conversations: [{ id: "c1", title: "T", updated_at: "x", active: true }] }), { status: 200 })
     );
@@ -19,8 +19,31 @@ describe("conversation-store", () => {
     const items = await useConversationStore.getState().loadList("/ws/A");
     expect(items).toHaveLength(1);
     expect(useConversationStore.getState().list[0].id).toBe("c1");
+    expect(useConversationStore.getState().byWorkspace["/ws/A"]).toHaveLength(1);
+    expect(useConversationStore.getState().byWorkspace["/ws/A"][0].id).toBe("c1");
     expect(String((fetchMock as any).mock.calls[0][0])).toContain("/api/conversations?workspace=");
     expect(((fetchMock as any).mock.calls[0][1] as RequestInit | undefined)?.method ?? "GET").toBe("GET");
+  });
+
+  it("loadWorkspaceConversations populates byWorkspace without mutating list", async () => {
+    // Pre-populate list to prove it stays untouched
+    useConversationStore.setState({ list: [{ id: "prior", title: "P", updated_at: "x", active: false }] });
+
+    const fetchMock = vi.fn(async () =>
+      new Response(JSON.stringify({ conversations: [{ id: "c2", title: "WS", updated_at: "y", active: true }] }), { status: 200 })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const items = await useConversationStore.getState().loadWorkspaceConversations("/ws/B");
+    expect(items).toHaveLength(1);
+
+    const state = useConversationStore.getState();
+    expect(state.byWorkspace["/ws/B"]).toHaveLength(1);
+    expect(state.byWorkspace["/ws/B"][0].id).toBe("c2");
+    // list must be unchanged
+    expect(state.list).toHaveLength(1);
+    expect(state.list[0].id).toBe("prior");
+    expect(String((fetchMock as any).mock.calls[0][0])).toContain("/api/conversations?workspace=");
   });
 
   it("open GETs /api/conversations/<id> and returns the record", async () => {

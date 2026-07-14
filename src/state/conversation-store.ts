@@ -17,7 +17,9 @@ export interface Conversation extends ConvSummary {
 
 interface ConversationState {
   list: ConvSummary[];
+  byWorkspace: Record<string, ConvSummary[]>;
   loadList: (workspace: string) => Promise<ConvSummary[]>;
+  loadWorkspaceConversations: (workspace: string) => Promise<ConvSummary[]>;
   create: (workspace: string) => Promise<Conversation | null>;
   open: (id: string) => Promise<Conversation | null>;
   activate: (id: string) => Promise<boolean>;
@@ -37,11 +39,19 @@ async function getJson(url: string, init?: RequestInit): Promise<any | null> {
 
 export const useConversationStore = create<ConversationState>((set) => ({
   list: [],
+  byWorkspace: {},
 
   async loadList(workspace) {
     const data = await getJson(`/api/conversations?workspace=${encodeURIComponent(workspace)}`);
     const items: ConvSummary[] = (data && data.conversations) || [];
-    set({ list: items });
+    set((s) => ({ list: items, byWorkspace: { ...s.byWorkspace, [workspace]: items } }));
+    return items;
+  },
+
+  async loadWorkspaceConversations(workspace) {
+    const data = await getJson(`/api/conversations?workspace=${encodeURIComponent(workspace)}`);
+    const items: ConvSummary[] = (data && data.conversations) || [];
+    set((s) => ({ byWorkspace: { ...s.byWorkspace, [workspace]: items } }));
     return items;
   },
 
