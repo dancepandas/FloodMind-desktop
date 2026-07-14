@@ -221,6 +221,12 @@ button:focus-visible,
   margin-top: 0.1rem;
 }
 
+.tree-empty {
+  padding: 0.5rem 0.35rem;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
 .sidebar-item.active {
   background: var(--surface);
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);

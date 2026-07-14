@@ -114,7 +114,7 @@ export default function Sidebar() {
       <nav className="sidebar-nav-list" aria-label="主导航">
         {NAV.map((n) => {
           const isNewTask = n.label === "新建任务";
-          const active = isNewTask ? view === "chat" : view === n.view;
+          const active = isNewTask ? false : view === n.view;
           const disabled = isNewTask && (!current || streaming);
           return (
             <button
