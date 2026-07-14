@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { useChatStore, reduceEvent, _resetBlockIdsForTest } from "./chat-store";
+import { useChatStore, reduceEvent, deriveStatusText, _resetBlockIdsForTest } from "./chat-store";
 import type { AssistantTurn } from "./chat-store";
 
 vi.mock("../lib/sidecar-client", () => ({
@@ -33,6 +33,32 @@ import { streamChat, appendInstruction as postAppendInstruction, pauseChat } fro
 function emptyTurn(): AssistantTurn {
   return { role: "assistant", blocks: [], usage: null, done: false };
 }
+
+describe("deriveStatusText", () => {
+  it("returns waiting text when there is no block", () => {
+    expect(deriveStatusText(undefined)).toBe("等待响应…");
+  });
+
+  it("reflects a thinking block", () => {
+    expect(deriveStatusText({ kind: "thinking", content: "hmm" } as any)).toBe("正在思考…");
+  });
+
+  it("reflects a running tool block with the tool name", () => {
+    expect(deriveStatusText({ kind: "tool", tool_name: "read_file", status: "running" } as any)).toBe("正在执行：read_file…");
+  });
+
+  it("reflects a non-final text block", () => {
+    expect(deriveStatusText({ kind: "text", content: "ans", final: false } as any)).toBe("正在回答…");
+  });
+
+  it("returns empty for a final text block", () => {
+    expect(deriveStatusText({ kind: "text", content: "ans", final: true } as any)).toBe("");
+  });
+
+  it("returns empty for unknown block kinds", () => {
+    expect(deriveStatusText({ kind: "error", content: "boom" } as any)).toBe("");
+  });
+});
 
 describe("reduceEvent (block model)", () => {
   it("merges consecutive text deltas into one text block", () => {

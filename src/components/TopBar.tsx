@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { useChatStore, type Block, type Msg } from "../state/chat-store";
+import { useChatStore, deriveStatusText, type Block, type Msg } from "../state/chat-store";
 import { useUiStore } from "../state/ui-store";
 import HealthBadge from "./HealthBadge";
 import UsageBadge from "./UsageBadge";
@@ -16,6 +16,7 @@ function findLatestPlan(turns: Msg[]) {
 
 export default function TopBar() {
   const turns = useChatStore((s) => s.turns);
+  const streaming = useChatStore((s) => s.streaming);
   const reset = useChatStore((s) => s.reset);
   const planOpen = useUiStore((s) => s.planPanelOpen);
   const togglePlan = useUiStore((s) => s.togglePlanPanel);
@@ -24,6 +25,16 @@ export default function TopBar() {
 
   const firstUser = turns.find((m) => m.role === "user")?.content || "";
   const title = firstUser ? firstUser.slice(0, 40) + (firstUser.length > 40 ? "…" : "") : "新会话";
+
+  const lastAssistant = useMemo(() => {
+    for (let i = turns.length - 1; i >= 0; i--) {
+      const t = turns[i];
+      if (t.role === "assistant") return t;
+    }
+    return undefined;
+  }, [turns]);
+  const liveBlock = lastAssistant?.blocks.at(-1);
+  const statusText = streaming ? deriveStatusText(liveBlock) : "";
 
   const planPill = useMemo(() => {
     if (!plan) return null;
@@ -51,6 +62,7 @@ export default function TopBar() {
     <header className="topbar">
       <div className="topbar-title" title={firstUser}>{title}</div>
       <div className="topbar-actions">
+        {statusText && <span className="topbar-status-pill">{statusText}</span>}
         {planPill}
         <HealthBadge />
         <UsageBadge />

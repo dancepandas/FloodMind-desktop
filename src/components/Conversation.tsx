@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import Logo from "./Logo";
 import BlockView from "./BlockView";
 import WelcomeView from "./WelcomeView";
-import { useChatStore, type Block, type Msg } from "../state/chat-store";
+import { useChatStore, deriveStatusText, type Block, type Msg } from "../state/chat-store";
 
 export default function Conversation() {
   const turns = useChatStore((s) => s.turns);
@@ -50,9 +50,7 @@ function TurnView({ turn, isLast, streaming }: { turn: Msg; isLast: boolean; str
   let statusText = "";
   if (isLast && streaming && !turn.done && turn.blocks.length > 0) {
     const live = turn.blocks[turn.blocks.length - 1];
-    if (live.kind === "thinking") statusText = "正在思考…";
-    else if (live.kind === "tool" && live.status === "running") statusText = "正在执行…";
-    else if (live.kind === "text" && !live.final) statusText = "正在回答…";
+    statusText = deriveStatusText(live);
   }
 
   // ── completed turn, process hidden ──────────────────────────

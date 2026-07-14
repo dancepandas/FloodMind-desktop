@@ -40,6 +40,18 @@ export interface AssistantTurn {
   done: boolean;
 }
 
+/**
+ * Derive a human-readable streaming action status from the latest assistant
+ * block. Returns an empty string when there is no meaningful action to show.
+ */
+export function deriveStatusText(lastBlock?: Block): string {
+  if (!lastBlock) return "等待响应…";
+  if (lastBlock.kind === "thinking") return "正在思考…";
+  if (lastBlock.kind === "tool") return `正在执行：${lastBlock.tool_name}…`;
+  if (lastBlock.kind === "text" && !lastBlock.final) return "正在回答…";
+  return "";
+}
+
 interface ChatState {
   turns: Msg[];
   streaming: boolean;
