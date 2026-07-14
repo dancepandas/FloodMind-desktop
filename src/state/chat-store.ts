@@ -47,7 +47,8 @@ export interface AssistantTurn {
 export function deriveStatusText(lastBlock?: Block): string {
   if (!lastBlock) return "等待响应…";
   if (lastBlock.kind === "thinking") return "正在思考…";
-  if (lastBlock.kind === "tool") return `正在执行：${lastBlock.tool_name}…`;
+  if (lastBlock.kind === "tool" && lastBlock.status === "running") return `正在执行：${lastBlock.tool_name}…`;
+  if (lastBlock.kind === "tool") return "";
   if (lastBlock.kind === "text" && !lastBlock.final) return "正在回答…";
   return "";
 }

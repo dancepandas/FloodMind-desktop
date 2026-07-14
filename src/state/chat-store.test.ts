@@ -47,6 +47,14 @@ describe("deriveStatusText", () => {
     expect(deriveStatusText({ kind: "tool", tool_name: "read_file", status: "running" } as any)).toBe("正在执行：read_file…");
   });
 
+  it("returns empty for a completed tool block", () => {
+    expect(deriveStatusText({ kind: "tool", tool_name: "read_file", status: "ok" } as any)).toBe("");
+  });
+
+  it("returns empty for a failed tool block", () => {
+    expect(deriveStatusText({ kind: "tool", tool_name: "read_file", status: "error" } as any)).toBe("");
+  });
+
   it("reflects a non-final text block", () => {
     expect(deriveStatusText({ kind: "text", content: "ans", final: false } as any)).toBe("正在回答…");
   });
