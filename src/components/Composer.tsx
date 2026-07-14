@@ -14,6 +14,7 @@ export default function Composer() {
   const [slashOpen, setSlashOpen] = useState(false);
   const [slashQuery, setSlashQuery] = useState("");
   const [filePickerOpen, setFilePickerOpen] = useState(false);
+  const [slashItem, setSlashItem] = useState<SlashItem | null>(null);
   const streaming = useChatStore((s) => s.streaming);
   const send = useChatStore((s) => s.send);
   const pause = useChatStore((s) => s.pause);
@@ -68,6 +69,16 @@ export default function Composer() {
     resize();
   }
 
+  function insertSlash(item: SlashItem) {
+    const slash = text.lastIndexOf("/");
+    const before = text.slice(0, slash);
+    const after = text.slice(slash + 1 + slashQuery.length);
+    setText(before + after);
+    setSlashItem(item);
+    setSlashOpen(false);
+    resize();
+  }
+
   function buildMessage(): string {
     const trimmed = text.trim();
     if (attachments.length === 0) return trimmed;
@@ -117,10 +128,28 @@ export default function Composer() {
             ))}
           </div>
         )}
+        {slashItem && (
+          <div className="composer-slash-item">
+            <span className="slash-pill" data-kind={slashItem.kind}>
+              <span className="slash-pill-kind">
+                {slashItem.kind === "skill" ? "Skill" : "MCP"}
+              </span>
+              <span className="slash-pill-name">{slashItem.name}</span>
+              <button
+                type="button"
+                className="slash-pill-remove"
+                onClick={() => setSlashItem(null)}
+                aria-label={`移除 ${slashItem.name}`}
+              >
+                ✕
+              </button>
+            </span>
+          </div>
+        )}
         {slashOpen && (
           <SlashPicker
             query={slashQuery}
-            onSelect={() => { /* TODO in Task 3 */ }}
+            onSelect={insertSlash}
             onClose={() => setSlashOpen(false)}
           />
         )}

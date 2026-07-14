@@ -112,4 +112,37 @@ describe("Composer", () => {
     expect(screen.getByText("code-review")).toBeInTheDocument();
     expect(screen.getByText("filesystem")).toBeInTheDocument();
   });
+
+  it("selects a skill and shows it as a removable pill", async () => {
+    render(<Composer />);
+    const textarea = screen.getByLabelText("任务输入") as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: "review /code" } });
+    const row = await screen.findByText("code-review");
+    fireEvent.click(row);
+    expect(textarea.value).toBe("review ");
+    expect(screen.getByText("Skill")).toBeInTheDocument();
+    expect(screen.getByText("code-review")).toBeInTheDocument();
+  });
+
+  it("selects an mcp server and shows it as a removable pill", async () => {
+    render(<Composer />);
+    const textarea = screen.getByLabelText("任务输入") as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: "list /file" } });
+    const row = await screen.findByText("filesystem");
+    fireEvent.click(row);
+    expect(textarea.value).toBe("list ");
+    expect(screen.getByText("MCP")).toBeInTheDocument();
+    expect(screen.getByText("filesystem")).toBeInTheDocument();
+  });
+
+  it("removes the slash pill when clicking its remove button", async () => {
+    render(<Composer />);
+    const textarea = screen.getByLabelText("任务输入");
+    fireEvent.change(textarea, { target: { value: "review /code" } });
+    const row = await screen.findByText("code-review");
+    fireEvent.click(row);
+    const remove = screen.getByLabelText("移除 code-review");
+    fireEvent.click(remove);
+    expect(screen.queryByText("Skill")).not.toBeInTheDocument();
+  });
 });
