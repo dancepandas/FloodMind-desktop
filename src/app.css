@@ -997,12 +997,54 @@ button:focus-visible,
 }
 
 .composer {
+  position: relative;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 1.15rem;
   box-shadow: 0 4px 24px rgba(0, 0, 0, 0.05);
   padding: 0.85rem 1rem;
   transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.composer-picker {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  right: 0;
+  margin-bottom: 0.4rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.08);
+  max-height: 220px;
+  overflow-y: auto;
+  z-index: 20;
+}
+
+.composer-picker-empty {
+  padding: 0.6rem 0.75rem;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.composer-picker-row {
+  width: 100%;
+  text-align: left;
+  padding: 0.45rem 0.75rem;
+  border: none;
+  background: transparent;
+  font-size: 13px;
+  color: var(--fg);
+  cursor: pointer;
+}
+
+.composer-picker-row:hover {
+  background: var(--surface-2);
+}
+
+.composer-picker-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 
 .composer:focus-within {

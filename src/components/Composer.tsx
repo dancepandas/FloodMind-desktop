@@ -3,10 +3,13 @@ import { useChatStore } from "../state/chat-store";
 import { useWorkspaceStore } from "../state/workspace-store";
 import { useAttachmentStore } from "../state/attachment-store";
 import FilePickerModal from "./FilePickerModal";
+import ComposerFilePicker from "./ComposerFilePicker";
 
 export default function Composer() {
   const [text, setText] = useState("");
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [pickerQuery, setPickerQuery] = useState("");
+  const [filePickerOpen, setFilePickerOpen] = useState(false);
   const streaming = useChatStore((s) => s.streaming);
   const send = useChatStore((s) => s.send);
   const pause = useChatStore((s) => s.pause);
@@ -22,6 +25,30 @@ export default function Composer() {
     if (!el) return;
     el.style.height = "auto";
     el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
+  }
+
+  function handleChange(e: React.ChangeEvent<HTMLTextAreaElement>) {
+    const v = e.target.value;
+    setText(v);
+    resize();
+    const at = v.lastIndexOf("@");
+    if (at >= 0 && !v.slice(at + 1).includes(" ")) {
+      setPickerOpen(true);
+      setPickerQuery(v.slice(at + 1));
+    } else {
+      setPickerOpen(false);
+    }
+  }
+
+  function insertFile(name: string) {
+    const at = text.lastIndexOf("@");
+    const before = text.slice(0, at);
+    const after = text.slice(at + 1 + pickerQuery.length);
+    const next = `${before}@${name} ${after}`;
+    setText(next);
+    setPickerOpen(false);
+    addAttachments([name]);
+    resize();
   }
 
   function buildMessage(): string {
@@ -73,15 +100,19 @@ export default function Composer() {
             ))}
           </div>
         )}
+        {pickerOpen && (
+          <ComposerFilePicker
+            query={pickerQuery}
+            onSelect={insertFile}
+            onClose={() => setPickerOpen(false)}
+          />
+        )}
         <textarea
           ref={textareaRef}
           rows={1}
           value={text}
           placeholder={streaming ? "追加指令到当前任务…" : "给 FloodMind 一个任务…"}
-          onChange={(e) => {
-            setText(e.target.value);
-            resize();
-          }}
+          onChange={handleChange}
           onKeyDown={onKeyDown}
           autoFocus
           aria-label="任务输入"
@@ -92,7 +123,7 @@ export default function Composer() {
               className="ctx-pill"
               type="button"
               disabled={!current || streaming}
-              onClick={() => setPickerOpen(true)}
+              onClick={() => setFilePickerOpen(true)}
               title={current ? "引用工作区文件" : "请先打开一个工作区"}
               aria-label="引用工作区文件"
             >
@@ -150,12 +181,12 @@ export default function Composer() {
         <span>Enter 发送，Shift+Enter 换行</span>
       </div>
 
-      {pickerOpen && (
+      {filePickerOpen && (
         <FilePickerModal
-          onClose={() => setPickerOpen(false)}
+          onClose={() => setFilePickerOpen(false)}
           onConfirm={(paths) => {
             addAttachments(paths);
-            setPickerOpen(false);
+            setFilePickerOpen(false);
           }}
         />
       )}
