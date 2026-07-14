@@ -5,11 +5,14 @@ import { useUiStore } from "../state/ui-store";
 import { useAttachmentStore } from "../state/attachment-store";
 import FilePickerModal from "./FilePickerModal";
 import ComposerFilePicker from "./ComposerFilePicker";
+import SlashPicker, { type SlashItem } from "./SlashPicker";
 
 export default function Composer() {
   const [text, setText] = useState("");
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerQuery, setPickerQuery] = useState("");
+  const [slashOpen, setSlashOpen] = useState(false);
+  const [slashQuery, setSlashQuery] = useState("");
   const [filePickerOpen, setFilePickerOpen] = useState(false);
   const streaming = useChatStore((s) => s.streaming);
   const send = useChatStore((s) => s.send);
@@ -36,12 +39,22 @@ export default function Composer() {
     const v = e.target.value;
     setText(v);
     resize();
+
     const at = v.lastIndexOf("@");
-    if (at >= 0 && !v.slice(at + 1).includes(" ")) {
+    const slash = v.lastIndexOf("/");
+    const lastTrigger = Math.max(at, slash);
+
+    if (lastTrigger === at && at >= 0 && !v.slice(at + 1).includes(" ")) {
       setPickerOpen(true);
       setPickerQuery(v.slice(at + 1));
+      setSlashOpen(false);
+    } else if (lastTrigger === slash && slash >= 0 && !v.slice(slash + 1).includes(" ")) {
+      setSlashOpen(true);
+      setSlashQuery(v.slice(slash + 1));
+      setPickerOpen(false);
     } else {
       setPickerOpen(false);
+      setSlashOpen(false);
     }
   }
 
@@ -49,8 +62,7 @@ export default function Composer() {
     const at = text.lastIndexOf("@");
     const before = text.slice(0, at);
     const after = text.slice(at + 1 + pickerQuery.length);
-    const next = `${before}@${name} ${after}`;
-    setText(next);
+    setText(before + after);
     setPickerOpen(false);
     addAttachments([name]);
     resize();
@@ -105,6 +117,13 @@ export default function Composer() {
             ))}
           </div>
         )}
+        {slashOpen && (
+          <SlashPicker
+            query={slashQuery}
+            onSelect={() => { /* TODO in Task 3 */ }}
+            onClose={() => setSlashOpen(false)}
+          />
+        )}
         {pickerOpen && (
           <ComposerFilePicker
             query={pickerQuery}
@@ -136,46 +155,48 @@ export default function Composer() {
             </button>
             <span className="ctx-pill model">deepseek-v4-flash</span>
           </div>
-          <button
-            className="send"
-            type="submit"
-            disabled={!buildMessage().trim()}
-            aria-label="发送"
-          >
-            <svg
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2.5"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              width="16"
-              height="16"
-              aria-hidden="true"
-            >
-              <path d="M12 19V5M5 12l7-7 7 7" />
-            </svg>
-          </button>
-          {streaming && (
+          <div className="composer-actions">
             <button
-              className="pause"
-              type="button"
-              onClick={() => pause()}
-              title="暂停（暂停后可追加指令，再发送即恢复）"
-              aria-label="暂停"
+              className="send"
+              type="submit"
+              disabled={!buildMessage().trim()}
+              aria-label="发送"
             >
               <svg
                 viewBox="0 0 24 24"
-                fill="currentColor"
-                width="14"
-                height="14"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                width="16"
+                height="16"
                 aria-hidden="true"
               >
-                <rect x="6" y="5" width="4" height="14" rx="1" />
-                <rect x="14" y="5" width="4" height="14" rx="1" />
+                <path d="M12 19V5M5 12l7-7 7 7" />
               </svg>
             </button>
-          )}
+            {streaming && (
+              <button
+                className="pause"
+                type="button"
+                onClick={() => pause()}
+                title="暂停（暂停后可追加指令，再发送即恢复）"
+                aria-label="暂停"
+              >
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="currentColor"
+                  width="14"
+                  height="14"
+                  aria-hidden="true"
+                >
+                  <rect x="6" y="5" width="4" height="14" rx="1" />
+                  <rect x="14" y="5" width="4" height="14" rx="1" />
+                </svg>
+              </button>
+            )}
+          </div>
         </div>
       </form>
       <div className="composer-meta">

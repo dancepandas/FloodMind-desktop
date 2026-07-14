@@ -55,6 +55,16 @@ vi.mock("../state/attachment-store", () => ({
     }),
 }));
 
+vi.mock("../state/catalog-store", () => ({
+  useCatalogStore: (selector: (s: any) => any) =>
+    selector({
+      skills: [{ name: "code-review", description: "Review code", disabled: false }],
+      mcpServers: [{ name: "filesystem", connected: true, tools: 3 }],
+      loadSkills: vi.fn(),
+      loadMcp: vi.fn(),
+    }),
+}));
+
 describe("Composer", () => {
   afterEach(() => {
     cleanup();
@@ -80,7 +90,7 @@ describe("Composer", () => {
     fireEvent.change(textarea, { target: { value: "review @r" } });
     const row = await screen.findByText("readme.md");
     fireEvent.click(row);
-    expect(textarea.value).toBe("review @readme.md ");
+    expect(textarea.value).toBe("review ");
     expect(addAttachmentsMock).toHaveBeenCalledWith(["readme.md"]);
   });
 
@@ -91,5 +101,15 @@ describe("Composer", () => {
     await screen.findByText("readme.md");
     fireEvent.change(textarea, { target: { value: "check @ " } });
     expect(screen.queryByText("readme.md")).not.toBeInTheDocument();
+  });
+
+  it("opens the slash picker when / is typed", async () => {
+    render(<Composer />);
+    const textarea = screen.getByLabelText("任务输入");
+    fireEvent.change(textarea, { target: { value: "check /" } });
+    await screen.findByText("Skills");
+    await screen.findByText("MCP 服务器");
+    expect(screen.getByText("code-review")).toBeInTheDocument();
+    expect(screen.getByText("filesystem")).toBeInTheDocument();
   });
 });
