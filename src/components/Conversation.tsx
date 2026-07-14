@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import Logo from "./Logo";
 import BlockView from "./BlockView";
+import WelcomeView from "./WelcomeView";
 import { useChatStore, type Block, type Msg } from "../state/chat-store";
 
 export default function Conversation() {
   const turns = useChatStore((s) => s.turns);
   const streaming = useChatStore((s) => s.streaming);
+  const send = useChatStore((s) => s.send);
   const endRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -15,11 +17,7 @@ export default function Conversation() {
   if (turns.length === 0) {
     return (
       <div className="conversation">
-        <div className="empty-hint">
-          <Logo className="empty-logo" />
-          <div className="big">开始工作</div>
-          <div className="sub">给 FloodMind 一个任务，它会直接读写工作区文件</div>
-        </div>
+        <WelcomeView onSend={send} />
       </div>
     );
   }
