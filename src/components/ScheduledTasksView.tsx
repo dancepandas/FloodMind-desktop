@@ -61,6 +61,7 @@ export default function ScheduledTasksView() {
   function closeModal() {
     setModalOpen(false);
     setEditingTask(null);
+    if (currentPath) load(currentPath);
   }
 
   return (

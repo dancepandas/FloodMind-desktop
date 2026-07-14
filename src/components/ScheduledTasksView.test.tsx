@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
+import { render, screen, fireEvent } from "@testing-library/react";
 import type { SchedTask, RunSummary, RunDetail } from "../state/scheduled-task-store";
 
 const loadMock = vi.fn(async () => []);
@@ -47,8 +48,16 @@ vi.mock("../state/workspace-store", () => ({
 }));
 
 vi.mock("./TaskEditModal", () => ({
-  default: ({ editing }: { editing: SchedTask | null }) => (
-    <div data-testid="task-edit-modal">{editing ? "editing" : "create"}</div>
+  default: ({
+    editing,
+    onClose,
+  }: {
+    editing: SchedTask | null;
+    onClose: () => void;
+  }) => (
+    <button data-testid="task-edit-modal" onClick={onClose} type="button">
+      {editing ? "editing" : "create"}
+    </button>
   ),
 }));
 
@@ -63,7 +72,7 @@ beforeEach(() => {
   mockState = { tasks: [], runs: [], currentRun: null };
 });
 
-function render() {
+function renderStatic() {
   return renderToStaticMarkup(<ScheduledTasksView />);
 }
 
@@ -94,7 +103,7 @@ function makeTask(overrides: Partial<SchedTask> = {}): SchedTask {
 
 describe("ScheduledTasksView", () => {
   it("shows empty hint when no tasks exist", () => {
-    const html = render();
+    const html = renderStatic();
     expect(html).toContain("暂无定时任务，点击上方按钮创建");
     expect(html).toContain("＋ 新建定时任务");
     expect(html).not.toContain("生成日报");
@@ -102,14 +111,14 @@ describe("ScheduledTasksView", () => {
 
   it("shows selection hint when tasks exist but none is selected", () => {
     mockState.tasks = [makeTask()];
-    const html = render();
+    const html = renderStatic();
     expect(html).toContain("选择一个定时任务查看详情");
     expect(html).toContain("生成日报");
   });
 
   it("lists tasks with status dot and command", () => {
     mockState.tasks = [makeTask({ id: "t1", command: "生成日报" }), makeTask({ id: "t2", command: "生成周报" })];
-    const html = render();
+    const html = renderStatic();
     expect(html).toContain("生成日报");
     expect(html).toContain("生成周报");
   });
@@ -117,7 +126,7 @@ describe("ScheduledTasksView", () => {
   it("renders task command, schedule and status", () => {
     selectedTaskId = "t1";
     mockState.tasks = [makeTask({ status: "completed", last_error: "boom" })];
-    const html = render();
+    const html = renderStatic();
     expect(html).toContain("生成日报");
     expect(html).toContain("每日 08:30");
     expect(html).toContain("状态");
@@ -128,7 +137,7 @@ describe("ScheduledTasksView", () => {
   it("renders one-shot schedule when repeat is none", () => {
     selectedTaskId = "t1";
     mockState.tasks = [makeTask({ repeat: "none", scheduled_at: "2099-01-01T09:00" })];
-    const html = render();
+    const html = renderStatic();
     expect(html).toContain("一次性 2099-01-01T09:00");
   });
 
@@ -139,7 +148,7 @@ describe("ScheduledTasksView", () => {
       { run_id: "r1", started_at: "2026-07-10T08:30:00", finished_at: "", status: "completed" },
       { run_id: "r2", started_at: "2026-07-10T08:31:00", finished_at: "", status: "failed" },
     ];
-    const html = render();
+    const html = renderStatic();
     expect(html).toContain("运行历史");
     expect(html).toContain("2026-07-10T08:30:00");
     expect(html).toContain("2026-07-10T08:31:00");
@@ -151,7 +160,7 @@ describe("ScheduledTasksView", () => {
     selectedTaskId = "t1";
     mockState.tasks = [makeTask()];
     mockState.runs = [];
-    const html = render();
+    const html = renderStatic();
     expect(html).toContain("还没有运行记录");
   });
 
@@ -170,7 +179,7 @@ describe("ScheduledTasksView", () => {
       ],
       artifacts: [],
     };
-    const html = render();
+    const html = renderStatic();
     expect(html).toContain("执行过程");
     expect(html).toContain("思考过程");
     expect(html).toContain("final answer");
@@ -188,7 +197,7 @@ describe("ScheduledTasksView", () => {
       events: [],
       artifacts: [{ kind: "file", name: "report.md", path: "/ws/A/report.md" }],
     };
-    const html = render();
+    const html = renderStatic();
     expect(html).toContain("产物");
     expect(html).toContain("report.md");
   });
@@ -205,7 +214,23 @@ describe("ScheduledTasksView", () => {
       events: [],
       artifacts: [],
     };
-    const html = render();
+    const html = renderStatic();
     expect(html).toContain("（无内容）");
+  });
+
+  it("reloads task list when TaskEditModal closes after create", () => {
+    render(<ScheduledTasksView />);
+    fireEvent.click(screen.getByRole("button", { name: /新建定时任务/ }));
+    fireEvent.click(screen.getByTestId("task-edit-modal"));
+    expect(loadMock).toHaveBeenCalledWith("/ws/A");
+  });
+
+  it("reloads task list when TaskEditModal closes after edit", () => {
+    selectedTaskId = "t1";
+    mockState.tasks = [makeTask()];
+    render(<ScheduledTasksView />);
+    fireEvent.click(screen.getByRole("button", { name: /编辑/ }));
+    fireEvent.click(screen.getByTestId("task-edit-modal"));
+    expect(loadMock).toHaveBeenCalledWith("/ws/A");
   });
 });
