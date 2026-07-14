@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent, cleanup } from "@testing-library/react";
+import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react";
 import ComposerFilePicker from "./ComposerFilePicker";
 import type { FileEntry } from "../state/workspace-store";
 
@@ -98,5 +98,22 @@ describe("ComposerFilePicker", () => {
       <ComposerFilePicker query="d.py" onSelect={vi.fn()} onClose={vi.fn()} />
     );
     await screen.findByText("notes/deep/d.py");
+  });
+
+  it("fetches the workspace tree only once and filters locally when query changes", async () => {
+    const { rerender } = render(
+      <ComposerFilePicker query="a" onSelect={vi.fn()} onClose={vi.fn()} />
+    );
+    await screen.findByText("a.txt");
+    expect(listFilesMock).toHaveBeenCalled();
+    const callCountAfterFirstRender = listFilesMock.mock.calls.length;
+
+    rerender(
+      <ComposerFilePicker query="b" onSelect={vi.fn()} onClose={vi.fn()} />
+    );
+    await screen.findByText("b.tsx");
+    await waitFor(() => {
+      expect(listFilesMock.mock.calls.length).toBe(callCountAfterFirstRender);
+    });
   });
 });

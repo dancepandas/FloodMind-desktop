@@ -7,6 +7,8 @@ export interface ComposerFilePickerProps {
   onClose: () => void;
 }
 
+type FileEntryNode = FileEntry & { children?: FileEntryNode[] };
+
 export default function ComposerFilePicker({
   query,
   onSelect,
@@ -14,15 +16,16 @@ export default function ComposerFilePicker({
 }: ComposerFilePickerProps) {
   const current = useWorkspaceStore((s) => s.current);
   const listFiles = useWorkspaceStore((s) => s.listFiles);
+  const [tree, setTree] = useState<FileEntryNode[]>([]);
   const [files, setFiles] = useState<string[]>([]);
 
+  // Fetch the full workspace tree once when the picker opens or workspace changes.
   useEffect(() => {
     if (!current) {
-      setFiles([]);
+      setTree([]);
       return;
     }
     let cancelled = false;
-    type FileEntryNode = FileEntry & { children?: FileEntryNode[] };
 
     async function buildTree(relPath: string): Promise<FileEntryNode[]> {
       const entries = await listFiles(relPath);
@@ -37,6 +40,20 @@ export default function ComposerFilePicker({
       return nodes;
     }
 
+    buildTree(".")
+      .then((nodes) => {
+        if (!cancelled) setTree(nodes);
+      })
+      .catch(() => {
+        if (!cancelled) setTree([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [current, listFiles]);
+
+  // Filter the cached tree locally as the query changes.
+  useEffect(() => {
     function collectFiles(nodes: FileEntryNode[]): string[] {
       const paths: string[] = [];
       for (const n of nodes) {
@@ -46,22 +63,12 @@ export default function ComposerFilePicker({
       return paths;
     }
 
-    buildTree(".")
-      .then((tree) => {
-        if (cancelled) return;
-        const allPaths = collectFiles(tree);
-        const filtered = allPaths
-          .filter((p) => p.toLowerCase().includes(query.toLowerCase()))
-          .slice(0, 8);
-        setFiles(filtered);
-      })
-      .catch(() => {
-        if (!cancelled) setFiles([]);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [current, query, listFiles]);
+    const allPaths = collectFiles(tree);
+    const filtered = allPaths
+      .filter((p) => p.toLowerCase().includes(query.toLowerCase()))
+      .slice(0, 8);
+    setFiles(filtered);
+  }, [tree, query]);
 
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
