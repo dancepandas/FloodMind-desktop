@@ -174,4 +174,20 @@ describe("Composer", () => {
     fireEvent.click(screen.getByLabelText("发送"));
     expect(screen.queryByText("Skill")).not.toBeInTheDocument();
   });
+
+  it("returns focus to textarea after slash selection", async () => {
+    render(<Composer />);
+    const textarea = screen.getByLabelText("任务输入") as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: "review /code" } });
+    fireEvent.click(await screen.findByText("code-review"));
+    expect(document.activeElement).toBe(textarea);
+  });
+
+  it("returns focus to textarea after file selection", async () => {
+    render(<Composer />);
+    const textarea = screen.getByLabelText("任务输入") as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: "review @r" } });
+    fireEvent.click(await screen.findByText("readme.md"));
+    expect(document.activeElement).toBe(textarea);
+  });
 });

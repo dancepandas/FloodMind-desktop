@@ -67,6 +67,7 @@ export default function Composer() {
     setPickerOpen(false);
     addAttachments([name]);
     resize();
+    textareaRef.current?.focus();
   }
 
   function insertSlash(item: SlashItem) {
@@ -77,6 +78,7 @@ export default function Composer() {
     setSlashItem(item);
     setSlashOpen(false);
     resize();
+    textareaRef.current?.focus();
   }
 
   function buildMessage(): string {
@@ -119,7 +121,7 @@ export default function Composer() {
   }
 
   function onKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
-    if (e.key === "Enter" && !e.shiftKey) {
+    if (e.key === "Enter" && !e.shiftKey && !slashOpen) {
       e.preventDefault();
       doSend();
     }

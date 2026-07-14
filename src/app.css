@@ -1061,6 +1061,25 @@ button:focus-visible,
   max-width: 60%;
 }
 
+.slash-picker-row-active {
+  background: var(--surface-2);
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.slash-picker-meta {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.slash-picker-count {
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
 .composer:focus-within {
   border-color: var(--accent);
   box-shadow: 0 4px 28px rgba(13, 148, 136, 0.08);

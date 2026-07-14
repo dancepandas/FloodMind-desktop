@@ -73,4 +73,34 @@ describe("SlashPicker", () => {
     render(<SlashPicker query="zzzzz" onSelect={onSelect} onClose={onClose} />);
     expect(screen.getByText("无匹配项")).toBeInTheDocument();
   });
+
+  it("renders MCP tool count", () => {
+    render(<SlashPicker query="" onSelect={onSelect} onClose={onClose} />);
+    expect(screen.getByText("3 tools")).toBeInTheDocument();
+    expect(screen.getByText("0 tools")).toBeInTheDocument();
+  });
+
+  it("highlights the first option by default and moves with arrow keys", () => {
+    render(<SlashPicker query="" onSelect={onSelect} onClose={onClose} />);
+    const listbox = screen.getByRole("listbox");
+    expect(listbox).toHaveAttribute("aria-activedescendant", "slash-picker-option-0");
+    expect(document.getElementById("slash-picker-option-0")).toHaveClass("slash-picker-row-active");
+
+    fireEvent.keyDown(window, { key: "ArrowDown" });
+    expect(listbox).toHaveAttribute("aria-activedescendant", "slash-picker-option-1");
+    expect(document.getElementById("slash-picker-option-1")).toHaveClass("slash-picker-row-active");
+
+    fireEvent.keyDown(window, { key: "ArrowDown" });
+    expect(listbox).toHaveAttribute("aria-activedescendant", "slash-picker-option-2");
+
+    fireEvent.keyDown(window, { key: "ArrowUp" });
+    expect(listbox).toHaveAttribute("aria-activedescendant", "slash-picker-option-1");
+  });
+
+  it("selects the active option on Enter", () => {
+    render(<SlashPicker query="" onSelect={onSelect} onClose={onClose} />);
+    fireEvent.keyDown(window, { key: "ArrowDown" });
+    fireEvent.keyDown(window, { key: "Enter" });
+    expect(onSelect).toHaveBeenCalledWith({ kind: "mcp", name: "filesystem" });
+  });
 });
