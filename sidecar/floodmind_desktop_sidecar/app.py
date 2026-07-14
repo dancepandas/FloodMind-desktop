@@ -569,12 +569,40 @@ def create_app(agent: Agent, workspace_manager=None, conversation_store=None,
         if target.is_dir():
             return jsonify({"error": "路径是目录"}), 400
         mime = "text/plain"
-        if target.suffix.lower() in {".png", ".jpg", ".jpeg", ".gif", ".webp"}:
-            mime = f"image/{target.suffix.lstrip('.').lower()}"
+        ext = target.suffix.lower()
+        image_exts = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"}
+        base64_exts = {".pdf"}
+        binary_doc_exts = {".docx", ".doc", ".xlsx", ".xls", ".pptx", ".ppt"}
+        if ext in image_exts:
+            mime = f"image/{ext.lstrip('.').lower()}"
             content = base64.b64encode(target.read_bytes()).decode()
+            previewable = True
+        elif ext in base64_exts:
+            mime = {
+                ".pdf": "application/pdf",
+            }.get(ext, "application/octet-stream")
+            content = base64.b64encode(target.read_bytes()).decode()
+            previewable = True
+        elif ext in binary_doc_exts:
+            mime = {
+                ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                ".doc": "application/msword",
+                ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                ".xls": "application/vnd.ms-excel",
+                ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                ".ppt": "application/vnd.ms-powerpoint",
+            }.get(ext, "application/octet-stream")
+            content = ""
+            previewable = False
         else:
             content = target.read_text(encoding="utf-8", errors="replace")
-        return jsonify({"content": content, "mime": mime})
+            previewable = True
+        return jsonify({
+            "content": content,
+            "mime": mime,
+            "previewable": previewable,
+            "path": str(target),
+        })
 
     if workspace_manager is not None:
         @app.get("/api/workspace")

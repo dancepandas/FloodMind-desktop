@@ -55,6 +55,9 @@ function TurnView({ turn, isLast, streaming }: { turn: Msg; isLast: boolean; str
 
   // ── completed turn, process hidden ──────────────────────────
   if (turn.done && hasProcess && !showProcess) {
+    const artifacts = turn.blocks.filter(
+      (b): b is Extract<Block, { kind: "artifact" }> => b.kind === "artifact"
+    );
     return (
       <div className="turn assistant-turn">
         <div className="assistant-header">
@@ -66,6 +69,15 @@ function TurnView({ turn, isLast, streaming }: { turn: Msg; isLast: boolean; str
         {finalBlock && (
           <div data-block-id={finalBlock.id}>
             <BlockView block={finalBlock} isLive={false} />
+          </div>
+        )}
+        {artifacts.length > 0 && (
+          <div className="artifact-list" data-testid="artifact-list">
+            {artifacts.map((b) => (
+              <div key={b.id} data-block-id={b.id}>
+                <BlockView block={b} isLive={false} />
+              </div>
+            ))}
           </div>
         )}
         <button className="show-process" onClick={() => setShowProcess(true)} type="button">
@@ -108,6 +120,12 @@ function TurnView({ turn, isLast, streaming }: { turn: Msg; isLast: boolean; str
           <BlockView block={b} isLive={j === liveIdx} />
         </div>
       ))}
+
+      {turn.done && hasProcess && showProcess && (
+        <button className="show-process" onClick={() => setShowProcess(false)} type="button">
+          收起执行过程
+        </button>
+      )}
 
       {turn.usage && <UsageLine usage={turn.usage} />}
     </div>

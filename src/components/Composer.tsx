@@ -36,12 +36,14 @@ export default function Composer() {
     el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
   }
 
-  function findTriggerIndex(value: string, char: string): number {
+  function findTriggerIndex(value: string, char: string, allowAfter = ""): number {
     let i = value.length;
     while (i >= 0) {
       i = value.lastIndexOf(char, i);
       if (i < 0) return -1;
-      if (i === 0 || /\s/.test(value[i - 1])) return i;
+      if (i === 0) return i;
+      const prev = value[i - 1];
+      if (/\s/.test(prev) || allowAfter.includes(prev)) return i;
       i--;
     }
     return -1;
@@ -54,10 +56,16 @@ export default function Composer() {
     resize();
 
     const beforeCaret = v.slice(0, caret);
-    const at = findTriggerIndex(beforeCaret, "@");
+    const at = findTriggerIndex(beforeCaret, "@", "/");
     const slash = findTriggerIndex(beforeCaret, "/");
 
-    if (at >= 0 && (slash < 0 || at > slash)) {
+    // When slash picker is open, typing @ anywhere switches to the file picker.
+    if (slashOpen && beforeCaret.includes("@")) {
+      const lastAt = beforeCaret.lastIndexOf("@");
+      setPickerOpen(true);
+      setPickerQuery(beforeCaret.slice(lastAt + 1));
+      setSlashOpen(false);
+    } else if (at >= 0 && (slash < 0 || at > slash)) {
       setPickerOpen(true);
       setPickerQuery(beforeCaret.slice(at + 1));
       setSlashOpen(false);
@@ -201,7 +209,11 @@ export default function Composer() {
           ref={textareaRef}
           rows={1}
           value={text}
-          placeholder={streaming ? "追加指令到当前任务…" : "给 FloodMind 一个任务…"}
+          placeholder={
+            streaming
+              ? "追加指令到当前任务…"
+              : "使用 @ 快速引用文件，使用 / 指定 Skill 和 MCP 工具"
+          }
           onChange={handleChange}
           onKeyDown={onKeyDown}
           autoFocus

@@ -19,7 +19,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             ping,
-            sidecar::get_sidecar_base_url
+            sidecar::get_sidecar_base_url,
+            open_path
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -28,4 +29,30 @@ pub fn run() {
 #[tauri::command]
 fn ping() -> String {
     "pong".to_string()
+}
+
+#[tauri::command]
+fn open_path(path: String) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("cmd")
+            .args(["/c", "start", "", &path])
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }

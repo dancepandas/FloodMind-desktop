@@ -6,8 +6,8 @@ test("fetchFilePreview returns content and mime", async () => {
   vi.spyOn(client, "getBaseUrl").mockResolvedValue("http://localhost");
   globalThis.fetch = vi.fn().mockResolvedValue({
     ok: true,
-    json: () => Promise.resolve({ content: "hello", mime: "text/plain" }),
+    json: () => Promise.resolve({ content: "hello", mime: "text/plain", previewable: true, path: "/ws/a.txt" }),
   });
   const out = await fetchFilePreview("a.txt");
-  expect(out).toEqual({ content: "hello", mime: "text/plain" });
+  expect(out).toEqual({ content: "hello", mime: "text/plain", previewable: true, path: "/ws/a.txt" });
 });

@@ -191,6 +191,26 @@ describe("Composer", () => {
     expect(document.activeElement).toBe(textarea);
   });
 
+  it("switches from slash picker to file picker when @ is typed", async () => {
+    render(<Composer />);
+    const textarea = screen.getByLabelText("任务输入") as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: "review /code" } });
+    await screen.findByText("code-review");
+    fireEvent.change(textarea, { target: { value: "review /code@r" } });
+    await screen.findByText("readme.md");
+    expect(screen.queryByText("Skills")).not.toBeInTheDocument();
+  });
+
+  it("can use @ file picker after selecting a slash skill", async () => {
+    render(<Composer />);
+    const textarea = screen.getByLabelText("任务输入") as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: "review /code" } });
+    fireEvent.click(await screen.findByText("code-review"));
+    expect(textarea.value).toBe("review ");
+    fireEvent.change(textarea, { target: { value: "review @r" } });
+    await screen.findByText("readme.md");
+  });
+
   it("returns focus to textarea after file selection", async () => {
     render(<Composer />);
     const textarea = screen.getByLabelText("任务输入") as HTMLTextAreaElement;
