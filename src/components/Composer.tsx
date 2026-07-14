@@ -85,6 +85,7 @@ export default function Composer() {
 
     if (attachments.length > 0) {
       const refs = attachments.map((p) => `- ${p}`).join("\n");
+      if (!trimmed && !slashItem) return `请处理以下文件：\n${refs}`;
       parts.push(`[引用文件]\n${refs}`);
     }
 
