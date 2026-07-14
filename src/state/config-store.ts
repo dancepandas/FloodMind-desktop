@@ -26,6 +26,8 @@ export interface ModelForm {
   enableSearch: boolean;
 }
 
+export type PermissionMode = "always-trust" | "trust-once" | "always-ask";
+
 interface ConfigState {
   model: ModelConfig | null;
   providers: ProviderInfo[];
@@ -44,6 +46,12 @@ interface ConfigState {
   personaLoading: boolean;
   personaSaving: boolean;
   personaError: string | null;
+  // permissions slice
+  permissionMode: PermissionMode;
+  permissionLoading: boolean;
+  permissionSaving: boolean;
+  permissionSavedAt: number | null;
+  permissionError: string | null;
   load: () => Promise<void>;
   save: (form: ModelForm) => Promise<boolean>;
   clearSaved: () => void;
@@ -51,6 +59,8 @@ interface ConfigState {
   saveSoul: (text: string) => Promise<boolean>;
   saveAgents: (text: string) => Promise<boolean>;
   resetSoul: () => Promise<void>;
+  loadPermissions: () => Promise<void>;
+  savePermissions: (mode: PermissionMode) => Promise<boolean>;
 }
 
 export const useConfigStore = create<ConfigState>((set) => ({
@@ -70,6 +80,12 @@ export const useConfigStore = create<ConfigState>((set) => ({
   personaLoading: false,
   personaSaving: false,
   personaError: null,
+  // permissions slice
+  permissionMode: "trust-once",
+  permissionLoading: false,
+  permissionSaving: false,
+  permissionSavedAt: null,
+  permissionError: null,
 
   async load() {
     set({ loading: true, error: null });
@@ -225,5 +241,52 @@ export const useConfigStore = create<ConfigState>((set) => ({
 
   async resetSoul() {
     await this.saveSoul("");
+  },
+
+  async loadPermissions() {
+    set({ permissionLoading: true, permissionError: null });
+    try {
+      const b = await getBaseUrl();
+      const r = await fetch(`${b}/api/permissions`);
+      if (!r.ok) {
+        set({ permissionLoading: false, permissionError: "加载权限配置失败" });
+        return;
+      }
+      const data = await r.json();
+      const mode = data.mode as PermissionMode;
+      set({
+        permissionMode: ["always-trust", "trust-once", "always-ask"].includes(mode) ? mode : "trust-once",
+        permissionLoading: false,
+      });
+    } catch {
+      set({ permissionLoading: false, permissionError: "无法连接到 sidecar" });
+    }
+  },
+
+  async savePermissions(mode: PermissionMode) {
+    set({ permissionSaving: true, permissionError: null, permissionSavedAt: null });
+    try {
+      const b = await getBaseUrl();
+      const r = await fetch(`${b}/api/permissions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode }),
+      });
+      if (!r.ok) {
+        set({ permissionSaving: false, permissionError: "保存失败" });
+        return false;
+      }
+      const data = await r.json();
+      const savedMode = data.permissions?.mode as PermissionMode;
+      set({
+        permissionMode: savedMode || mode,
+        permissionSaving: false,
+        permissionSavedAt: Date.now(),
+      });
+      return true;
+    } catch {
+      set({ permissionSaving: false, permissionError: "无法连接到 sidecar" });
+      return false;
+    }
   },
 }));

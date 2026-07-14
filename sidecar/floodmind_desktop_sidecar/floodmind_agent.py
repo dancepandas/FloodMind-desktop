@@ -27,6 +27,12 @@ import threading
 from typing import Iterator
 
 from .agent import Message
+from .permissions import (
+    PENDING_ASKS,
+    PermissionCache,
+    PermissionMode,
+    permission_fingerprint,
+)
 
 # The SDK's ToolExecutionService runs tool functions in a ThreadPoolExecutor but
 # does not copy contextvars into the worker thread. On the desktop we rely on
@@ -167,6 +173,8 @@ class FloodMindAgent:
 
         # Auto-approve by default; ASK-policy tools are handled in stream().
         self._permission_handler = permission_handler or (lambda tool_name, tool_input: True)
+        self._permission_mode = PermissionMode.TRUST_ONCE
+        self._permission_cache: PermissionCache | None = None
         self._workspace_manager = workspace_manager
         # Output dir captured during _set_workspace; used by the artifact diff.
         self._output_dir = None
@@ -382,14 +390,24 @@ class FloodMindAgent:
                 "path": os.path.join(output_dir, name),
             }
 
-    # ── permission: unblock ASK-policy tools without a UI round-trip ──
-    def _auto_approve(self, raw: dict) -> None:
-        """Respond approve to a permission_ask so the agent doesn't busy-wait.
+    # ── permission: three-tier authorization ──────────────────
+    def set_permission_mode(self, mode: str) -> None:
+        """Update the global permission mode (always-trust | trust-once | always-ask)."""
+        try:
+            self._permission_mode = PermissionMode(mode)
+        except ValueError:
+            self._permission_mode = PermissionMode.TRUST_ONCE
 
-        exit_plan_mode / UpdateProjectInstructions carry an ASK policy that the
-        synchronous permission_handler cannot satisfy (returning True does not
-        short-circuit ASK). Inject the approval directly via AskService.respond.
-        """
+    def _current_workspace_path(self) -> str | None:
+        return self._workspace_manager.current_path() if self._workspace_manager else None
+
+    def _ensure_permission_cache(self) -> PermissionCache:
+        ws = self._current_workspace_path()
+        if self._permission_cache is None or self._permission_cache.workspace != ws:
+            self._permission_cache = PermissionCache(ws)
+        return self._permission_cache
+
+    def _respond_to_ask(self, raw: dict, approved: bool) -> None:
         ask_id = raw.get("ask_id")
         session_id = raw.get("session_id")
         if not ask_id or not session_id:
@@ -399,10 +417,77 @@ class FloodMindAgent:
             from floodmind.agent.runtime.services.ask_service import get_ask_service
 
             get_ask_service().respond(
-                PermissionAskResponse(session_id=session_id, ask_id=ask_id, approved=True)
+                PermissionAskResponse(session_id=session_id, ask_id=ask_id, approved=approved)
             )
         except Exception as e:
-            print(f"[sidecar] auto-approve failed for ask {ask_id}: {e}", file=sys.stderr)
+            print(f"[sidecar] respond to ask {ask_id} failed: {e}", file=sys.stderr)
+
+    def _auto_approve(self, raw: dict) -> None:
+        """Legacy convenience: unconditionally approve a permission_ask."""
+        self._respond_to_ask(raw, approved=True)
+
+    def _handle_permission_ask(self, raw: dict, ev: dict) -> dict:
+        """Return the permission event that should be yielded to the UI.
+
+        In 'always-trust' mode the ask is approved immediately and the event is
+        marked approved=true so the UI can still log it.
+
+        In 'trust-once' mode an approved fingerprint is also approved silently;
+        otherwise the ask is registered as pending and yielded for user action.
+
+        In 'always-ask' mode every ask is yielded pending user action.
+        """
+        tool_name = ev.get("tool_name", "")
+        tool_input = ev.get("input", {})
+        ask_id = ev.get("ask_id", "")
+        session_id = ev.get("session_id", "")
+        fingerprint = permission_fingerprint(tool_name, tool_input, self._current_workspace_path())
+
+        if self._permission_mode == PermissionMode.ALWAYS_TRUST:
+            self._respond_to_ask(raw, approved=True)
+            return {**ev, "approved": True}
+
+        cache = self._ensure_permission_cache()
+        if self._permission_mode == PermissionMode.TRUST_ONCE and cache.is_approved(fingerprint):
+            self._respond_to_ask(raw, approved=True)
+            return {**ev, "approved": True}
+
+        # Needs explicit user approval: register so /api/permission/respond can
+        # look up the fingerprint and unblock the SDK executor.
+        PENDING_ASKS.register(ask_id, session_id, fingerprint, tool_name, tool_input)
+        return ev
+
+    def respond_to_permission_ask(self, ask_id: str, approved: bool) -> dict:
+        """Respond to a pending permission ask and update the trust cache.
+
+        Returns {"ok": True} on success, {"error": ...} otherwise.
+        """
+        pending = PENDING_ASKS.pop(ask_id)
+        if pending is None:
+            return {"error": "未找到待处理的权限请求"}
+
+        try:
+            from floodmind.agent.runtime.contracts.permissions import PermissionAskResponse
+            from floodmind.agent.runtime.services.ask_service import get_ask_service
+
+            get_ask_service().respond(
+                PermissionAskResponse(
+                    session_id=pending.get("session_id", ""),
+                    ask_id=ask_id,
+                    approved=approved,
+                )
+            )
+        except Exception as e:
+            return {"error": f"响应权限请求失败：{e}"}
+
+        if approved and self._permission_mode == PermissionMode.TRUST_ONCE:
+            cache = self._ensure_permission_cache()
+            fingerprint = permission_fingerprint(
+                pending["tool_name"], pending["tool_input"], self._current_workspace_path()
+            )
+            cache.approve(fingerprint)
+
+        return {"ok": True}
 
     # ── memory: per-workspace isolation + New Session ──────────
     def pause(self) -> None:
@@ -669,8 +754,7 @@ class FloodMindAgent:
             for raw in self._agent.stream(user_text, **stream_kwargs):
                 for ev in translate_event(raw):
                     if ev.get("type") == "permission":
-                        # Unblock ASK-policy tools before yielding the ask to the UI.
-                        self._auto_approve(raw)
+                        ev = self._handle_permission_ask(raw, ev)
                     yield ev
         except Exception as e:
             # A mid-stream SDK failure (network drop, 401, internal error) must

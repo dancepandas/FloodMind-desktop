@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { type Block, type PlanStep } from "../state/chat-store";
+import { useChatStore, type Block, type PlanStep } from "../state/chat-store";
 import { useUiStore } from "../state/ui-store";
 import { scrollToBlock } from "../lib/scroll-to-block";
 import Markdown from "./Markdown";
@@ -156,10 +156,58 @@ function ArtifactBlock({ block }: { block: Extract<Block, { kind: "artifact" }> 
 }
 
 function PermissionBlock({ block }: { block: Extract<Block, { kind: "permission" }> }) {
+  const respond = useChatStore((s) => s.respondToPermission);
+  const [resolved, setResolved] = useState(block.approved !== undefined);
+  const approved = block.approved === true;
+
+  if (block.approved === true) {
+    return (
+      <div className="blk blk-permission">
+        🔓 已自动批准 <strong>{block.tool_name}</strong>
+        {block.reason && <span className="perm-reason">：{block.reason}</span>}
+      </div>
+    );
+  }
+
+  if (resolved) {
+    return (
+      <div className="blk blk-permission">
+        {approved ? "🔓 已批准" : "🚫 已拒绝"} <strong>{block.tool_name}</strong>
+      </div>
+    );
+  }
+
   return (
-    <div className="blk blk-permission">
-      🔒 已自动批准 <strong>{block.tool_name}</strong>
-      {block.reason && <span className="perm-reason">：{block.reason}</span>}
+    <div className="blk blk-permission permission-ask">
+      <div className="permission-ask-header">
+        🔒 请求执行 <strong>{block.tool_name}</strong>
+      </div>
+      {block.reason && <div className="permission-ask-reason">{block.reason}</div>}
+      {block.input != null && (
+        <pre className="permission-ask-input">{JSON.stringify(block.input, null, 2)}</pre>
+      )}
+      <div className="permission-ask-actions">
+        <button
+          type="button"
+          className="btn-secondary permission-reject"
+          onClick={() => {
+            setResolved(true);
+            respond(block.ask_id, false);
+          }}
+        >
+          拒绝
+        </button>
+        <button
+          type="button"
+          className="save-btn permission-approve"
+          onClick={() => {
+            setResolved(true);
+            respond(block.ask_id, true);
+          }}
+        >
+          批准
+        </button>
+      </div>
     </div>
   );
 }

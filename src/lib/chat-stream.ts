@@ -8,7 +8,7 @@ export type ChatEvent =
   | { type: "plan"; title: string; steps: unknown[] }
   | { type: "step"; key: string; status: string; title?: string; outcome?: string }
   | { type: "artifact"; kind: "file" | "image"; name: string; path: string }
-  | { type: "permission"; ask_id: string; call_id: string; tool_name: string; reason: string; input: unknown }
+  | { type: "permission"; ask_id: string; call_id: string; tool_name: string; reason: string; input: unknown; approved?: boolean }
   | { type: "usage"; prompt: number; completion: number; total: number }
   | { type: "error"; content: string }
   | { type: "done" };
@@ -28,6 +28,21 @@ export async function pauseChat(baseUrl: string): Promise<void> {
   const res = await fetch(`${baseUrl}/api/chat/pause`, { method: "POST" });
   if (!res.ok) {
     throw new Error(`pause request failed: ${res.status}`);
+  }
+}
+
+export async function respondToPermissionAsk(
+  baseUrl: string,
+  askId: string,
+  approved: boolean,
+): Promise<void> {
+  const res = await fetch(`${baseUrl}/api/permission/respond`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ask_id: askId, approved }),
+  });
+  if (!res.ok) {
+    throw new Error(`permission respond failed: ${res.status}`);
   }
 }
 

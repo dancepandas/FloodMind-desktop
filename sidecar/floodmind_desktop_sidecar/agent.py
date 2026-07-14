@@ -64,6 +64,14 @@ class Agent(Protocol):
         """Return a short LLM-generated title for the conversation, or '' on failure."""
         ...
 
+    def set_permission_mode(self, mode: str) -> None:
+        """Set the global tool permission mode (always-trust|trust-once|always-ask)."""
+        ...
+
+    def respond_to_permission_ask(self, ask_id: str, approved: bool) -> dict:
+        """Respond to a pending permission ask. Returns {"ok": True} or {"error": ...}."""
+        ...
+
     def run_headless(self, session_id: str, workspace_path: str, command: str):
         """Run `command` in an isolated background session bound to `session_id`,
         with `workspace_path` set in the calling thread's contextvars. Returns
@@ -106,6 +114,12 @@ class StubAgent:
 
     def generate_title(self, message: str) -> str:
         return ""
+
+    def set_permission_mode(self, mode: str) -> None:
+        pass
+
+    def respond_to_permission_ask(self, ask_id: str, approved: bool) -> dict:
+        return {"ok": True}
 
     def run_headless(self, session_id, workspace_path, command):
         return [], [], ""

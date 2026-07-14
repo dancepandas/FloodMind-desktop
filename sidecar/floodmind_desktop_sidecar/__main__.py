@@ -50,10 +50,14 @@ def main() -> None:
     os.environ["PATH"] = sidecar_python_dir + os.pathsep + os.environ.get("PATH", "")
 
     workspace_manager = WorkspaceManager()
-    app = create_app(
-        FloodMindAgent(workspace_manager=workspace_manager),
-        workspace_manager=workspace_manager,
-    )
+    agent = FloodMindAgent(workspace_manager=workspace_manager)
+    try:
+        from .config_api import read_permissions_config
+        agent.set_permission_mode(read_permissions_config().get("mode", "trust-once"))
+    except Exception as e:
+        print(f"[sidecar] load permission mode failed: {e}", file=sys.stderr)
+
+    app = create_app(agent, workspace_manager=workspace_manager)
 
     # First stdout line announces readiness + the chosen port. Rust reads this.
     # Use os.write (unbuffered) so the pipe actually delivers the line on Windows

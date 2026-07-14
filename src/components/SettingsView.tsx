@@ -15,6 +15,7 @@ export default function SettingsView() {
           {tab === "model" && <ModelTab />}
           {tab === "identity" && <IdentityTab />}
           {tab === "rules" && <RulesTab />}
+          {tab === "permissions" && <PermissionsTab />}
         </div>
       </div>
     </div>
@@ -180,6 +181,55 @@ function IdentityTab() {
         </div>
       </div>
       {streaming && <div className="env-warn">任务执行中，结束后保存生效。</div>}
+    </div>
+  );
+}
+
+/* ── 权限 tab：工具授权模式 ─────────────────────────────────── */
+function PermissionsTab() {
+  const mode = useConfigStore((s) => s.permissionMode);
+  const loading = useConfigStore((s) => s.permissionLoading);
+  const saving = useConfigStore((s) => s.permissionSaving);
+  const savedAt = useConfigStore((s) => s.permissionSavedAt);
+  const error = useConfigStore((s) => s.permissionError);
+  const loadPermissions = useConfigStore((s) => s.loadPermissions);
+  const savePermissions = useConfigStore((s) => s.savePermissions);
+
+  useEffect(() => { loadPermissions(); }, [loadPermissions]);
+
+  const options: { value: import("../state/config-store").PermissionMode; label: string; desc: string }[] = [
+    { value: "always-trust", label: "完全信任", desc: "所有工具调用自动放行，不询问。" },
+    { value: "trust-once", label: "首次询问", desc: "同一命令第一次执行时询问，同意后后续自动放行。" },
+    { value: "always-ask", label: "每次都问", desc: "每次工具调用前都必须手动授权。" },
+  ];
+
+  if (loading) return <div className="cat-empty">加载中…</div>;
+  return (
+    <div className="settings-form">
+      {error && <div className="env-warn error">{error}</div>}
+      {savedAt && <div className="save-ok">✓ 已保存</div>}
+      <div className="field" role="radiogroup" aria-label="工具权限模式">
+        <span className="field-label">工具执行授权</span>
+        {options.map((opt) => (
+          <label key={opt.value} className="toggle" style={{ marginBottom: "0.35rem" }}>
+            <input
+              type="radio"
+              name="permission-mode"
+              value={opt.value}
+              checked={mode === opt.value}
+              onChange={() => savePermissions(opt.value)}
+              disabled={saving}
+            />
+            <span>
+              <strong>{opt.label}</strong>
+              <span style={{ display: "block", fontSize: "12px", color: "var(--muted)", marginTop: "0.1rem" }}>
+                {opt.desc}
+              </span>
+            </span>
+          </label>
+        ))}
+      </div>
+      {saving && <div className="cat-empty">保存中…</div>}
     </div>
   );
 }

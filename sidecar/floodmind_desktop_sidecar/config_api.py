@@ -303,3 +303,26 @@ def write_agents_md(content: str) -> dict:
     else:
         path.write_text(text, encoding="utf-8")
     return read_agents_md()
+
+
+def read_permissions_config() -> dict:
+    """Return the desktop permissions block from raw settings."""
+    raw = _load_raw_settings()
+    perms = raw.get("permissions", {}) or {}
+    mode = perms.get("mode", "trust-once")
+    if mode not in ("always-trust", "trust-once", "always-ask"):
+        mode = "trust-once"
+    return {"mode": mode}
+
+
+def write_permissions_config(body: dict[str, Any]) -> dict:
+    """Persist the permissions block and return the new snapshot."""
+    from floodmind.config.settings import save_config
+
+    raw = _load_raw_settings()
+    mode = body.get("mode", "trust-once")
+    if mode not in ("always-trust", "trust-once", "always-ask"):
+        mode = "trust-once"
+    raw.setdefault("permissions", {})["mode"] = mode
+    save_config(raw)
+    return read_permissions_config()

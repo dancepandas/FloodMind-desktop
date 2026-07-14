@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { getBaseUrl } from "../lib/sidecar-client";
-import { streamChat, appendInstruction as postAppendInstruction, pauseChat, type ChatEvent, type ChatMessage } from "../lib/chat-stream";
+import { streamChat, appendInstruction as postAppendInstruction, pauseChat, respondToPermissionAsk, type ChatEvent, type ChatMessage } from "../lib/chat-stream";
 import { useConversationStore } from "./conversation-store";
 
 export interface PlanStep {
@@ -29,7 +29,7 @@ export type Block =
   | { id: string; kind: "text"; content: string; final?: boolean }
   | { id: string; kind: "plan"; title: string; steps: PlanStep[] }
   | { id: string; kind: "artifact"; artKind: "file" | "image"; name: string; path: string }
-  | { id: string; kind: "permission"; tool_name: string; reason: string }
+  | { id: string; kind: "permission"; ask_id: string; call_id: string; tool_name: string; reason: string; input?: unknown; approved?: boolean }
   | { id: string; kind: "error"; content: string };
 
 export type Msg = { role: "user"; content: string } | AssistantTurn;
@@ -49,6 +49,7 @@ export function deriveStatusText(lastBlock?: Block): string {
   if (lastBlock.kind === "thinking") return "正在思考…";
   if (lastBlock.kind === "tool" && lastBlock.status === "running") return `正在执行：${lastBlock.tool_name}…`;
   if (lastBlock.kind === "tool") return "";
+  if (lastBlock.kind === "permission" && lastBlock.approved === undefined) return `等待授权：${lastBlock.tool_name}`;
   if (lastBlock.kind === "text" && !lastBlock.final) return "正在回答…";
   return "";
 }
@@ -61,6 +62,7 @@ interface ChatState {
   send: (text: string) => Promise<void>;
   appendInstruction: (text: string) => Promise<void>;
   pause: () => Promise<void>;
+  respondToPermission: (askId: string, approved: boolean) => Promise<void>;
   reset: () => void;
   startNew: (workspace: string) => Promise<void>;
   loadConversation: (id: string) => Promise<void>;
@@ -167,7 +169,19 @@ export function reduceEvent(turn: AssistantTurn, ev: ChatEvent): AssistantTurn {
       blocks = [...blocks, { id: nextId(), kind: "artifact", artKind: ev.kind, name: ev.name, path: ev.path }];
       break;
     case "permission":
-      blocks = [...blocks, { id: nextId(), kind: "permission", tool_name: ev.tool_name, reason: ev.reason }];
+      blocks = [
+        ...blocks,
+        {
+          id: nextId(),
+          kind: "permission",
+          ask_id: ev.ask_id,
+          call_id: ev.call_id,
+          tool_name: ev.tool_name,
+          reason: ev.reason,
+          input: ev.input,
+          approved: ev.approved,
+        },
+      ];
       break;
     case "error":
       blocks = [...blocks, { id: nextId(), kind: "error", content: ev.content }];
@@ -338,6 +352,25 @@ export const useChatStore = create<ChatState>((set, get) => ({
     // Stop reading the stream; the in-flight send()'s finally finalizes the
     // turn (aborted → not final, done). The next send() resumes from memory.
     ctl.abort();
+  },
+
+  async respondToPermission(askId: string, approved: boolean) {
+    try {
+      const baseUrl = await getBaseUrl();
+      await respondToPermissionAsk(baseUrl, askId, approved);
+    } catch (e) {
+      set((s) => {
+        const turns = s.turns.slice();
+        const last = turns[turns.length - 1];
+        if (last && last.role === "assistant") {
+          turns[turns.length - 1] = {
+            ...last,
+            blocks: [...last.blocks, { id: nextId(), kind: "error", content: `⚠️ ${(e as Error).message}` }],
+          };
+        }
+        return { turns };
+      });
+    }
   },
 
   reset: () => {

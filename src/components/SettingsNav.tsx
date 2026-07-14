@@ -1,9 +1,10 @@
-export type Tab = "model" | "identity" | "rules";
+export type Tab = "model" | "identity" | "rules" | "permissions";
 
 const ITEMS: { tab: Tab; label: string }[] = [
   { tab: "model", label: "模型" },
   { tab: "identity", label: "身份" },
   { tab: "rules", label: "规则" },
+  { tab: "permissions", label: "权限" },
 ];
 
 export default function SettingsNav({ active, onChange }: { active: Tab; onChange: (t: Tab) => void }) {

@@ -101,6 +101,40 @@ def create_app(agent: Agent, workspace_manager=None, conversation_store=None,
         agent.pause()
         return jsonify({"status": "paused"})
 
+    @app.get("/api/permissions")
+    def permissions_get():
+        from .config_api import read_permissions_config
+        try:
+            return jsonify(read_permissions_config())
+        except Exception as e:  # pragma: no cover - defensive
+            return jsonify({"error": str(e)}), 500
+
+    @app.post("/api/permissions")
+    def permissions_set():
+        from .config_api import write_permissions_config
+        body = request.get_json(silent=True) or {}
+        try:
+            snapshot = write_permissions_config(body)
+        except Exception as e:  # pragma: no cover - defensive
+            return jsonify({"error": str(e)}), 500
+        try:
+            agent.set_permission_mode(snapshot.get("mode", "trust-once"))
+        except Exception as e:  # pragma: no cover - defensive
+            app.logger.warning("agent.set_permission_mode failed: %s", e)
+        return jsonify({"ok": True, "permissions": snapshot})
+
+    @app.post("/api/permission/respond")
+    def permission_respond():
+        body = request.get_json(silent=True) or {}
+        ask_id = body.get("ask_id", "")
+        approved = bool(body.get("approved", False))
+        if not ask_id:
+            return jsonify({"error": "需要提供 ask_id"}), 400
+        result = agent.respond_to_permission_ask(ask_id, approved)
+        if "error" in result:
+            return jsonify(result), 400
+        return jsonify(result)
+
 
 
     @app.post("/api/session/reset")
