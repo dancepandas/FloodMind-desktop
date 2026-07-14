@@ -3,12 +3,13 @@ import Composer from "./components/Composer";
 import Conversation from "./components/Conversation";
 import DropZone from "./components/DropZone";
 import McpView from "./components/McpView";
+import PlanPanel from "./components/PlanPanel";
+import PreviewPanel from "./components/PreviewPanel";
 import ScheduledTasksView from "./components/ScheduledTasksView";
 import SettingsView from "./components/SettingsView";
 import Sidebar from "./components/Sidebar";
 import SkillsView from "./components/SkillsView";
 import TopBar from "./components/TopBar";
-import PlanPanel from "./components/PlanPanel";
 import { useUiStore } from "./state/ui-store";
 import { useWorkspaceStore } from "./state/workspace-store";
 import { useConversationStore } from "./state/conversation-store";
@@ -17,6 +18,8 @@ import { useScheduledTaskStore } from "./state/scheduled-task-store";
 
 export default function App() {
   const view = useUiStore((s) => s.view);
+  const previewPath = useUiStore((s) => s.previewPath);
+  const closePreview = useUiStore((s) => s.closePreview);
   const currentPath = useWorkspaceStore((s) => s.current?.path);
 
   useEffect(() => {
@@ -50,6 +53,7 @@ export default function App() {
               <div className="chat-stage">
                 <Conversation />
                 <PlanPanel />
+                {previewPath && <PreviewPanel path={previewPath} onClose={closePreview} />}
               </div>
             </DropZone>
             <Composer />

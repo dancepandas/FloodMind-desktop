@@ -177,6 +177,26 @@ button:focus-visible,
   padding-left: 0.8rem;
 }
 
+.sidebar-scroll-list {
+  max-height: 180px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 2px;
+}
+
+.sidebar-scroll-list::-webkit-scrollbar {
+  width: 6px;
+}
+
+.sidebar-scroll-list::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
+
+.sidebar-scroll-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
 /* subtle vertical guide line on the left of the file tree */
 .sidebar-tree::before {
   content: "";
@@ -1803,7 +1823,16 @@ button:focus-visible,
 
 /* ── Drag-and-drop zone ─────────────────────────────────── */
 .drop-zone {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
   position: relative;
+}
+
+.drop-zone > .chat-stage {
+  flex: 1;
+  min-height: 0;
 }
 
 .drop-zone.drag-over::after {
@@ -1821,4 +1850,102 @@ button:focus-visible,
   font-weight: 500;
   pointer-events: none;
   z-index: 10;
+}
+
+/* ── Artifact cards ─────────────────────────────────────── */
+.artifact-card {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.45rem 0.7rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: border-color 0.1s, box-shadow 0.1s;
+}
+.artifact-card:hover {
+  border-color: var(--accent);
+  box-shadow: 0 2px 8px rgba(13, 148, 136, 0.08);
+}
+.artifact-meta {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.artifact-name {
+  font-size: 13px;
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.artifact-size {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* ── Preview panel (right side) ─────────────────────────── */
+.preview-panel {
+  width: 360px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--border);
+  background: var(--surface);
+}
+.preview-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.7rem 0.9rem;
+  border-bottom: 1px solid var(--border-soft);
+}
+.preview-title {
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.preview-close {
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+.preview-close:hover {
+  background: var(--surface-2);
+  color: var(--fg-secondary);
+}
+.preview-body {
+  flex: 1;
+  overflow: auto;
+  padding: 1rem;
+}
+.preview-text {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.preview-body img {
+  max-width: 100%;
+  border-radius: 6px;
+}
+.preview-loading {
+  font-size: 13px;
+  color: var(--muted);
+}
+.preview-error {
+  font-size: 13px;
+  color: var(--red);
 }

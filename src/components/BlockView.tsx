@@ -3,6 +3,7 @@ import { type Block, type PlanStep } from "../state/chat-store";
 import { useUiStore } from "../state/ui-store";
 import { scrollToBlock } from "../lib/scroll-to-block";
 import Markdown from "./Markdown";
+import ArtifactCard from "./ArtifactCard";
 
 /**
  * Collapse hook: a block starts at its default collapsed state, is forced
@@ -143,11 +144,14 @@ function PlanBlock({ block }: { block: Extract<Block, { kind: "plan" }> }) {
 
 /* ── Artifact / Permission / Error ───────────────────────── */
 function ArtifactBlock({ block }: { block: Extract<Block, { kind: "artifact" }> }) {
+  const setPreviewPath = useUiStore((s) => s.setPreviewPath);
   return (
-    <div className="blk blk-artifact" title={block.path}>
-      <span>{block.artKind === "image" ? "🖼" : "📄"}</span>
-      <span className="aname">{block.name}</span>
-    </div>
+    <ArtifactCard
+      name={block.name}
+      artKind={block.artKind}
+      path={block.path}
+      onOpen={() => setPreviewPath(block.path)}
+    />
   );
 }
 

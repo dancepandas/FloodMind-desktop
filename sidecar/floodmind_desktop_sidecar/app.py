@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import sys
 import uuid
 from pathlib import Path
@@ -541,6 +542,37 @@ def create_app(agent: Agent, workspace_manager=None, conversation_store=None,
         except Exception as e:  # pragma: no cover - defensive
             app.logger.warning("agent.reload_persona failed: %s", e)
         return jsonify({"ok": True, "reloaded": reloaded, **snapshot})
+
+    def _require_workspace():
+        if workspace_manager is not None:
+            current = workspace_manager.current_path()
+            if current:
+                return current
+        return os.environ.get("FLOODMIND_DESKTOP_WORKSPACE", "")
+
+    @app.get("/api/workspace/file")
+    def read_workspace_file():
+        workspace = _require_workspace()
+        if not workspace:
+            return jsonify({"error": "no workspace open"}), 400
+        rel = request.args.get("path", "").lstrip("/\\")
+        if not rel:
+            return jsonify({"error": "path required"}), 400
+        target = Path(workspace) / rel
+        target = target.resolve()
+        root = Path(workspace).resolve()
+        # Prevent escape outside the workspace.
+        if root not in target.parents and target != root:
+            return jsonify({"error": "forbidden"}), 403
+        if not target.exists():
+            return jsonify({"error": "not found"}), 404
+        mime = "text/plain"
+        if target.suffix.lower() in {".png", ".jpg", ".jpeg", ".gif", ".webp"}:
+            mime = f"image/{target.suffix.lstrip('.').lower()}"
+            content = base64.b64encode(target.read_bytes()).decode()
+        else:
+            content = target.read_text(encoding="utf-8", errors="replace")
+        return jsonify({"content": content, "mime": mime})
 
     if workspace_manager is not None:
         @app.get("/api/workspace")
