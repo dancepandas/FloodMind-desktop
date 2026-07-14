@@ -3,9 +3,11 @@ import { render, screen, fireEvent, cleanup } from "@testing-library/react";
 import ComposerFilePicker from "./ComposerFilePicker";
 import type { FileEntry } from "../state/workspace-store";
 
-let mockFiles: FileEntry[] = [];
+let fileTree: Record<string, FileEntry[]> = {};
 let mockCurrent: { path: string; name: string } | null = { path: "/ws", name: "ws" };
-const listFilesMock = vi.fn(() => Promise.resolve(mockFiles));
+const listFilesMock = vi.fn((relPath?: string) =>
+  Promise.resolve(fileTree[relPath || "."] ?? [])
+);
 
 vi.mock("../state/workspace-store", () => ({
   useWorkspaceStore: (selector: (s: any) => any) =>
@@ -22,11 +24,20 @@ describe("ComposerFilePicker", () => {
 
   beforeEach(() => {
     listFilesMock.mockClear();
-    mockFiles = [
-      { name: "a.txt", type: "file", path: "a.txt" },
-      { name: "b.tsx", type: "file", path: "b.tsx" },
-      { name: "notes", type: "dir", path: "notes" },
-    ];
+    fileTree = {
+      ".": [
+        { name: "a.txt", type: "file", path: "a.txt" },
+        { name: "b.tsx", type: "file", path: "b.tsx" },
+        { name: "notes", type: "dir", path: "notes" },
+      ],
+      notes: [
+        { name: "c.md", type: "file", path: "notes/c.md" },
+        { name: "deep", type: "dir", path: "notes/deep" },
+      ],
+      "notes/deep": [
+        { name: "d.py", type: "file", path: "notes/deep/d.py" },
+      ],
+    };
     mockCurrent = { path: "/ws", name: "ws" };
   });
 
@@ -62,5 +73,30 @@ describe("ComposerFilePicker", () => {
       <ComposerFilePicker query="" onSelect={vi.fn()} onClose={vi.fn()} />
     );
     expect(container.firstChild).toBeNull();
+  });
+
+  it("shows nested files and inserts their relative path", async () => {
+    const onSelect = vi.fn();
+    render(
+      <ComposerFilePicker query="c" onSelect={onSelect} onClose={vi.fn()} />
+    );
+    const row = await screen.findByText("notes/c.md");
+    fireEvent.click(row);
+    expect(onSelect).toHaveBeenCalledWith("notes/c.md");
+  });
+
+  it("filters nested files by full relative path", async () => {
+    render(
+      <ComposerFilePicker query="notes" onSelect={vi.fn()} onClose={vi.fn()} />
+    );
+    await screen.findByText("notes/c.md");
+    expect(screen.queryByText("a.txt")).not.toBeInTheDocument();
+  });
+
+  it("recursively finds deeply nested files", async () => {
+    render(
+      <ComposerFilePicker query="d.py" onSelect={vi.fn()} onClose={vi.fn()} />
+    );
+    await screen.findByText("notes/deep/d.py");
   });
 });

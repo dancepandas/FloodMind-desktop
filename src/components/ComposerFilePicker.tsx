@@ -22,15 +22,38 @@ export default function ComposerFilePicker({
       return;
     }
     let cancelled = false;
-    listFiles(".")
-      .then((entries) => {
+    type FileEntryNode = FileEntry & { children?: FileEntryNode[] };
+
+    async function buildTree(relPath: string): Promise<FileEntryNode[]> {
+      const entries = await listFiles(relPath);
+      const nodes: FileEntryNode[] = [];
+      for (const e of entries || []) {
+        const node: FileEntryNode = { ...e };
+        if (e.type === "dir") {
+          node.children = await buildTree(e.path);
+        }
+        nodes.push(node);
+      }
+      return nodes;
+    }
+
+    function collectFiles(nodes: FileEntryNode[]): string[] {
+      const paths: string[] = [];
+      for (const n of nodes) {
+        if (n.type === "file") paths.push(n.path);
+        if (n.children) paths.push(...collectFiles(n.children));
+      }
+      return paths;
+    }
+
+    buildTree(".")
+      .then((tree) => {
         if (cancelled) return;
-        const names = (entries || [])
-          .filter((e: FileEntry) => e.type === "file")
-          .map((e: FileEntry) => e.name)
-          .filter((n) => n.toLowerCase().includes(query.toLowerCase()))
+        const allPaths = collectFiles(tree);
+        const filtered = allPaths
+          .filter((p) => p.toLowerCase().includes(query.toLowerCase()))
           .slice(0, 8);
-        setFiles(names);
+        setFiles(filtered);
       })
       .catch(() => {
         if (!cancelled) setFiles([]);
