@@ -11,8 +11,12 @@ const clearAttachmentsMock = vi.fn();
 
 let mockFiles: FileEntry[] = [];
 let mockCurrent: { path: string; name: string } | null = { path: "/ws", name: "ws" };
+let mockRecent: { path: string; name: string }[] = [{ path: "/ws2", name: "ws2" }];
 let mockPending: string[] = [];
 const listFilesMock = vi.fn(() => Promise.resolve(mockFiles));
+const openPathMock = vi.fn();
+const pickAndOpenMock = vi.fn();
+const setViewMock = vi.fn();
 
 vi.mock("../state/chat-store", () => ({
   useChatStore: (selector: (s: any) => any) =>
@@ -27,7 +31,17 @@ vi.mock("../state/workspace-store", () => ({
   useWorkspaceStore: (selector: (s: any) => any) =>
     selector({
       current: mockCurrent,
+      recent: mockRecent,
       listFiles: listFilesMock,
+      openPath: openPathMock,
+      pickAndOpen: pickAndOpenMock,
+    }),
+}));
+
+vi.mock("../state/ui-store", () => ({
+  useUiStore: (selector: (s: any) => any) =>
+    selector({
+      setView: setViewMock,
     }),
 }));
 

@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 import { useChatStore } from "../state/chat-store";
 import { useWorkspaceStore } from "../state/workspace-store";
+import { useUiStore } from "../state/ui-store";
 import { useAttachmentStore } from "../state/attachment-store";
 import FilePickerModal from "./FilePickerModal";
 import ComposerFilePicker from "./ComposerFilePicker";
@@ -14,6 +15,10 @@ export default function Composer() {
   const send = useChatStore((s) => s.send);
   const pause = useChatStore((s) => s.pause);
   const current = useWorkspaceStore((s) => s.current);
+  const recent = useWorkspaceStore((s) => s.recent);
+  const openPath = useWorkspaceStore((s) => s.openPath);
+  const pickAndOpen = useWorkspaceStore((s) => s.pickAndOpen);
+  const setView = useUiStore((s) => s.setView);
   const attachments = useAttachmentStore((s) => s.pending);
   const addAttachments = useAttachmentStore((s) => s.add);
   const removeAttachment = useAttachmentStore((s) => s.remove);
@@ -173,11 +178,34 @@ export default function Composer() {
           )}
         </div>
       </form>
-      <div className="composer-hint">
-        <span>工作区：{current ? current.name : "未选择"}</span>
-        <span>·</span>
-        <span>模型：deepseek-v4-flash</span>
-        <span>·</span>
+      <div className="composer-meta">
+        <select
+          className="workspace-select"
+          value={current?.path ?? ""}
+          onChange={(e) => {
+            const v = e.target.value;
+            if (v === "__pick__") {
+              pickAndOpen();
+            } else if (v) {
+              openPath(v);
+            }
+            setView("chat");
+          }}
+        >
+          {current ? (
+            <option value={current.path}>{current.name}</option>
+          ) : (
+            <option value="">未选择</option>
+          )}
+          {recent
+            .filter((w) => w.path !== current?.path)
+            .map((w) => (
+              <option key={w.path} value={w.path}>
+                {w.name}
+              </option>
+            ))}
+          <option value="__pick__">打开其他工作区…</option>
+        </select>
         <span>Enter 发送，Shift+Enter 换行</span>
       </div>
 
