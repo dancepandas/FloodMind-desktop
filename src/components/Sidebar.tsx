@@ -17,9 +17,9 @@ function FolderIcon() {
   );
 }
 
-const NAV: { view: View; label: string }[] = [
-  { view: "skills", label: "Skills" },
-  { view: "mcp", label: "MCP" },
+const NAV: { view: View; label: string; icon?: string }[] = [
+  { view: "skills", label: "技能" },
+  { view: "mcp", label: "连接器" },
   { view: "settings", label: "设置" },
 ];
 
@@ -82,61 +82,65 @@ export default function Sidebar() {
       {current && convList.length > 0 && (
         <div className="sidebar-section">
           <div className="sidebar-label">会话</div>
-          {convList.map((c) => (
-            <div
-              key={c.id}
-              className={c.id === conversationId ? "sidebar-item conv-item active" : "sidebar-item conv-item"}
-            >
-              <button
-                className="conv-open"
-                onClick={() => loadConversation(c.id)}
-                disabled={streaming}
-                title={c.title}
-                type="button"
+          <div className="sidebar-scroll-list">
+            {convList.map((c) => (
+              <div
+                key={c.id}
+                className={c.id === conversationId ? "sidebar-item conv-item active" : "sidebar-item conv-item"}
               >
-                <span className="item-name">{c.title}</span>
-              </button>
-              <button
-                className="conv-del"
-                onClick={() => {
-                  const wasActive = c.id === conversationId;
-                  removeConv(c.id).then(() => {
-                    if (!current) return;
-                    // Spec: deleting the active conversation activates another
-                    // (here: a fresh one); otherwise just refresh the list.
-                    if (wasActive) startNew(current.path);
-                    else loadList(current.path);
-                  });
-                }}
-                title="删除会话"
-                type="button"
-              >
-                ✕
-              </button>
-            </div>
-          ))}
+                <button
+                  className="conv-open"
+                  onClick={() => loadConversation(c.id)}
+                  disabled={streaming}
+                  title={c.title}
+                  type="button"
+                >
+                  <span className="item-name">{c.title}</span>
+                </button>
+                <button
+                  className="conv-del"
+                  onClick={() => {
+                    const wasActive = c.id === conversationId;
+                    removeConv(c.id).then(() => {
+                      if (!current) return;
+                      // Spec: deleting the active conversation activates another
+                      // (here: a fresh one); otherwise just refresh the list.
+                      if (wasActive) startNew(current.path);
+                      else loadList(current.path);
+                    });
+                  }}
+                  title="删除会话"
+                  type="button"
+                >
+                  ✕
+                </button>
+              </div>
+            ))}
+          </div>
         </div>
       )}
 
       {current && (
         <div className="sidebar-section">
           <div className="sidebar-label">
-            定时任务
+            自动化
             <button className="label-add" onClick={() => setTaskModalOpen(true)} type="button" title="新建定时任务">＋</button>
           </div>
-          {tasks.length === 0 && <div className="tree-empty">暂无定时任务</div>}
-          {tasks.map((t) => (
-            <button
-              key={t.id}
-              className="sidebar-item task-item"
-              onClick={() => { setSelectedTaskId(t.id); setView("tasks"); }}
-              title={t.command}
-              type="button"
-            >
-              <span className={"task-dot task-" + t.status} aria-hidden="true" />
-              <span className="item-name">{t.command}</span>
-            </button>
-          ))}
+          <div className="sidebar-scroll-list">
+            {tasks.length === 0 && <div className="tree-empty">暂无定时任务</div>}
+            {tasks.map((t) => (
+              <button
+                key={t.id}
+                className="sidebar-item task-item"
+                onClick={() => { setSelectedTaskId(t.id); setView("tasks"); }}
+                title={t.command}
+                type="button"
+              >
+                <span className={"task-dot task-" + t.status} aria-hidden="true" />
+                <span className="item-name">{t.command}</span>
+              </button>
+            ))}
+          </div>
         </div>
       )}
 
@@ -166,6 +170,7 @@ export default function Sidebar() {
 
       <div className="sidebar-spacer" />
       <div className="sidebar-section sidebar-nav">
+        <div className="sidebar-label">配置</div>
         {NAV.map((n) => (
           <button
             key={n.view}
