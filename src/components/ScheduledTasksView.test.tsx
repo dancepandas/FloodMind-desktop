@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { SchedTask, RunSummary, RunDetail } from "../state/scheduled-task-store";
 
+const loadMock = vi.fn(async () => []);
 const loadRunsMock = vi.fn(async () => []);
 const loadRunMock = vi.fn(async () => null);
 const runNowMock = vi.fn(async () => null);
@@ -19,6 +20,7 @@ vi.mock("../state/scheduled-task-store", () => ({
       tasks: mockState.tasks,
       runs: mockState.runs,
       currentRun: mockState.currentRun,
+      load: loadMock,
       loadRuns: loadRunsMock,
       loadRun: loadRunMock,
       runNow: runNowMock,
@@ -27,6 +29,7 @@ vi.mock("../state/scheduled-task-store", () => ({
 }));
 
 const setViewMock = vi.fn();
+const setSelectedTaskIdMock = vi.fn();
 let selectedTaskId: string | null = null;
 
 vi.mock("../state/ui-store", () => ({
@@ -34,6 +37,7 @@ vi.mock("../state/ui-store", () => ({
     selector({
       selectedTaskId,
       setView: setViewMock,
+      setSelectedTaskId: setSelectedTaskIdMock,
     }),
 }));
 
@@ -44,7 +48,7 @@ vi.mock("../state/workspace-store", () => ({
 
 vi.mock("./TaskEditModal", () => ({
   default: ({ editing }: { editing: SchedTask | null }) => (
-    <div data-testid="task-edit-modal">{editing ? "editing" : "closed"}</div>
+    <div data-testid="task-edit-modal">{editing ? "editing" : "create"}</div>
   ),
 }));
 
@@ -89,10 +93,25 @@ function makeTask(overrides: Partial<SchedTask> = {}): SchedTask {
 }
 
 describe("ScheduledTasksView", () => {
-  it("shows empty hint when no task is selected", () => {
+  it("shows empty hint when no tasks exist", () => {
     const html = render();
-    expect(html).toContain("选择左侧一个定时任务");
+    expect(html).toContain("暂无定时任务，点击上方按钮创建");
+    expect(html).toContain("＋ 新建定时任务");
     expect(html).not.toContain("生成日报");
+  });
+
+  it("shows selection hint when tasks exist but none is selected", () => {
+    mockState.tasks = [makeTask()];
+    const html = render();
+    expect(html).toContain("选择一个定时任务查看详情");
+    expect(html).toContain("生成日报");
+  });
+
+  it("lists tasks with status dot and command", () => {
+    mockState.tasks = [makeTask({ id: "t1", command: "生成日报" }), makeTask({ id: "t2", command: "生成周报" })];
+    const html = render();
+    expect(html).toContain("生成日报");
+    expect(html).toContain("生成周报");
   });
 
   it("renders task command, schedule and status", () => {
