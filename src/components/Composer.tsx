@@ -81,10 +81,25 @@ export default function Composer() {
 
   function buildMessage(): string {
     const trimmed = text.trim();
-    if (attachments.length === 0) return trimmed;
-    const refs = attachments.map((p) => `- ${p}`).join("\n");
-    if (!trimmed) return `请处理以下文件：\n${refs}`;
-    return `${trimmed}\n\n[引用文件]\n${refs}`;
+    const parts: string[] = [];
+
+    if (attachments.length > 0) {
+      const refs = attachments.map((p) => `- ${p}`).join("\n");
+      parts.push(`[引用文件]\n${refs}`);
+    }
+
+    if (slashItem) {
+      const instruction =
+        slashItem.kind === "skill"
+          ? `请使用 ${slashItem.name} skill`
+          : `请使用 ${slashItem.name} MCP工具`;
+      parts.push(instruction);
+    }
+
+    if (!trimmed && parts.length === 0) return "";
+    if (!trimmed) return parts.join("\n\n");
+    if (parts.length === 0) return trimmed;
+    return `${trimmed}\n\n${parts.join("\n\n")}`;
   }
 
   function doSend() {
@@ -92,6 +107,7 @@ export default function Composer() {
     if (!msg) return;
     send(msg);
     setText("");
+    setSlashItem(null);
     clearAttachments();
     if (textareaRef.current) textareaRef.current.style.height = "auto";
   }

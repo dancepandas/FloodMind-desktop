@@ -145,4 +145,33 @@ describe("Composer", () => {
     fireEvent.click(remove);
     expect(screen.queryByText("Skill")).not.toBeInTheDocument();
   });
+
+  it("sends message with skill instruction when a skill is selected", async () => {
+    render(<Composer />);
+    const textarea = screen.getByLabelText("任务输入") as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: "review /code" } });
+    const row = await screen.findByText("code-review");
+    fireEvent.click(row);
+    fireEvent.click(screen.getByLabelText("发送"));
+    expect(sendMock).toHaveBeenCalledWith("review\n\n请使用 code-review skill");
+  });
+
+  it("sends message with mcp instruction when an mcp server is selected", async () => {
+    render(<Composer />);
+    const textarea = screen.getByLabelText("任务输入") as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: "list files /file" } });
+    const row = await screen.findByText("filesystem");
+    fireEvent.click(row);
+    fireEvent.click(screen.getByLabelText("发送"));
+    expect(sendMock).toHaveBeenCalledWith("list files\n\n请使用 filesystem MCP工具");
+  });
+
+  it("clears slash item after sending", async () => {
+    render(<Composer />);
+    const textarea = screen.getByLabelText("任务输入");
+    fireEvent.change(textarea, { target: { value: "review /code" } });
+    fireEvent.click(await screen.findByText("code-review"));
+    fireEvent.click(screen.getByLabelText("发送"));
+    expect(screen.queryByText("Skill")).not.toBeInTheDocument();
+  });
 });
