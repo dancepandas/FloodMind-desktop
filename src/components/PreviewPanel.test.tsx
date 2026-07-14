@@ -22,6 +22,6 @@ test("calls onClose when close button clicked", async () => {
   const onClose = vi.fn();
   render(<PreviewPanel path="notes.txt" onClose={onClose} />);
   await waitFor(() => expect(screen.getByText("hello")).toBeInTheDocument());
-  fireEvent.click(screen.getByRole("button", { name: /close/i }));
+  fireEvent.click(screen.getByRole("button", { name: /关闭/i }));
   expect(onClose).toHaveBeenCalled();
 });

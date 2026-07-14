@@ -26,7 +26,7 @@ export default function PreviewPanel({ path, onClose }: PreviewPanelProps) {
           className="preview-close"
           onClick={onClose}
           type="button"
-          aria-label="Close"
+          aria-label="关闭"
         >
           ✕
         </button>

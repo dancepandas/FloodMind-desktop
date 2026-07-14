@@ -135,14 +135,14 @@ def create_app(agent: Agent, workspace_manager=None, conversation_store=None,
     def conversations_get(conv_id):
         rec = conversation_store.get(conv_id)
         if rec is None:
-            return jsonify({"error": "not found"}), 404
+            return jsonify({"error": "未找到"}), 404
         return jsonify(rec)
 
     @app.post("/api/conversations/<conv_id>/activate")
     def conversations_activate(conv_id):
         rec = conversation_store.get(conv_id)
         if rec is None:
-            return jsonify({"error": "not found"}), 404
+            return jsonify({"error": "未找到"}), 404
         try:
             agent.activate_conversation(rec["session_id"])
             conversation_store.set_active(rec["workspace"], conv_id)
@@ -156,7 +156,7 @@ def create_app(agent: Agent, workspace_manager=None, conversation_store=None,
         turns = body.get("turns") or []
         rec = conversation_store.append_turns(conv_id, turns)
         if rec is None:
-            return jsonify({"error": "not found"}), 404
+            return jsonify({"error": "未找到"}), 404
         # First-turn title generation: run synchronously so the UI can show the
         # generated title immediately. Swallow failures so persistence never breaks.
         if len(rec.get("turns", [])) <= len(turns):
@@ -175,7 +175,7 @@ def create_app(agent: Agent, workspace_manager=None, conversation_store=None,
     def conversations_delete(conv_id):
         session_id = conversation_store.delete(conv_id)
         if session_id is None:
-            return jsonify({"error": "not found"}), 404
+            return jsonify({"error": "未找到"}), 404
         return jsonify({"ok": True})
 
     # ── Scheduled tasks ───────────────────────────────────────
@@ -221,7 +221,7 @@ def create_app(agent: Agent, workspace_manager=None, conversation_store=None,
     def scheduled_tasks_get(task_id):
         task = task_runtime.get_task(task_id)
         if not task:
-            return jsonify({"error": "not found"}), 404
+            return jsonify({"error": "未找到"}), 404
         return jsonify(task)
 
     @app.patch("/api/scheduled-tasks/<task_id>")
@@ -262,7 +262,7 @@ def create_app(agent: Agent, workspace_manager=None, conversation_store=None,
     def scheduled_tasks_run_detail(task_id, run_id):
         run = task_run_store.get(task_id, run_id)
         if run is None:
-            return jsonify({"error": "not found"}), 404
+            return jsonify({"error": "未找到"}), 404
         return jsonify(run)
 
     # ── Skills & MCP catalog (browse + CRUD) ───────────────────
@@ -554,18 +554,20 @@ def create_app(agent: Agent, workspace_manager=None, conversation_store=None,
     def read_workspace_file():
         workspace = _require_workspace()
         if not workspace:
-            return jsonify({"error": "no workspace open"}), 400
+            return jsonify({"error": "未打开工作区"}), 400
         rel = request.args.get("path", "").lstrip("/\\")
         if not rel:
-            return jsonify({"error": "path required"}), 400
+            return jsonify({"error": "需要提供路径"}), 400
         target = Path(workspace) / rel
         target = target.resolve()
         root = Path(workspace).resolve()
         # Prevent escape outside the workspace.
         if root not in target.parents and target != root:
-            return jsonify({"error": "forbidden"}), 403
+            return jsonify({"error": "禁止访问"}), 403
         if not target.exists():
-            return jsonify({"error": "not found"}), 404
+            return jsonify({"error": "未找到"}), 404
+        if target.is_dir():
+            return jsonify({"error": "路径是目录"}), 400
         mime = "text/plain"
         if target.suffix.lower() in {".png", ".jpg", ".jpeg", ".gif", ".webp"}:
             mime = f"image/{target.suffix.lstrip('.').lower()}"
@@ -584,7 +586,7 @@ def create_app(agent: Agent, workspace_manager=None, conversation_store=None,
             body = request.get_json(silent=True) or {}
             path = body.get("path")
             if not path:
-                return jsonify({"error": "path required"}), 400
+                return jsonify({"error": "需要提供路径"}), 400
             try:
                 summary = workspace_manager.open(path)
             except ValueError as e:
@@ -634,7 +636,7 @@ def create_app(agent: Agent, workspace_manager=None, conversation_store=None,
             """
             current = workspace_manager.current_path()
             if not current:
-                return jsonify({"error": "no workspace open"}), 400
+                return jsonify({"error": "未打开工作区"}), 400
             root = Path(current).resolve()
             body = request.get_json(silent=True) or {}
             files = body.get("files") or []

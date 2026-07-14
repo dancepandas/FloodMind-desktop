@@ -10,3 +10,10 @@ def test_read_workspace_file_forbidden(client, tmp_path, monkeypatch):
     monkeypatch.setenv("FLOODMIND_DESKTOP_WORKSPACE", str(tmp_path))
     r = client.get("/api/workspace/file?path=../etc/passwd")
     assert r.status_code == 403
+
+
+def test_read_workspace_file_directory(client, tmp_path, monkeypatch):
+    monkeypatch.setenv("FLOODMIND_DESKTOP_WORKSPACE", str(tmp_path))
+    (tmp_path / "sub").mkdir()
+    r = client.get("/api/workspace/file?path=sub")
+    assert r.status_code == 400

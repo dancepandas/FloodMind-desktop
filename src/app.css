@@ -177,26 +177,6 @@ button:focus-visible,
   padding-left: 0.8rem;
 }
 
-.sidebar-scroll-list {
-  max-height: 180px;
-  overflow-y: auto;
-  overflow-x: hidden;
-  padding-right: 2px;
-}
-
-.sidebar-scroll-list::-webkit-scrollbar {
-  width: 6px;
-}
-
-.sidebar-scroll-list::-webkit-scrollbar-thumb {
-  background: var(--border);
-  border-radius: 3px;
-}
-
-.sidebar-scroll-list::-webkit-scrollbar-track {
-  background: transparent;
-}
-
 /* subtle vertical guide line on the left of the file tree */
 .sidebar-tree::before {
   content: "";
@@ -1823,16 +1803,7 @@ button:focus-visible,
 
 /* ── Drag-and-drop zone ─────────────────────────────────── */
 .drop-zone {
-  display: flex;
-  flex: 1;
-  min-height: 0;
-  overflow: hidden;
   position: relative;
-}
-
-.drop-zone > .chat-stage {
-  flex: 1;
-  min-height: 0;
 }
 
 .drop-zone.drag-over::after {
