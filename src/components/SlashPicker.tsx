@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useCatalogStore } from "../state/catalog-store";
 
 export interface SlashItem {
@@ -10,9 +10,10 @@ export interface SlashPickerProps {
   query: string;
   onSelect: (item: SlashItem) => void;
   onClose: () => void;
+  inputRef?: React.RefObject<HTMLElement | null>;
 }
 
-export default function SlashPicker({ query, onSelect, onClose }: SlashPickerProps) {
+export default function SlashPicker({ query, onSelect, onClose, inputRef }: SlashPickerProps) {
   const skills = useCatalogStore((s) => s.skills);
   const mcpServers = useCatalogStore((s) => s.mcpServers);
   const loadSkills = useCatalogStore((s) => s.loadSkills);
@@ -41,12 +42,32 @@ export default function SlashPicker({ query, onSelect, onClose }: SlashPickerPro
   );
 
   const [activeIndex, setActiveIndex] = useState(0);
+  const containerRef = useRef<HTMLDivElement>(null);
+
   useEffect(() => {
     setActiveIndex(0);
   }, [query]);
 
   useEffect(() => {
+    setActiveIndex((i) => Math.min(i, Math.max(0, options.length - 1)));
+  }, [options.length]);
+
+  useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
+      const active = document.activeElement;
+      const isInScope =
+        active === inputRef?.current ||
+        containerRef.current?.contains(active) ||
+        false;
+
+      if (!isInScope) {
+        if (e.key === "Escape") {
+          e.preventDefault();
+          onClose();
+        }
+        return;
+      }
+
       if (e.key === "Escape") {
         e.preventDefault();
         onClose();
@@ -66,11 +87,11 @@ export default function SlashPicker({ query, onSelect, onClose }: SlashPickerPro
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [activeIndex, onClose, onSelect, options]);
+  }, [activeIndex, inputRef, onClose, onSelect, options]);
 
   if (options.length === 0) {
     return (
-      <div className="composer-picker slash-picker" role="listbox" aria-label="Skill 和 MCP 选择">
+      <div ref={containerRef} className="composer-picker slash-picker" role="listbox" aria-label="Skill 和 MCP 选择" tabIndex={-1}>
         <div className="composer-picker-empty">无匹配项</div>
       </div>
     );
@@ -81,10 +102,12 @@ export default function SlashPicker({ query, onSelect, onClose }: SlashPickerPro
 
   return (
     <div
+      ref={containerRef}
       className="composer-picker slash-picker"
       role="listbox"
       aria-label="Skill 和 MCP 选择"
       aria-activedescendant={activeId}
+      tabIndex={-1}
     >
       {filteredSkills.length > 0 && (
         <div className="slash-picker-section">

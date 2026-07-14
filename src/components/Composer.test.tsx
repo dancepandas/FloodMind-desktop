@@ -113,6 +113,14 @@ describe("Composer", () => {
     expect(screen.getByText("filesystem")).toBeInTheDocument();
   });
 
+  it("does not open the slash picker for / inside a path or url", async () => {
+    render(<Composer />);
+    const textarea = screen.getByLabelText("任务输入");
+    fireEvent.change(textarea, { target: { value: "src/components" } });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.queryByText("Skills")).not.toBeInTheDocument();
+  });
+
   it("selects a skill and shows it as a removable pill", async () => {
     render(<Composer />);
     const textarea = screen.getByLabelText("任务输入") as HTMLTextAreaElement;

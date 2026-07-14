@@ -69,6 +69,16 @@ describe("SlashPicker", () => {
     expect(onClose).toHaveBeenCalled();
   });
 
+  it("closes on Escape even when focus is outside the picker", () => {
+    render(<SlashPicker query="" onSelect={onSelect} onClose={onClose} />);
+    const outside = document.createElement("button");
+    document.body.appendChild(outside);
+    outside.focus();
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(onClose).toHaveBeenCalled();
+    document.body.removeChild(outside);
+  });
+
   it("shows empty hint when nothing matches", () => {
     render(<SlashPicker query="zzzzz" onSelect={onSelect} onClose={onClose} />);
     expect(screen.getByText("无匹配项")).toBeInTheDocument();
@@ -83,6 +93,7 @@ describe("SlashPicker", () => {
   it("highlights the first option by default and moves with arrow keys", () => {
     render(<SlashPicker query="" onSelect={onSelect} onClose={onClose} />);
     const listbox = screen.getByRole("listbox");
+    listbox.focus();
     expect(listbox).toHaveAttribute("aria-activedescendant", "slash-picker-option-0");
     expect(document.getElementById("slash-picker-option-0")).toHaveClass("slash-picker-row-active");
 
@@ -99,6 +110,8 @@ describe("SlashPicker", () => {
 
   it("selects the active option on Enter", () => {
     render(<SlashPicker query="" onSelect={onSelect} onClose={onClose} />);
+    const listbox = screen.getByRole("listbox");
+    listbox.focus();
     fireEvent.keyDown(window, { key: "ArrowDown" });
     fireEvent.keyDown(window, { key: "Enter" });
     expect(onSelect).toHaveBeenCalledWith({ kind: "mcp", name: "filesystem" });

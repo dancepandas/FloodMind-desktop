@@ -36,22 +36,34 @@ export default function Composer() {
     el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
   }
 
+  function findTriggerIndex(value: string, char: string): number {
+    let i = value.length;
+    while (i >= 0) {
+      i = value.lastIndexOf(char, i);
+      if (i < 0) return -1;
+      if (i === 0 || /\s/.test(value[i - 1])) return i;
+      i--;
+    }
+    return -1;
+  }
+
   function handleChange(e: React.ChangeEvent<HTMLTextAreaElement>) {
     const v = e.target.value;
+    const caret = e.target.selectionStart ?? v.length;
     setText(v);
     resize();
 
-    const at = v.lastIndexOf("@");
-    const slash = v.lastIndexOf("/");
-    const lastTrigger = Math.max(at, slash);
+    const beforeCaret = v.slice(0, caret);
+    const at = findTriggerIndex(beforeCaret, "@");
+    const slash = findTriggerIndex(beforeCaret, "/");
 
-    if (lastTrigger === at && at >= 0 && !v.slice(at + 1).includes(" ")) {
+    if (at >= 0 && (slash < 0 || at > slash)) {
       setPickerOpen(true);
-      setPickerQuery(v.slice(at + 1));
+      setPickerQuery(beforeCaret.slice(at + 1));
       setSlashOpen(false);
-    } else if (lastTrigger === slash && slash >= 0 && !v.slice(slash + 1).includes(" ")) {
+    } else if (slash >= 0) {
       setSlashOpen(true);
-      setSlashQuery(v.slice(slash + 1));
+      setSlashQuery(beforeCaret.slice(slash + 1));
       setPickerOpen(false);
     } else {
       setPickerOpen(false);
@@ -60,7 +72,8 @@ export default function Composer() {
   }
 
   function insertFile(name: string) {
-    const at = text.lastIndexOf("@");
+    const at = findTriggerIndex(text, "@");
+    if (at < 0) return;
     const before = text.slice(0, at);
     const after = text.slice(at + 1 + pickerQuery.length);
     setText(before + after);
@@ -71,7 +84,8 @@ export default function Composer() {
   }
 
   function insertSlash(item: SlashItem) {
-    const slash = text.lastIndexOf("/");
+    const slash = findTriggerIndex(text, "/");
+    if (slash < 0) return;
     const before = text.slice(0, slash);
     const after = text.slice(slash + 1 + slashQuery.length);
     setText(before + after);
@@ -157,7 +171,10 @@ export default function Composer() {
               <button
                 type="button"
                 className="slash-pill-remove"
-                onClick={() => setSlashItem(null)}
+                onClick={() => {
+                  setSlashItem(null);
+                  textareaRef.current?.focus();
+                }}
                 aria-label={`移除 ${slashItem.name}`}
               >
                 ✕
@@ -170,6 +187,7 @@ export default function Composer() {
             query={slashQuery}
             onSelect={insertSlash}
             onClose={() => setSlashOpen(false)}
+            inputRef={textareaRef}
           />
         )}
         {pickerOpen && (
