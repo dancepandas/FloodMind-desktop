@@ -2,23 +2,20 @@ import { useEffect, useState } from "react";
 import PageHeader from "./PageHeader";
 import { useConfigStore, type ModelForm } from "../state/config-store";
 import { useChatStore } from "../state/chat-store";
-
-type Tab = "model" | "identity" | "rules";
+import SettingsNav, { type Tab } from "./SettingsNav";
 
 export default function SettingsView() {
   const [tab, setTab] = useState<Tab>("model");
   return (
     <div className="page">
       <PageHeader title="设置" />
-      <div className="page-body settings-body">
-        <div className="settings-tabs" role="tablist">
-          <button role="tab" className={`settings-tab${tab === "model" ? " active" : ""}`} onClick={() => setTab("model")}>模型</button>
-          <button role="tab" className={`settings-tab${tab === "identity" ? " active" : ""}`} onClick={() => setTab("identity")}>身份</button>
-          <button role="tab" className={`settings-tab${tab === "rules" ? " active" : ""}`} onClick={() => setTab("rules")}>规则</button>
+      <div className="page-body settings-layout">
+        <SettingsNav active={tab} onChange={setTab} />
+        <div className="settings-content">
+          {tab === "model" && <ModelTab />}
+          {tab === "identity" && <IdentityTab />}
+          {tab === "rules" && <RulesTab />}
         </div>
-        {tab === "model" && <ModelTab />}
-        {tab === "identity" && <IdentityTab />}
-        {tab === "rules" && <RulesTab />}
       </div>
     </div>
   );

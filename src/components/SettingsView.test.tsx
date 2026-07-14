@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { render, screen, fireEvent } from "@testing-library/react";
 import { renderToStaticMarkup } from "react-dom/server";
 import SettingsView from "./SettingsView";
 import { useConfigStore } from "../state/config-store";
@@ -27,6 +28,8 @@ describe("SettingsView tabs", () => {
       personaLoading: false,
       personaSaving: false,
       personaError: null,
+      load: vi.fn(),
+      loadPersona: vi.fn(),
     });
     vi.clearAllMocks();
   });
@@ -36,5 +39,11 @@ describe("SettingsView tabs", () => {
     expect(html).toContain("模型");
     expect(html).toContain("身份");
     expect(html).toContain("规则");
+  });
+
+  it("switches tabs via left navigation", () => {
+    render(<SettingsView />);
+    fireEvent.click(screen.getByRole("tab", { name: /身份/ }));
+    expect(screen.getByText(/SOUL.md/)).toBeInTheDocument();
   });
 });
