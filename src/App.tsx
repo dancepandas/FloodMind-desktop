@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import Composer from "./components/Composer";
 import Conversation from "./components/Conversation";
 import DropZone from "./components/DropZone";
@@ -10,11 +10,16 @@ import SettingsView from "./components/SettingsView";
 import Sidebar from "./components/Sidebar";
 import SkillsView from "./components/SkillsView";
 import TopBar from "./components/TopBar";
+import WelcomeSplash from "./components/WelcomeSplash";
 import { useUiStore } from "./state/ui-store";
 import { useWorkspaceStore } from "./state/workspace-store";
 import { useConversationStore } from "./state/conversation-store";
 import { useChatStore } from "./state/chat-store";
+import { useConfigStore } from "./state/config-store";
 import { useResizableWidth } from "./lib/use-resizable-width";
+import { initLogCapture } from "./lib/log-capture";
+
+initLogCapture();
 
 export default function App() {
   const view = useUiStore((s) => s.view);
@@ -22,6 +27,11 @@ export default function App() {
   const closePreview = useUiStore((s) => s.closePreview);
   const planPanelOpen = useUiStore((s) => s.planPanelOpen);
   const currentPath = useWorkspaceStore((s) => s.current?.path);
+
+  // One-time first-launch welcome splash. Show only until the user dismisses it
+  // (flag persisted in localStorage). null = still deciding, to avoid a flash
+  // of the splash on every launch before the check resolves.
+  const [showWelcome, setShowWelcome] = useState<boolean | null>(null);
 
   const sidebarResize = useResizableWidth({
     storageKey: "floodmind.sidebar.width",
@@ -58,8 +68,32 @@ export default function App() {
     return () => { stale = true; };
   }, [currentPath]);
 
+  // Load the model config once on startup so the composer model pill and any
+  // other model-aware UI reflect the saved settings without opening Settings.
+  useEffect(() => {
+    try {
+      setShowWelcome(!localStorage.getItem("floodmind.welcome.seen"));
+    } catch {
+      setShowWelcome(false); // localStorage unavailable — skip the splash.
+    }
+    useConfigStore.getState().load();
+    // Load the persisted permission mode too, so the composer's "授权：…"
+    // pill matches the mode actually in effect from app start.
+    useConfigStore.getState().loadPermissions();
+  }, []);
+
+  const enterApp = () => {
+    try {
+      localStorage.setItem("floodmind.welcome.seen", "1");
+    } catch {
+      /* ignore — best-effort persistence */
+    }
+    setShowWelcome(false);
+  };
+
   return (
     <div className="app">
+      {showWelcome && <WelcomeSplash onEnter={enterApp} />}
       <div className="sidebar-wrap" style={{ width: sidebarResize.width }} data-resizable="right">
         <Sidebar />
         <div className="resize-handle resize-handle-right" onMouseDown={sidebarResize.startResize} />

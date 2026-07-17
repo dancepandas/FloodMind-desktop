@@ -9,6 +9,7 @@ vi.mock("../lib/chat-stream", () => ({
   streamChat: vi.fn(),
   appendInstruction: vi.fn(async () => {}),
   pauseChat: vi.fn(async () => {}),
+  respondToPermissionAsk: vi.fn(async () => {}),
 }));
 vi.mock("./conversation-store", () => ({
   useConversationStore: {
@@ -24,14 +25,16 @@ vi.mock("./conversation-store", () => ({
       })),
       loadList: vi.fn(async () => []),
     }),
+    setState: vi.fn(),
   },
 }));
 
 // Import after mocks are registered.
-import { streamChat, appendInstruction as postAppendInstruction, pauseChat } from "../lib/chat-stream";
+import { streamChat, appendInstruction as postAppendInstruction, pauseChat, respondToPermissionAsk } from "../lib/chat-stream";
+import { useConversationStore } from "./conversation-store";
 
 function emptyTurn(): AssistantTurn {
-  return { role: "assistant", blocks: [], usage: null, done: false };
+  return { id: "t0", role: "assistant", blocks: [], usage: null, done: false };
 }
 
 describe("deriveStatusText", () => {
@@ -136,8 +139,8 @@ describe("chat-store.send", () => {
     useChatStore.setState({
       streaming: true,
       turns: [
-        { role: "user", content: "first" },
-        { role: "assistant", blocks: [], usage: null, done: false },
+        { id: "u1", role: "user", content: "first" },
+        { id: "a1", role: "assistant", blocks: [], usage: null, done: false },
       ],
     });
 
@@ -162,8 +165,8 @@ describe("chat-store.send", () => {
     useChatStore.setState({
       streaming: true,
       turns: [
-        { role: "user", content: "first" },
-        { role: "assistant", blocks: [], usage: null, done: false },
+        { id: "u1", role: "user", content: "first" },
+        { id: "a1", role: "assistant", blocks: [], usage: null, done: false },
       ],
     });
 
@@ -232,18 +235,20 @@ describe("chat-store.send", () => {
     const fetchMock = vi.fn(async () => new Response("{}", { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
     useChatStore.setState({
-      turns: [{ role: "user", content: "x" }, { role: "assistant", blocks: [], usage: null, done: true }],
+      turns: [{ id: "u1", role: "user", content: "x" }, { id: "a1", role: "assistant", blocks: [], usage: null, done: true }],
       streaming: false,
+      title: "some title",
     });
     useChatStore.getState().reset();
     expect(useChatStore.getState().turns).toEqual([]);
+    expect(useChatStore.getState().title).toBe("新会话");
     expect(fetchMock).not.toHaveBeenCalled();
     vi.unstubAllGlobals();
   });
 
   it("startNew creates a conversation, clears turns, sets conversationId", async () => {
     useChatStore.setState({
-      turns: [{ role: "user", content: "old" }],
+      turns: [{ id: "u1", role: "user", content: "old" }],
       streaming: false,
       conversationId: null,
     });
@@ -251,6 +256,7 @@ describe("chat-store.send", () => {
     const st = useChatStore.getState();
     expect(st.turns).toEqual([]);
     expect(st.conversationId).toBe("c-new");
+    expect(st.title).toBe("新会话");   // from the create() mock record
   });
 
   it("loadConversation activates + hydrates turns from the loaded record", async () => {
@@ -259,6 +265,7 @@ describe("chat-store.send", () => {
     expect(st.conversationId).toBe("c-old");
     expect(st.turns).toHaveLength(1);
     expect((st.turns[0] as any).content).toBe("loaded");
+    expect(st.title).toBe("old");      // from the open() mock record's title
   });
 
   it("send posts the finalized turn pair when a conversation is active", async () => {
@@ -284,6 +291,38 @@ describe("chat-store.send", () => {
     vi.unstubAllGlobals();
   });
 
+  it("send refreshes the generated title in byWorkspace (sidebar's source of truth)", async () => {
+    // Regression: the title was patched only into `list`, but the Sidebar reads
+    // byWorkspace[path] — so the new title didn't show until a workspace/conv
+    // switch re-fetched. The patch must reach byWorkspace too.
+    (streamChat as any).mockImplementation(async function* () {
+      yield { type: "done" };
+    });
+    (useConversationStore.setState as any).mockClear();
+    const fetchMock = vi.fn(async () =>
+      new Response(JSON.stringify({ ok: true, title: "水文分析" }), { status: 200 })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    useChatStore.setState({ turns: [], streaming: false, conversationId: "c1" });
+    _resetBlockIdsForTest();
+
+    await useChatStore.getState().send("整理降雨径流");
+    await vi.waitFor(() => expect(useConversationStore.setState).toHaveBeenCalled());
+
+    // Find the title-patch call and run its updater against a fake state.
+    const fakeState = {
+      list: [{ id: "c1", title: "新会话", updated_at: "t", active: true }],
+      byWorkspace: { "/ws": [{ id: "c1", title: "新会话", updated_at: "t", active: true }] },
+    };
+    const call = (useConversationStore.setState as any).mock.calls
+      .map((c: any) => (typeof c[0] === "function" ? (c[0] as any)(fakeState) : c[0]))
+      .find((out: any) => out?.byWorkspace?.["/ws"]?.[0]?.title === "水文分析");
+    expect(call).toBeTruthy();
+    expect(call.list[0].title).toBe("水文分析");
+    expect(useChatStore.getState().title).toBe("水文分析");   // TopBar's source
+    vi.unstubAllGlobals();
+  });
+
   it("send does NOT post when no conversation is active", async () => {
     (streamChat as any).mockImplementation(async function* () {
       yield { type: "done" };
@@ -296,5 +335,71 @@ describe("chat-store.send", () => {
     await useChatStore.getState().send("hi");
     expect(fetchMock).not.toHaveBeenCalled();
     vi.unstubAllGlobals();
+  });
+});
+
+describe("respondToPermission", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("optimistically marks the matching permission block approved", async () => {
+    (respondToPermissionAsk as any).mockResolvedValue(undefined);
+    useChatStore.setState({
+      turns: [
+        { id: "t1", role: "assistant", done: true, usage: null, blocks: [
+          { id: "p1", kind: "permission", ask_id: "ask-1", call_id: "c1", tool_name: "Bash", reason: "r", approved: undefined },
+        ] },
+      ],
+      streaming: false,
+      conversationId: "c1",
+    });
+
+    await useChatStore.getState().respondToPermission("ask-1", true);
+
+    expect(respondToPermissionAsk).toHaveBeenCalledWith("http://test", "ask-1", true);
+    const block = (useChatStore.getState().turns[0] as AssistantTurn).blocks[0];
+    expect(block.kind).toBe("permission");
+    expect((block as any).approved).toBe(true);
+  });
+
+  it("appends an error block when the respond request fails", async () => {
+    (respondToPermissionAsk as any).mockRejectedValue(new Error("network down"));
+    useChatStore.setState({
+      turns: [
+        { id: "t1", role: "assistant", done: true, usage: null, blocks: [
+          { id: "p1", kind: "permission", ask_id: "ask-1", call_id: "c1", tool_name: "Bash", reason: "r", approved: undefined },
+        ] },
+      ],
+      streaming: false,
+      conversationId: "c1",
+    });
+
+    await useChatStore.getState().respondToPermission("ask-1", false);
+
+    const blocks = (useChatStore.getState().turns[0] as AssistantTurn).blocks;
+    expect(blocks.some((b) => b.kind === "error" && (b as any).content.includes("network down"))).toBe(true);
+    // The original permission block is left untouched (still waiting).
+    expect((blocks[0] as any).approved).toBeUndefined();
+  });
+
+  it("updates a permission block on an earlier (non-last) assistant turn", async () => {
+    (respondToPermissionAsk as any).mockResolvedValue(undefined);
+    useChatStore.setState({
+      turns: [
+        { id: "t1", role: "assistant", done: true, usage: null, blocks: [
+          { id: "p1", kind: "permission", ask_id: "ask-1", call_id: "c1", tool_name: "Bash", reason: "r", approved: undefined },
+        ] },
+        { role: "user", id: "u1", content: "follow up" },
+        { id: "t2", role: "assistant", done: true, usage: null, blocks: [] },
+      ],
+      streaming: false,
+      conversationId: "c1",
+    });
+
+    await useChatStore.getState().respondToPermission("ask-1", true);
+
+    const first = useChatStore.getState().turns[0] as AssistantTurn;
+    expect((first.blocks[0] as any).approved).toBe(true);
   });
 });

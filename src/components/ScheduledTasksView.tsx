@@ -7,7 +7,7 @@ import BlockView from "./BlockView";
 import TaskEditModal from "./TaskEditModal";
 
 function emptyTurn(): AssistantTurn {
-  return { role: "assistant", blocks: [], usage: null, done: false };
+  return { id: "replay", role: "assistant", blocks: [], usage: null, done: false };
 }
 
 /** Replay a run's stored events through reduceEvent → blocks (reuses chat rendering). */

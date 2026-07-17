@@ -23,6 +23,27 @@ if not _sdk_log.handlers:
     _sdk_log.addHandler(_h)
     _sdk_log.propagate = False
 
+# On Windows, prevent every subprocess (PowerShell / bash / skill scripts) from
+# flashing a console window. We patch Popen before importing the SDK so all
+# downstream tool calls inherit the hidden-window behavior.
+if sys.platform == "win32":
+    import subprocess as _subprocess
+
+    _orig_popen_init = _subprocess.Popen.__init__
+
+    def _popen_no_console(self, *args, **kwargs):
+        startupinfo = kwargs.get("startupinfo")
+        if startupinfo is None:
+            startupinfo = _subprocess.STARTUPINFO()
+            kwargs["startupinfo"] = startupinfo
+        startupinfo.dwFlags |= _subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = _subprocess.SW_HIDE
+        kwargs["creationflags"] = kwargs.get("creationflags", 0) | _subprocess.CREATE_NO_WINDOW
+        return _orig_popen_init(self, *args, **kwargs)
+
+    _subprocess.Popen.__init__ = _popen_no_console
+
+
 from .floodmind_agent import FloodMindAgent
 from .workspace import WorkspaceManager
 from .app import create_app

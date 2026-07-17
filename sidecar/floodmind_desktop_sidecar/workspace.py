@@ -81,5 +81,26 @@ class WorkspaceManager:
             self._save()
         return self._summary(rp)
 
+    def forget(self, path: str) -> tuple[dict, bool]:
+        """Unpin ``path`` from the recent list (remove it from the sidebar).
+
+        Does NOT delete anything on disk — the folder and its per-workspace
+        memory/conversations stay intact and reappear if the user reopens it. If
+        ``path`` is the current workspace, current switches to the most-recent
+        remaining entry (or None when none remain). Returns ``(summary,
+        current_changed)`` so the caller can rebind the agent. Never raises:
+        forgetting a folder that no longer exists on disk must still work.
+        """
+        target = str(path or "").strip()
+        with self._lock:
+            self._cfg["recent"] = [p for p in self._cfg.get("recent", []) if p != target]
+            current_changed = False
+            if target and target == self._cfg.get("current"):
+                remaining = self._cfg["recent"]
+                self._cfg["current"] = remaining[0] if remaining else None
+                current_changed = True
+            self._save()
+        return self.summary(), current_changed
+
     def summary(self) -> dict:
         return {"current": self.current(), "recent": self.recent()}

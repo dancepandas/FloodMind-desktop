@@ -1,17 +1,74 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useChatStore } from "../state/chat-store";
 import { useConversationStore, type ConvSummary } from "../state/conversation-store";
 import { useUiStore, type View } from "../state/ui-store";
 import { useWorkspaceStore, type WorkspaceSummary } from "../state/workspace-store";
 import Logo from "./Logo";
 
-const NAV: { view: View; label: string; icon: string }[] = [
-  { view: "chat", label: "新建任务", icon: "＋" },
-  { view: "chat", label: "对话", icon: "◇" },
-  { view: "skills", label: "技能", icon: "⚡" },
-  { view: "mcp", label: "连接器", icon: "🔌" },
-  { view: "tasks", label: "自动化", icon: "⏱" },
-  { view: "settings", label: "设置", icon: "⚙" },
+function NavIcon({ children }: { children: ReactNode }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="18"
+      height="18"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      {children}
+    </svg>
+  );
+}
+
+const PlusIcon = () => (
+  <NavIcon>
+    <line x1="12" y1="5" x2="12" y2="19" />
+    <line x1="5" y1="12" x2="19" y2="12" />
+  </NavIcon>
+);
+
+const ChatIcon = () => (
+  <NavIcon>
+    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+  </NavIcon>
+);
+
+const ZapIcon = () => (
+  <NavIcon>
+    <polygon points="13 2 3 14 12 14 11 22 21 10 12 10" />
+  </NavIcon>
+);
+
+const LinkIcon = () => (
+  <NavIcon>
+    <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+    <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+  </NavIcon>
+);
+
+const ClockIcon = () => (
+  <NavIcon>
+    <circle cx="12" cy="12" r="10" />
+    <polyline points="12 6 12 12 16 14" />
+  </NavIcon>
+);
+
+const SlidersIcon = () => (
+  <NavIcon>
+    <path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M2 14h4M10 10h4M18 16h4" />
+  </NavIcon>
+);
+
+const NAV: { view: View; label: string; icon: ReactNode }[] = [
+  { view: "chat", label: "新建任务", icon: <PlusIcon /> },
+  { view: "chat", label: "对话", icon: <ChatIcon /> },
+  { view: "skills", label: "Skills", icon: <ZapIcon /> },
+  { view: "mcp", label: "MCP", icon: <LinkIcon /> },
+  { view: "tasks", label: "自动化", icon: <ClockIcon /> },
+  { view: "settings", label: "设置", icon: <SlidersIcon /> },
 ];
 
 function getWorkspaceConversations(
@@ -27,6 +84,7 @@ export default function Sidebar() {
   const load = useWorkspaceStore((s) => s.load);
   const openPath = useWorkspaceStore((s) => s.openPath);
   const pickAndOpen = useWorkspaceStore((s) => s.pickAndOpen);
+  const removeWorkspace = useWorkspaceStore((s) => s.remove);
 
   const streaming = useChatStore((s) => s.streaming);
   const conversationId = useChatStore((s) => s.conversationId);
@@ -104,6 +162,29 @@ export default function Sidebar() {
     });
   };
 
+  const handleDeleteWorkspace = (ws: WorkspaceSummary) => {
+    if (!window.confirm(
+      `确定从列表移除工作区「${ws.name}」？\n（不会删除磁盘上的文件夹，仅从侧边栏移除。）`
+    )) return;
+    const wasCurrent = current?.path === ws.path;
+    removeWorkspace(ws.path).then(() => {
+      setExpanded((prev) => {
+        const next = new Set(prev);
+        next.delete(ws.path);
+        return next;
+      });
+      useConversationStore.setState((s) => {
+        if (!s.byWorkspace[ws.path]) return {};
+        const byWorkspace = { ...s.byWorkspace };
+        delete byWorkspace[ws.path];
+        return { byWorkspace };
+      });
+      if (wasCurrent) {
+        useChatStore.getState().reset();
+      }
+    });
+  };
+
   return (
     <aside className="sidebar">
       <div className="sidebar-brand">
@@ -132,7 +213,8 @@ export default function Sidebar() {
         })}
       </nav>
 
-      <div className="sidebar-section">
+      <div className="sidebar-scroll">
+        <div className="sidebar-section">
         <div className="sidebar-workspace-header">
           工作区 ({workspaces.length})
         </div>
@@ -162,6 +244,15 @@ export default function Sidebar() {
                     type="button"
                   >
                     <span className="item-name">{ws.name}</span>
+                  </button>
+                  <button
+                    className="workspace-del"
+                    onClick={() => handleDeleteWorkspace(ws)}
+                    disabled={streaming}
+                    title={`从列表移除「${ws.name}」`}
+                    type="button"
+                  >
+                    ✕
                   </button>
                 </div>
 
@@ -210,6 +301,7 @@ export default function Sidebar() {
             <span className="nav-icon" aria-hidden="true">＋</span>
             <span className="item-name">打开其他工作区…</span>
           </button>
+        </div>
         </div>
       </div>
     </aside>

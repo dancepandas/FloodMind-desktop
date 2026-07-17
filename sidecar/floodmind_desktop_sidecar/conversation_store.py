@@ -10,6 +10,7 @@ frontend rehydrates it verbatim.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import threading
 import uuid
@@ -22,6 +23,18 @@ def _now() -> datetime:
     return datetime.now()
 
 
+# Conversation ids are always "conv-" + 12 hex chars (see create()). Validating
+# the shape on every lookup closes a path-traversal vector: a conv_id arrives
+# straight from the URL path segment (<conv_id>) and was previously concatenated
+# into a filesystem path with no sanitization, so "/api/conversations/../../x"
+# could read/write/delete arbitrary JSON under the app-data root.
+_CONV_ID_RE = re.compile(r"^conv-[0-9a-f]{12}$")
+
+
+def _is_valid_conv_id(conv_id: str) -> bool:
+    return isinstance(conv_id, str) and _CONV_ID_RE.fullmatch(conv_id) is not None
+
+
 class ConversationStore:
     def __init__(self, app_data_root: Path, clock: Callable[[], datetime] = _now):
         self._root = Path(app_data_root) / "conversations"
@@ -32,7 +45,14 @@ class ConversationStore:
 
     # ── paths ────────────────────────────────────────────────
     def _record_path(self, conv_id: str) -> Path:
-        return self._root / f"{conv_id}.json"
+        # Defense-in-depth: even a valid-format id must resolve inside the
+        # store root. The format check above already rules out traversal, but
+        # this backstop keeps _record_path safe if it is ever called directly.
+        p = (self._root / f"{conv_id}.json").resolve()
+        root = self._root.resolve()
+        if p != root and root not in p.parents:
+            raise ValueError("conversation id escapes store root")
+        return p
 
     def _memory_dir(self, session_id: str) -> Path:
         # Parent of <root>/conversations == app_data_root; matches
@@ -85,6 +105,8 @@ class ConversationStore:
             return record
 
     def get(self, conv_id: str) -> Optional[dict]:
+        if not _is_valid_conv_id(conv_id):
+            return None
         try:
             return json.loads(self._record_path(conv_id).read_text(encoding="utf-8"))
         except FileNotFoundError:
@@ -116,6 +138,8 @@ class ConversationStore:
         ]
 
     def append_turns(self, conv_id: str, turns: list) -> Optional[dict]:
+        if not _is_valid_conv_id(conv_id):
+            return None
         with self._lock:
             rec = self.get(conv_id)
             if rec is None:
@@ -128,6 +152,8 @@ class ConversationStore:
             return rec
 
     def update_title(self, conv_id: str, title: str) -> bool:
+        if not _is_valid_conv_id(conv_id):
+            return False
         with self._lock:
             rec = self.get(conv_id)
             if rec is None:
@@ -141,6 +167,8 @@ class ConversationStore:
 
     def delete(self, conv_id: str) -> Optional[str]:
         """Remove record + its SDK memory dir. Returns the removed session_id, or None."""
+        if not _is_valid_conv_id(conv_id):
+            return None
         with self._lock:
             rec = self.get(conv_id)
             if rec is None:

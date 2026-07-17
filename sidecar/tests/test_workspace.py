@@ -131,3 +131,63 @@ def test_workspace_manager_open_sets_current_and_recent(tmp_path, monkeypatch):
     # Persists across a new instance.
     mgr2 = WorkspaceManager()
     assert mgr2.current()["path"] == str(folder2.resolve())
+
+
+def test_workspace_manager_forget_removes_from_recent(tmp_path, monkeypatch):
+    home = tmp_path / "appdata"; home.mkdir()
+    monkeypatch.chdir(home)
+    mgr = WorkspaceManager()
+    f1 = tmp_path / "ws1"; f1.mkdir()
+    f2 = tmp_path / "ws2"; f2.mkdir()
+    mgr.open(str(f1)); mgr.open(str(f2))   # current = f2, recent = [f2, f1]
+
+    summary, changed = mgr.forget(str(f1.resolve()))   # forget a non-current
+    paths = [r["path"] for r in summary["recent"]]
+    assert str(f1.resolve()) not in paths
+    assert str(f2.resolve()) in paths
+    assert changed is False
+    assert summary["current"]["path"] == str(f2.resolve())
+
+
+def test_workspace_manager_forget_current_switches_to_next(tmp_path, monkeypatch):
+    home = tmp_path / "appdata"; home.mkdir()
+    monkeypatch.chdir(home)
+    mgr = WorkspaceManager()
+    f1 = tmp_path / "ws1"; f1.mkdir()
+    f2 = tmp_path / "ws2"; f2.mkdir()
+    mgr.open(str(f1)); mgr.open(str(f2))   # current = f2
+
+    summary, changed = mgr.forget(str(f2.resolve()))   # forget current
+    assert changed is True
+    assert summary["current"]["path"] == str(f1.resolve())
+
+
+def test_workspace_manager_forget_last_clears_current(tmp_path, monkeypatch):
+    home = tmp_path / "appdata"; home.mkdir()
+    monkeypatch.chdir(home)
+    mgr = WorkspaceManager()
+    f1 = tmp_path / "ws1"; f1.mkdir()
+    mgr.open(str(f1))                       # current = f1, only entry
+
+    summary, changed = mgr.forget(str(f1.resolve()))
+    assert changed is True
+    assert summary["recent"] == []
+    assert summary["current"] is None
+
+
+def test_workspace_forget_endpoint(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    mgr = WorkspaceManager()
+    f1 = tmp_path / "ws1"; f1.mkdir()
+    f2 = tmp_path / "ws2"; f2.mkdir()
+    client = create_app(StubAgent(), workspace_manager=mgr).test_client()
+    client.post("/api/workspace/open", json={"path": str(f1)})
+    client.post("/api/workspace/open", json={"path": str(f2)})
+
+    r = client.post("/api/workspace/forget", json={"path": str(f1.resolve())})
+    assert r.status_code == 200
+    paths = [x["path"] for x in r.get_json()["recent"]]
+    assert str(f1.resolve()) not in paths
+
+    # missing path -> 400
+    assert client.post("/api/workspace/forget", json={}).status_code == 400

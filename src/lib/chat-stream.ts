@@ -8,7 +8,7 @@ export type ChatEvent =
   | { type: "plan"; title: string; steps: unknown[] }
   | { type: "step"; key: string; status: string; title?: string; outcome?: string }
   | { type: "artifact"; kind: "file" | "image"; name: string; path: string }
-  | { type: "permission"; ask_id: string; call_id: string; tool_name: string; reason: string; input: unknown; approved?: boolean }
+  | { type: "permission"; ask_id: string; call_id: string; tool_name: string; reason: string; input: unknown; approved?: boolean; auto_approved?: boolean }
   | { type: "usage"; prompt: number; completion: number; total: number }
   | { type: "error"; content: string }
   | { type: "done" };
@@ -65,6 +65,18 @@ export async function* streamChat(
   const decoder = new TextDecoder();
   let buffer = "";
 
+  // Parse one NDJSON line defensively: a single malformed/partial line (a log
+  // leaking into the stream, a truncated UTF-8 boundary, a proxy error page)
+  // must not abort the whole turn. Skip it with a warning instead.
+  const parseLine = (line: string): ChatEvent | null => {
+    try {
+      return JSON.parse(line) as ChatEvent;
+    } catch {
+      console.warn("[chat-stream] skipping non-JSON stream line:", line.slice(0, 200));
+      return null;
+    }
+  };
+
   while (true) {
     const { value, done } = await reader.read();
     if (done) break;
@@ -75,11 +87,15 @@ export async function* streamChat(
     for (const line of lines) {
       const trimmed = line.trim();
       if (!trimmed) continue;
-      yield JSON.parse(trimmed) as ChatEvent;
+      const ev = parseLine(trimmed);
+      if (ev) yield ev;
     }
   }
 
   // Flush any trailing line that wasn't newline-terminated.
   const tail = buffer.trim();
-  if (tail) yield JSON.parse(tail) as ChatEvent;
+  if (tail) {
+    const ev = parseLine(tail);
+    if (ev) yield ev;
+  }
 }

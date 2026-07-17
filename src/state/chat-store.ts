@@ -29,11 +29,12 @@ export type Block =
   | { id: string; kind: "text"; content: string; final?: boolean }
   | { id: string; kind: "plan"; title: string; steps: PlanStep[] }
   | { id: string; kind: "artifact"; artKind: "file" | "image"; name: string; path: string }
-  | { id: string; kind: "permission"; ask_id: string; call_id: string; tool_name: string; reason: string; input?: unknown; approved?: boolean }
+  | { id: string; kind: "permission"; ask_id: string; call_id: string; tool_name: string; reason: string; input?: unknown; approved?: boolean; auto_approved?: boolean }
   | { id: string; kind: "error"; content: string };
 
-export type Msg = { role: "user"; content: string } | AssistantTurn;
+export type Msg = { id: string; role: "user"; content: string } | AssistantTurn;
 export interface AssistantTurn {
+  id: string;
   role: "assistant";
   blocks: Block[];
   usage: Usage | null;
@@ -59,6 +60,10 @@ interface ChatState {
   streaming: boolean;
   abortController: AbortController | null;
   conversationId: string | null;
+  /** Title of the active conversation (shown in the TopBar). Mirrors the
+   *  conversation-store record; updated on new/load/turns-POST so the TopBar
+   *  shows the generated title instead of the raw first user message. */
+  title: string;
   send: (text: string) => Promise<void>;
   appendInstruction: (text: string) => Promise<void>;
   pause: () => Promise<void>;
@@ -71,6 +76,10 @@ interface ChatState {
 // Deterministic block ids (also keeps test assertions stable).
 let _blockSeq = 0;
 const nextId = () => `b${++_blockSeq}`;
+// Stable turn ids so React keys survive mid-array splices (e.g. an appended
+// user instruction inserted before the active assistant turn). Reusing the same
+// counter space as block ids is fine — ids only need to be unique.
+const nextTurnId = () => `t${++_blockSeq}`;
 /** Test-only: reset the block-id counter so assertions are order-independent. */
 export const _resetBlockIdsForTest = () => {
   _blockSeq = 0;
@@ -180,6 +189,7 @@ export function reduceEvent(turn: AssistantTurn, ev: ChatEvent): AssistantTurn {
           reason: ev.reason,
           input: ev.input,
           approved: ev.approved,
+          auto_approved: ev.auto_approved,
         },
       ];
       break;
@@ -207,6 +217,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   streaming: false,
   abortController: null,
   conversationId: null,
+  title: "新会话",
 
   async send(text: string) {
     if (!text.trim()) return;
@@ -222,8 +233,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set((s) => ({
       turns: [
         ...s.turns,
-        { role: "user", content: text },
-        { role: "assistant", blocks: [], usage: null, done: false },
+        { id: nextTurnId(), role: "user", content: text },
+        { id: nextTurnId(), role: "assistant", blocks: [], usage: null, done: false },
       ],
       streaming: true,
       abortController: controller,
@@ -290,9 +301,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 const data = await r.json().catch(() => ({}));
                 const title = data?.title;
                 if (title) {
+                  // TopBar reads chat-store `title`; the sidebar reads
+                  // byWorkspace. Update both so the generated title shows live
+                  // without a workspace/conversation switch.
+                  set({ title });
                   useConversationStore.setState((s) => ({
                     list: s.list.map((c) =>
                       c.id === cid ? { ...c, title } : c
+                    ),
+                    byWorkspace: Object.fromEntries(
+                      Object.entries(s.byWorkspace).map(([ws, items]) => [
+                        ws,
+                        items.map((c) => (c.id === cid ? { ...c, title } : c)),
+                      ])
                     ),
                   }));
                 }
@@ -316,7 +337,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     // while showing the instruction immediately, below the original request.
     // The SDK picks the text up at the next iteration boundary; the still-open
     // /api/chat stream keeps reducing into the assistant turn.
-    const marker: Msg = { role: "user", content: trimmed };
+    const marker: Msg = { id: nextTurnId(), role: "user", content: trimmed };
     set((s) => {
       const turns = s.turns.slice();
       const lastIdx = turns.length - 1;
@@ -358,6 +379,23 @@ export const useChatStore = create<ChatState>((set, get) => ({
     try {
       const baseUrl = await getBaseUrl();
       await respondToPermissionAsk(baseUrl, askId, approved);
+      // Optimistically reflect the user's choice in the UI; the SDK emits
+      // permission_resolved after the fact, but translate_event currently drops
+      // it. Search EVERY assistant turn (not just the last) — in a multi-turn
+      // session the ask may live on an earlier turn, and only updating the last
+      // would leave a stale "waiting for authorization" block behind.
+      set((s) => ({
+        turns: s.turns.map((t) =>
+          t.role === "assistant"
+            ? {
+                ...t,
+                blocks: t.blocks.map((b) =>
+                  b.kind === "permission" && b.ask_id === askId ? { ...b, approved } : b
+                ),
+              }
+            : t
+        ),
+      }));
     } catch (e) {
       set((s) => {
         const turns = s.turns.slice();
@@ -375,7 +413,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   reset: () => {
     get().abortController?.abort();
-    set({ turns: [], streaming: false, abortController: null });
+    set({ turns: [], streaming: false, abortController: null, title: "新会话" });
   },
 
   async startNew(workspace: string) {
@@ -386,6 +424,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       streaming: false,
       abortController: null,
       conversationId: conv ? conv.id : null,
+      title: conv ? conv.title : "新会话",
     });
     await useConversationStore.getState().loadList(workspace);
   },
@@ -396,10 +435,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const conv = await useConversationStore.getState().open(id);
     if (!conv) return;
     set({
-      turns: conv.turns || [],
+      // Assign fresh stable ids on load (server stores turns opaquely); keys
+      // only need to be stable within a render session.
+      turns: (conv.turns || []).map((t: Msg) => ({ ...t, id: nextTurnId() })),
       streaming: false,
       abortController: null,
       conversationId: conv.id,
+      title: conv.title,
     });
   },
 }));

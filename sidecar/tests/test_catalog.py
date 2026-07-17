@@ -45,14 +45,38 @@ def test_skill_detail(monkeypatch):
 
 
 def test_mcp_list(monkeypatch):
-    servers = [{"name": "fs", "transport": "stdio", "tools": 3, "connected": True}]
+    pool_servers = [{"name": "fs", "transport": "stdio", "tools": 3, "connected": True}]
     monkeypatch.setattr(
         "floodmind.agent.mcp_client.get_mcp_client_pool",
-        lambda: SimpleNamespace(list_servers=lambda: servers),
+        lambda: SimpleNamespace(list_servers=lambda: pool_servers),
     )
+    monkeypatch.setattr("floodmind_desktop_sidecar.catalog_api.read_mcp_config", lambda: [])
     r = _client().get("/api/mcp")
     assert r.status_code == 200
-    assert r.get_json()["servers"] == servers
+    # StubAgent has no mcp_call_health → health_ok/health_error are None.
+    assert r.get_json()["servers"] == [
+        {"name": "fs", "transport": "stdio", "tools": 3, "connected": True,
+         "health_ok": None, "health_error": None}
+    ]
+
+
+def test_mcp_list_includes_configured_but_not_connected(monkeypatch):
+    """A configured server that failed to connect must still appear (red dot),
+    not be silently hidden because it isn't in the pool's connected set."""
+    monkeypatch.setattr(
+        "floodmind.agent.mcp_client.get_mcp_client_pool",
+        lambda: SimpleNamespace(list_servers=lambda: []),
+    )
+    monkeypatch.setattr(
+        "floodmind_desktop_sidecar.catalog_api.read_mcp_config",
+        lambda: [{"name": "forecast", "transport": "sse", "url": "http://x/sse"}],
+    )
+    r = _client().get("/api/mcp")
+    servers = r.get_json()["servers"]
+    assert any(s["name"] == "forecast" for s in servers)
+    fc = next(s for s in servers if s["name"] == "forecast")
+    assert fc["connected"] is False
+    assert fc["transport"] == "sse"
 
 
 def test_mcp_detail(monkeypatch):
@@ -63,10 +87,30 @@ def test_mcp_detail(monkeypatch):
             return info if n == "fs" else None
 
     monkeypatch.setattr("floodmind.agent.mcp_client.get_mcp_client_pool", lambda: Pool())
+    monkeypatch.setattr("floodmind_desktop_sidecar.catalog_api.read_mcp_config", lambda: [])
     r = _client().get("/api/mcp/fs")
     assert r.status_code == 200
     assert r.get_json()["tools"] == ["read", "write"]
     assert _client().get("/api/mcp/missing").status_code == 404
+
+
+def test_mcp_detail_falls_back_to_config_when_not_connected(monkeypatch):
+    """An unconnected but configured server still returns detail (with the test
+    button usable) instead of 404."""
+    monkeypatch.setattr(
+        "floodmind.agent.mcp_client.get_mcp_client_pool",
+        lambda: SimpleNamespace(get_server_info=lambda n: None),
+    )
+    monkeypatch.setattr(
+        "floodmind_desktop_sidecar.catalog_api.read_mcp_config",
+        lambda: [{"name": "forecast", "transport": "sse", "url": "http://x/sse"}],
+    )
+    r = _client().get("/api/mcp/forecast")
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["connected"] is False
+    assert body["transport"] == "sse"
+    assert body["url"] == "http://x/sse"
 
 
 def test_endpoints_degrade_when_sdk_unavailable(monkeypatch):
@@ -77,6 +121,7 @@ def test_endpoints_degrade_when_sdk_unavailable(monkeypatch):
 
     monkeypatch.setattr("floodmind.skills.registry.get_skill_registry", _boom)
     monkeypatch.setattr("floodmind.agent.mcp_client.get_mcp_client_pool", _boom)
+    monkeypatch.setattr("floodmind_desktop_sidecar.catalog_api.read_mcp_config", lambda: [])
 
     sk = _client().get("/api/skills")
     assert sk.status_code == 200

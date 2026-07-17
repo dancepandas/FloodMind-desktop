@@ -7,17 +7,18 @@ import { useChatStore, deriveStatusText, type Block, type Msg } from "../state/c
 export default function Conversation() {
   const turns = useChatStore((s) => s.turns);
   const streaming = useChatStore((s) => s.streaming);
-  const send = useChatStore((s) => s.send);
   const endRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: "smooth" });
+    // Instant scroll during streaming (smooth on every token delta jitters long
+    // turns); smooth only when a turn starts/finishes.
+    endRef.current?.scrollIntoView({ behavior: streaming ? "auto" : "smooth" });
   }, [turns, streaming]);
 
   if (turns.length === 0) {
     return (
       <div className="conversation">
-        <WelcomeView onSend={send} />
+        <WelcomeView />
       </div>
     );
   }
@@ -25,7 +26,7 @@ export default function Conversation() {
   return (
     <div className="conversation">
       {turns.map((m, i) => (
-        <TurnView key={i} turn={m} isLast={i === turns.length - 1} streaming={streaming} />
+        <TurnView key={m.id} turn={m} isLast={i === turns.length - 1} streaming={streaming} />
       ))}
       <div ref={endRef} />
     </div>
@@ -33,6 +34,11 @@ export default function Conversation() {
 }
 
 function TurnView({ turn, isLast, streaming }: { turn: Msg; isLast: boolean; streaming: boolean }) {
+  // All hooks must run unconditionally on every render (rules of hooks), so the
+  // user-turn early return below happens AFTER this useState. The state is only
+  // read on the assistant branch.
+  const [showProcess, setShowProcess] = useState(false);
+
   if (turn.role === "user") {
     return (
       <div className="turn user-turn">
@@ -44,7 +50,6 @@ function TurnView({ turn, isLast, streaming }: { turn: Msg; isLast: boolean; str
   // ── after the turn completes, only the final answer is visible ──
   const finalBlock = turn.done ? turn.blocks.find((b) => b.kind === "text" && b.final) : null;
   const hasProcess = turn.blocks.some((b) => b.kind !== "text" || !b.final);
-  const [showProcess, setShowProcess] = useState(false);
 
   // ── status line while streaming ────────────────────────────
   let statusText = "";

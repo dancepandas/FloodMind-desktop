@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useWorkspaceStore } from "../state/workspace-store";
 import { useAttachmentStore } from "../state/attachment-store";
 import { uploadFilesToWorkspace } from "../lib/workspace-files";
@@ -8,42 +8,61 @@ export default function DropZone({ children }: { children: React.ReactNode }) {
   const addAttachments = useAttachmentStore((s) => s.add);
   const [dragOver, setDragOver] = useState(false);
 
-  function handleDragOver(e: React.DragEvent) {
-    e.preventDefault();
-    setDragOver(true);
-  }
-
-  function handleDragLeave(e: React.DragEvent) {
-    e.preventDefault();
-    // Only clear if leaving the container itself, not a child.
-    if (!e.currentTarget.contains(e.relatedTarget as Node)) {
-      setDragOver(false);
-    }
-  }
-
-  async function handleDrop(e: React.DragEvent) {
-    e.preventDefault();
-    setDragOver(false);
+  useEffect(() => {
     if (!current) return;
-    const files = Array.from(e.dataTransfer.files).filter((f) => !f.name.startsWith("."));
-    if (files.length === 0) return;
-    try {
-      const paths = await uploadFilesToWorkspace(files);
-      if (paths.length > 0) addAttachments(paths);
-    } catch (err) {
-      // Best-effort: log and ignore. A future improvement could surface a toast.
-      console.error("[drop] upload failed:", err);
+
+    let depth = 0;
+
+    function handleDragEnter(e: DragEvent) {
+      e.preventDefault();
+      depth++;
+      setDragOver(true);
     }
-  }
+
+    function handleDragOver(e: DragEvent) {
+      e.preventDefault();
+    }
+
+    function handleDragLeave(e: DragEvent) {
+      e.preventDefault();
+      depth--;
+      if (depth <= 0) {
+        depth = 0;
+        setDragOver(false);
+      }
+    }
+
+    async function handleDrop(e: DragEvent) {
+      e.preventDefault();
+      depth = 0;
+      setDragOver(false);
+      if (!current) return;
+      const files = Array.from(e.dataTransfer?.files || []).filter((f) => !f.name.startsWith("."));
+      if (files.length === 0) return;
+      try {
+        const paths = await uploadFilesToWorkspace(files);
+        if (paths.length > 0) addAttachments(paths);
+      } catch (err) {
+        console.error("[drop] upload failed:", err);
+      }
+    }
+
+    // Listen on window so the whole app surface accepts drops.
+    window.addEventListener("dragenter", handleDragEnter);
+    window.addEventListener("dragover", handleDragOver);
+    window.addEventListener("dragleave", handleDragLeave);
+    window.addEventListener("drop", handleDrop);
+
+    return () => {
+      window.removeEventListener("dragenter", handleDragEnter);
+      window.removeEventListener("dragover", handleDragOver);
+      window.removeEventListener("dragleave", handleDragLeave);
+      window.removeEventListener("drop", handleDrop);
+    };
+  }, [current, addAttachments]);
 
   return (
-    <div
-      className={`drop-zone${dragOver ? " drag-over" : ""}`}
-      onDragOver={handleDragOver}
-      onDragLeave={handleDragLeave}
-      onDrop={handleDrop}
-      aria-label="拖放文件到工作区"
-    >
+    <div className={`drop-zone${dragOver ? " drag-over" : ""}`} aria-label="拖放文件到工作区">
       {children}
     </div>
   );

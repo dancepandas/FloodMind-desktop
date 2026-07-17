@@ -104,3 +104,23 @@ def test_runs_list_and_detail(tmp_path, monkeypatch):
     detail = client.get(f"/api/scheduled-tasks/{task['id']}/runs/run-1").get_json()
     assert detail["run_id"] == "run-1"
     assert detail["events"] == []
+
+
+def test_list_auto_indexes_agent_created_tasks(tmp_path, monkeypatch):
+    """Agent-created tasks (ScheduleTask tool in a conversation) live in the SDK
+    runtime but lack a task_index entry — they'd be invisible in the UI. The list
+    endpoint must auto-index orphaned tasks under the requesting workspace."""
+    client, rt, idx, rs = _client(tmp_path, monkeypatch)
+    # Simulate an agent-created task: write directly to the runtime, bypassing
+    # the desktop index (the way the ScheduleTask tool would).
+    rt.create_task(session_id="s1", command="搜集水利资讯", repeat="daily", run_time="08:00")
+
+    # Without auto-index the task would be missing from the workspace query.
+    items = client.get("/api/scheduled-tasks?workspace=/ws/A").get_json()["tasks"]
+    tids = [t["id"] for t in items]
+    assert len(tids) == 1
+    assert idx.get(tids[0]) == "/ws/A"   # persisted into the index for next time
+
+    # A second query should be stable — the task is now indexed.
+    items2 = client.get("/api/scheduled-tasks?workspace=/ws/A").get_json()["tasks"]
+    assert [t["id"] for t in items2] == tids

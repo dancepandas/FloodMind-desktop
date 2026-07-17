@@ -1,10 +1,37 @@
-import { useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { fetchFilePreview } from "../lib/preview";
 import { openFileInSystem } from "../lib/open-file";
+
+const DocxPreview = lazy(() => import("./office/DocxPreview"));
+const XlsxPreview = lazy(() => import("./office/XlsxPreview"));
+const PptxPreview = lazy(() => import("./office/PptxPreview"));
+
+const DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+const XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+const PPTX = "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+const LEGACY_OFFICE = new Set([
+  "application/msword",
+  "application/vnd.ms-excel",
+  "application/vnd.ms-powerpoint",
+]);
 
 export interface PreviewPanelProps {
   path: string;
   onClose: () => void;
+}
+
+/** Map a mime type to the office renderer to use, or null for non-office. */
+function officeKind(mime: string): "docx" | "xlsx" | "pptx" | "legacy" | null {
+  if (mime === DOCX) return "docx";
+  if (mime === XLSX) return "xlsx";
+  if (mime === PPTX) return "pptx";
+  if (LEGACY_OFFICE.has(mime)) return "legacy";
+  return null;
+}
+
+function base64ToBuffer(b64: string): ArrayBuffer {
+  const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+  return bytes.buffer;
 }
 
 export default function PreviewPanel({ path, onClose }: PreviewPanelProps) {
@@ -22,7 +49,7 @@ export default function PreviewPanel({ path, onClose }: PreviewPanelProps) {
       .catch((e) => setError(e.message));
   }, [path]);
 
-  const objectUrl = useMemo(() => {
+  const pdfUrl = useMemo(() => {
     if (!data || !data.mime.startsWith("application/pdf")) return null;
     try {
       const bytes = Uint8Array.from(atob(data.content), (c) => c.charCodeAt(0));
@@ -35,15 +62,24 @@ export default function PreviewPanel({ path, onClose }: PreviewPanelProps) {
 
   useEffect(() => {
     return () => {
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
+      if (pdfUrl) URL.revokeObjectURL(pdfUrl);
     };
-  }, [objectUrl]);
+  }, [pdfUrl]);
+
+  const office = data ? officeKind(data.mime) : null;
+  const officeBuffer = useMemo(
+    () => (office && office !== "legacy" && data ? base64ToBuffer(data.content) : null),
+    [office, data],
+  );
 
   const isUnsupportedDoc =
     data &&
     !data.previewable &&
+    !office &&
     !data.mime.startsWith("image/") &&
     !data.mime.startsWith("application/pdf");
+
+  const officeFallback = (data && (office === "legacy")) || false;
 
   return (
     <div className="preview-panel">
@@ -51,14 +87,26 @@ export default function PreviewPanel({ path, onClose }: PreviewPanelProps) {
         <span className="preview-title" title={path}>
           {path.split("/").pop()}
         </span>
-        <button
-          className="preview-close"
-          onClick={onClose}
-          type="button"
-          aria-label="关闭"
-        >
-          ✕
-        </button>
+        <div className="preview-header-actions">
+          {data && (
+            <button
+              className="preview-open-system"
+              onClick={() => openFileInSystem(data.path)}
+              type="button"
+              title="在系统中打开"
+            >
+              打开
+            </button>
+          )}
+          <button
+            className="preview-close"
+            onClick={onClose}
+            type="button"
+            aria-label="关闭"
+          >
+            ✕
+          </button>
+        </div>
       </div>
       <div className="preview-body">
         {error && <div className="preview-error">{error}</div>}
@@ -67,9 +115,9 @@ export default function PreviewPanel({ path, onClose }: PreviewPanelProps) {
           <img src={`data:${data.mime};base64,${data.content}`} alt={path} />
         )}
         {data && data.mime.startsWith("application/pdf") && (
-          objectUrl ? (
+          pdfUrl ? (
             <iframe
-              src={objectUrl}
+              src={pdfUrl}
               title={path}
               className="preview-iframe"
               width="100%"
@@ -78,6 +126,33 @@ export default function PreviewPanel({ path, onClose }: PreviewPanelProps) {
           ) : (
             <div className="preview-error">无法渲染 PDF</div>
           )
+        )}
+        {office === "docx" && officeBuffer && (
+          <Suspense fallback={<div className="preview-loading">加载中…</div>}>
+            <DocxPreview data={officeBuffer} path={data!.path} />
+          </Suspense>
+        )}
+        {office === "xlsx" && officeBuffer && (
+          <Suspense fallback={<div className="preview-loading">加载中…</div>}>
+            <XlsxPreview data={officeBuffer} path={data!.path} />
+          </Suspense>
+        )}
+        {office === "pptx" && officeBuffer && (
+          <Suspense fallback={<div className="preview-loading">加载中…</div>}>
+            <PptxPreview data={officeBuffer} path={data!.path} />
+          </Suspense>
+        )}
+        {officeFallback && (
+          <div className="preview-unsupported">
+            <p>旧版 Office 格式（.doc/.xls/.ppt）暂不支持内置预览。</p>
+            <button
+              type="button"
+              className="btn-secondary"
+              onClick={() => data && openFileInSystem(data.path)}
+            >
+              在系统中打开
+            </button>
+          </div>
         )}
         {isUnsupportedDoc && (
           <div className="preview-unsupported">
@@ -91,7 +166,7 @@ export default function PreviewPanel({ path, onClose }: PreviewPanelProps) {
             </button>
           </div>
         )}
-        {data && data.previewable && !data.mime.startsWith("image/") && !data.mime.startsWith("application/pdf") && (
+        {data && data.previewable && !office && !data.mime.startsWith("image/") && !data.mime.startsWith("application/pdf") && (
           <pre className="preview-text">{data.content}</pre>
         )}
       </div>

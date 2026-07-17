@@ -17,14 +17,12 @@ function findLatestPlan(turns: Msg[]) {
 export default function TopBar() {
   const turns = useChatStore((s) => s.turns);
   const streaming = useChatStore((s) => s.streaming);
+  const title = useChatStore((s) => s.title);
   const reset = useChatStore((s) => s.reset);
   const planOpen = useUiStore((s) => s.planPanelOpen);
   const togglePlan = useUiStore((s) => s.togglePlanPanel);
 
   const plan = useMemo(() => findLatestPlan(turns), [turns]);
-
-  const firstUser = turns.find((m) => m.role === "user")?.content || "";
-  const title = firstUser ? firstUser.slice(0, 40) + (firstUser.length > 40 ? "…" : "") : "新会话";
 
   const lastAssistant = useMemo(() => {
     for (let i = turns.length - 1; i >= 0; i--) {
@@ -60,7 +58,7 @@ export default function TopBar() {
 
   return (
     <header className="topbar">
-      <div className="topbar-title" title={firstUser}>{title}</div>
+      <div className="topbar-title" title={title}>{title}</div>
       <div className="topbar-actions">
         {statusText && <span className="topbar-status-pill">{statusText}</span>}
         {planPill}

@@ -138,6 +138,7 @@ def test_mcp_crud_and_test(tmp_path, monkeypatch):
     mock_pool = MagicMock()
     mock_pool.list_servers.return_value = []
     mock_pool.get_server_info.return_value = None
+    mock_pool.connect_server.return_value = MagicMock(list_tools=lambda: [])
     monkeypatch.setattr(
         "floodmind.agent.mcp_client.get_mcp_client_pool", lambda: mock_pool
     )
@@ -145,7 +146,9 @@ def test_mcp_crud_and_test(tmp_path, monkeypatch):
     assert r.status_code == 200
     assert r.get_json()["ok"] is True
     mock_pool.connect_server.assert_called_once()
-    mock_pool.disconnect_server.assert_called_once_with("server1")
+    # A successful test no longer disconnects the server (it stays connected so
+    # the UI status reflects it).
+    mock_pool.disconnect_server.assert_not_called()
 
     # Test unknown returns 404
     r = client.post("/api/mcp/no-such-server/test")
@@ -161,7 +164,7 @@ def test_mcp_crud_and_test(tmp_path, monkeypatch):
 
     # List reflects deletion
     r = client.get("/api/mcp")
-    assert r.get_json()["configured"] == {}
+    assert r.get_json()["servers"] == []
 
 
 def test_disabled_skills_applied_on_startup(tmp_path, monkeypatch):

@@ -21,6 +21,7 @@ three desktop-specific behaviours the SDK stream alone does not provide:
 """
 from __future__ import annotations
 
+import contextlib
 import os
 import sys
 import threading
@@ -79,6 +80,139 @@ def _patch_mcp_tool_names():
 
 
 _patch_mcp_tool_names()
+
+
+def _patch_mcp_liveness():
+    """Make MCP 'connected' status truthful.
+
+    The SDK's ``McpClientConnection.is_connected`` is a static ``_initialized``
+    flag — it stays True forever after a successful connect, even after a stdio
+    subprocess has died (``process.poll()`` non-None) or the server is gone. So
+    the desktop showed a green "已连接" dot for servers that were actually down.
+    For stdio we check the subprocess is still alive; SSE has no cheap probe so
+    we keep ``_initialized`` (best-effort).
+    """
+    try:
+        from floodmind.agent.mcp_client import McpClientConnection
+    except Exception:
+        return
+
+    @property
+    def is_connected(self):  # type: ignore[override]
+        if not getattr(self, "_initialized", False):
+            return False
+        proc = getattr(self, "_process", None)
+        if proc is not None:
+            return proc.poll() is None
+        return True
+
+    McpClientConnection.is_connected = is_connected
+
+
+_patch_mcp_liveness()
+
+
+# Per-server MCP tool-call health, updated by wrapping McpClientPool.call_tool.
+# Connection-level "connected" is True the moment a stdio subprocess handshakes,
+# but a tool can still fail at call time — e.g. hydro-rag's wrapper connects fine
+# while the knowledge-base backend it talks to is down, surfacing only when a
+# tool is actually invoked. This records the most recent call outcome so the UI
+# can show "调用异常" instead of a misleading "已连接".
+_MCP_CALL_HEALTH: dict[str, dict] = {}
+# Result strings that indicate a tool call failed (the SDK wraps MCP errors as
+# "MCP 工具 … 调用失败"; servers often surface backend-down as "无法连接").
+_MCP_FAIL_MARKERS = (
+    "调用失败", "无法连接", "连接失败", "ConnectionError",
+    "ECONNREFUSED", "connection refused",
+)
+
+
+def _patch_mcp_call_health():
+    try:
+        from floodmind.agent.mcp_client import McpClientPool
+    except Exception:
+        return
+
+    _orig_call_tool = McpClientPool.call_tool
+
+    def _call_tool(self, full_name: str, arguments: dict):
+        parts = full_name.split(":", 2)
+        server = parts[1] if len(parts) >= 3 else full_name
+        try:
+            result = _orig_call_tool(self, full_name, arguments)
+        except Exception as e:
+            _MCP_CALL_HEALTH[server] = {"ok": False, "error": str(e)[:200]}
+            raise
+        if isinstance(result, str) and any(m in result for m in _MCP_FAIL_MARKERS):
+            _MCP_CALL_HEALTH[server] = {"ok": False, "error": result[:200]}
+        else:
+            _MCP_CALL_HEALTH[server] = {"ok": True, "error": None}
+        return result
+
+    McpClientPool.call_tool = _call_tool
+
+
+_patch_mcp_call_health()
+
+
+def _persist_runtime_mcp(server_config: dict) -> None:
+    """Append a runtime-loaded MCP (LoadMcpServer) to mcp.json so it survives
+    restarts and shows in the MCP menu. No-op if it's already configured, and
+    writes the file directly (no reconnect) so an in-flight run isn't disrupted.
+    """
+    import json
+
+    try:
+        from .catalog_api import _mcp_path, read_mcp_config, _validate_mcp_server_transport
+    except Exception:
+        return
+    name = server_config.get("name")
+    if not name:
+        return
+    servers = read_mcp_config()
+    if any(s.get("name") == name for s in servers):
+        return  # already persisted (e.g. startup connect_all, or a prior load)
+    entry: dict = {"name": name, "transport": server_config.get("transport", "sse")}
+    for k in ("command", "args", "env", "url", "headers"):
+        if k in server_config:
+            entry[k] = server_config[k]
+    try:
+        _validate_mcp_server_transport(entry)
+    except Exception:
+        return
+    servers.append(entry)
+    try:
+        path = _mcp_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"servers": servers}, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(f"[sidecar] persisted runtime MCP '{name}' to mcp.json", file=sys.stderr)
+    except Exception as e:
+        print(f"[sidecar] persist runtime MCP failed: {e}", file=sys.stderr)
+
+
+def _patch_mcp_persist_runtime():
+    """Wrap McpClientPool.connect_server so any newly-connected server that
+    isn't already in mcp.json gets persisted. This makes agent-created MCPs
+    (LoadMcpServer) durable + visible in the MCP menu across restarts."""
+    try:
+        from floodmind.agent.mcp_client import McpClientPool
+    except Exception:
+        return
+
+    _orig_connect = McpClientPool.connect_server
+
+    def _connect_server(self, server_config: dict):
+        conn = _orig_connect(self, server_config)
+        try:
+            _persist_runtime_mcp(server_config)
+        except Exception as e:
+            print(f"[sidecar] runtime MCP persist hook error: {e}", file=sys.stderr)
+        return conn
+
+    McpClientPool.connect_server = _connect_server
+
+
+_patch_mcp_persist_runtime()
 
 
 _IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp")
@@ -156,24 +290,27 @@ class FloodMindAgent:
     """
 
     def __init__(self, permission_handler=None, workspace_manager=None):
-        # Imported lazily so translate_event stays unit-testable without the SDK.
-        from floodmind.agent.native.model_client import ModelClient
-
         # The desktop can start before the user has configured an API key.
         # Degrade gracefully: the agent stays unbuilt until reload_model() succeeds
         # (e.g. after the user fills in the Settings GUI and saves).
         try:
-            self._llm = ModelClient.from_settings()
+            self._llm = self._resolve_llm()
         except Exception as e:
             print(f"[sidecar] ModelClient init failed (model not configured): {e}", file=sys.stderr)
-            # Fallback: if the declared provider has no credentials but another
-            # on-disk provider does, use that provider so an existing settings.json
-            # mismatch does not leave the app unconfigured.
             self._llm = self._load_llm_fallback()
 
         # Auto-approve by default; ASK-policy tools are handled in stream().
         self._permission_handler = permission_handler or (lambda tool_name, tool_input: True)
-        self._permission_mode = PermissionMode.TRUST_ONCE
+        # Honor the persisted permission mode from settings.json at startup so
+        # the agent's behaviour matches what the GUI shows (and what the user
+        # last saved), instead of always defaulting to trust-once until the
+        # mode is re-saved.
+        try:
+            from .config_api import read_permissions_config
+
+            self._permission_mode = PermissionMode(read_permissions_config().get("mode", "trust-once"))
+        except Exception:
+            self._permission_mode = PermissionMode.TRUST_ONCE
         self._permission_cache: PermissionCache | None = None
         self._workspace_manager = workspace_manager
         # Output dir captured during _set_workspace; used by the artifact diff.
@@ -183,6 +320,16 @@ class FloodMindAgent:
         # partial round (not written to memory), and the next stream() resumes
         # from memory. Cleared at the start of each stream().
         self._abort = threading.Event()
+        # Concurrency: Flask runs threaded=True, so a /api/chat stream can race a
+        # concurrent workspace-open/model-reload/second-chat on another worker
+        # thread. _stream_lock is held for an entire run and serializes chats
+        # (two foreground streams would otherwise cross-bind the process-global
+        # session context and write to the wrong workspace). _fg_lock is held
+        # only briefly around self._agent swaps and the session-context write so
+        # a rebind can't tear against a live _set_workspace. Both use getattr
+        # guards in stream()/the mutators so bare __new__ test instances work.
+        self._stream_lock = threading.Lock()
+        self._fg_lock = threading.RLock()
         # The SDK's executor captures `memory` BY REFERENCE at construction
         # (NativeAgentExecutor(memory=self.memory)), so swapping self.memory later
         # is invisible to it. Per-workspace isolation therefore requires building
@@ -217,25 +364,77 @@ class FloodMindAgent:
         except Exception as e:
             print(f"[sidecar] register custom skills failed: {e}", file=sys.stderr)
 
+    def _desktop_block(self) -> dict:
+        """The desktop-only selection block in settings.json (activeModel + flags)."""
+        try:
+            from .config_api import _load_raw_settings
+
+            raw = _load_raw_settings()
+        except Exception:
+            return {}
+        d = raw.get("desktop")
+        return d if isinstance(d, dict) else {}
+
+    def mcp_call_health(self) -> dict:
+        """Per-server MCP tool-call health: {server: {ok, error}}.
+        Populated by the McpClientPool.call_tool wrapper. Reflects whether the
+        most recent tool call actually succeeded — a stronger signal than
+        connection-level "connected" (a connected wrapper can still fail when
+        the backend service it proxies is down)."""
+        return dict(_MCP_CALL_HEALTH)
+
+    def _resolve_llm(self):
+        """Build a ModelClient for the desktop's active model via resolve_model().
+
+        The SDK stores no top-level model-selection block; the active model is the
+        first in the catalog. The desktop records the GUI's pick under
+        ``desktop.activeModel`` and resolves it here so the right provider's
+        api_key/base_url are used (cross-provider switching would otherwise pick
+        up the wrong credentials). Generation params come from the model's own
+        definition (single source of truth).
+        """
+        from floodmind.agent.native.model_client import ModelClient
+        from floodmind.config.model_resolver import resolve_model
+
+        desktop = self._desktop_block()
+        active = desktop.get("activeModel") or None
+        # provider_id disambiguates when two providers expose the same model id
+        # (official deepseek vs a LAN OpenAI-compatible proxy both serving
+        # deepseek-v4-flash); without it resolve_model picks the catalog-first
+        # match, silently routing to the wrong provider.
+        provider = desktop.get("activeProvider") or None
+        rm = resolve_model(model_key=active, provider_id=provider)
+        return ModelClient(
+            api_key=rm.api_key,
+            base_url=rm.base_url,
+            model_name=rm.id,
+            temperature=rm.temperature,
+            max_tokens=rm.max_tokens,
+            enable_thinking=bool(desktop.get("enableReasoning", False)),
+        )
+
     def _load_llm_fallback(self):
-        """Try to build a ModelClient from the raw settings.json provider that has credentials."""
+        """Last-resort: ignore desktop.activeModel and use the first configured model.
+
+        ``resolve_model(model_key=...)`` raises if the selected model is absent or
+        its provider has no credentials. Falling back to the catalog's first model
+        (which resolve_model() with no key returns) keeps the app usable when the
+        GUI selection points at an unconfigured provider.
+        """
         try:
             from floodmind.agent.native.model_client import ModelClient
-            from .config_api import _effective_provider, _load_raw_settings
+            from floodmind.config.model_resolver import resolve_model
 
-            cfg = _load_raw_settings()
-            provider, opts = _effective_provider(cfg)
-            if not opts.get("apiKey"):
+            rm = resolve_model()  # catalog-first, ignores desktop.activeModel
+            if not rm.api_key:
                 return None
-            m = cfg.get("model", {}) or {}
-            print(f"[sidecar] falling back to configured provider: {provider}", file=sys.stderr)
-            return ModelClient.from_settings(
-                api_key=opts.get("apiKey") or None,
-                base_url=opts.get("baseURL") or None,
-                model_name=m.get("model") or None,
-                temperature=m.get("temperature"),
-                max_tokens=m.get("maxTokens"),
-                enable_thinking=bool(m.get("enableReasoning", False)),
+            print(f"[sidecar] falling back to first configured model: {rm.provider}/{rm.id}", file=sys.stderr)
+            return ModelClient(
+                api_key=rm.api_key,
+                base_url=rm.base_url,
+                model_name=rm.id,
+                temperature=rm.temperature,
+                max_tokens=rm.max_tokens,
             )
         except Exception as e:
             print(f"[sidecar] ModelClient fallback also failed: {e}", file=sys.stderr)
@@ -244,10 +443,15 @@ class FloodMindAgent:
     def _build_agent(self, session_id: str, persist_dir: str):
         """Construct a fresh SDK agent bound to a per-session DualMemory."""
         from floodmind.agent import create_flood_agent
-        from floodmind.config.settings import get_config
         from floodmind.memory.dual_memory import DualMemory
 
-        m = (get_config() or {}).get("model", {}) or {}
+        # enable_reasoning / enable_search are desktop session-level toggles
+        # stored under the `desktop` block (the SDK no longer persists a model
+        # selection block in settings.json).
+        desktop = self._desktop_block()
+        enable_reasoning = bool(desktop.get("enableReasoning", False))
+        enable_search = bool(desktop.get("enableSearch", False))
+
         memory = DualMemory(
             session_id=session_id,
             persist_dir=persist_dir,
@@ -273,16 +477,18 @@ class FloodMindAgent:
         else:
             system_prompt = "你是一个智能助手，使用可用工具帮助用户完成任务。"
 
-        return create_flood_agent(
+        agent = create_flood_agent(
             llm_service=self._llm,
             memory=memory,
             session_id=session_id,
             permission_handler=self._permission_handler,
             max_iterations=50,
-            enable_reasoning=bool(m.get("enableReasoning", False)),
-            enable_search=bool(m.get("enableSearch", False)),
+            enable_reasoning=enable_reasoning,
+            enable_search=enable_search,
             system_prompt=system_prompt,
         )
+        self._patch_tool_policies_for_desktop_permission(agent)
+        return agent
 
     @staticmethod
     def _memory_target(session_id: str) -> tuple[str, str]:
@@ -407,6 +613,56 @@ class FloodMindAgent:
             self._permission_cache = PermissionCache(ws)
         return self._permission_cache
 
+    def _patch_tool_policies_for_desktop_permission(self, agent) -> None:
+        """Force desktop-level ASK for all non-readonly tools.
+
+        The SDK's PermissionService only emits `permission_ask` events for tools
+        whose native `permission_policy.policy_type` is ``ask``. Built-in tools
+        like Bash/Write/ReadFile/WebSearch use ``exec``/``write``/``read_path``/
+        ``network`` and are auto-approved after path/danger checks. To implement
+        the desktop's three-tier authorization (always-trust / trust-once /
+        always-ask), we attach a ``check_permissions_fn`` that upgrades the
+        decision to ASK after the SDK's own policy checks have run. If the SDK
+        check returned DENY (e.g. dangerous command or path outside workspace),
+        that DENY is preserved.
+        """
+        from floodmind.agent.runtime.contracts.permissions import (
+            PermissionBehavior,
+            PermissionDecision,
+        )
+
+        keep_as_is = {"readonly", "internal", "ask"}
+
+        def _make_check_fn(existing_fn, tool_name):
+            def _check(tool_input):
+                if existing_fn is not None:
+                    try:
+                        result = existing_fn(tool_input)
+                        if hasattr(result, "behavior") and result.behavior == PermissionBehavior.DENY:
+                            return result
+                    except Exception:
+                        pass
+                return PermissionDecision(
+                    behavior=PermissionBehavior.ASK,
+                    reason=f"需要用户确认此操作（{tool_name}）",
+                )
+
+            return _check
+
+        for registry in (
+            getattr(agent, "_orchestrator_registry", None),
+            getattr(agent, "_specialist_registry", None),
+        ):
+            if registry is None:
+                continue
+            for tool in registry.all():
+                policy = getattr(tool, "permission_policy", None)
+                policy_type = getattr(policy, "policy_type", None) if policy else None
+                if policy_type in keep_as_is:
+                    continue
+                existing_fn = getattr(tool, "check_permissions_fn", None)
+                tool.check_permissions_fn = _make_check_fn(existing_fn, tool.name)
+
     def _respond_to_ask(self, raw: dict, approved: bool) -> None:
         ask_id = raw.get("ask_id")
         session_id = raw.get("session_id")
@@ -445,12 +701,12 @@ class FloodMindAgent:
 
         if self._permission_mode == PermissionMode.ALWAYS_TRUST:
             self._respond_to_ask(raw, approved=True)
-            return {**ev, "approved": True}
+            return {**ev, "approved": True, "auto_approved": True}
 
         cache = self._ensure_permission_cache()
         if self._permission_mode == PermissionMode.TRUST_ONCE and cache.is_approved(fingerprint):
             self._respond_to_ask(raw, approved=True)
-            return {**ev, "approved": True}
+            return {**ev, "approved": True, "auto_approved": True}
 
         # Needs explicit user approval: register so /api/permission/respond can
         # look up the fingerprint and unblock the SDK executor.
@@ -490,6 +746,11 @@ class FloodMindAgent:
         return {"ok": True}
 
     # ── memory: per-workspace isolation + New Session ──────────
+    def _fg(self):
+        """Foreground mutation lock; a no-op for bare __new__ test instances."""
+        lock = getattr(self, "_fg_lock", None)
+        return lock if lock is not None else contextlib.nullcontext()
+
     def pause(self) -> None:
         """Signal the running stream to abort at the next LLM/tool boundary.
 
@@ -513,7 +774,8 @@ class FloodMindAgent:
         if not text or not text.strip():
             return
         try:
-            mem = getattr(self._agent, "memory", None)
+            with self._fg():
+                mem = getattr(self._agent, "memory", None)
             if mem is not None and hasattr(mem, "add_user_message"):
                 mem.add_user_message(text.strip())
         except Exception as e:
@@ -531,7 +793,8 @@ class FloodMindAgent:
 
         session_id, persist_dir = self._memory_target(session_id_for(path))
         try:
-            self._agent = self._build_agent(session_id, persist_dir)
+            with self._fg():
+                self._agent = self._build_agent(session_id, persist_dir)
         except Exception as e:
             print(f"[sidecar] workspace memory rebind failed for {path}: {e}", file=sys.stderr)
 
@@ -539,8 +802,9 @@ class FloodMindAgent:
         # In-place clear is sufficient: NativeFloodAgent.clear_memory() clears
         # self.memory, which is the very same object the executor holds.
         try:
-            if hasattr(self._agent, "clear_memory"):
-                self._agent.clear_memory()
+            with self._fg():
+                if hasattr(self._agent, "clear_memory"):
+                    self._agent.clear_memory()
         except Exception as e:
             print(f"[sidecar] clear_memory failed: {e}", file=sys.stderr)
 
@@ -550,33 +814,21 @@ class FloodMindAgent:
         Reuses the current session id + its persist_dir, so conversation memory
         is reloaded from disk (no history loss).
 
-        NOTE: ModelClient.from_settings() reads a module-level `settings` singleton
-        that is frozen at import — save_config() only clears the *dict* cache, not
-        the singleton. So we derive the new values from the freshly-saved config
-        (get_config() IS refreshed) and pass them explicitly to from_settings,
-        which accepts overrides. Without this the headline "switch model" feature
-        would silently keep the old model.
+        Model resolution goes through resolve_model() (the SDK's single source of
+        truth): reload_config() clears the SDK dict cache so the freshly-saved
+        settings.json is re-read, then _resolve_llm() picks up the desktop's
+        active model + the right provider credentials.
         """
         try:
-            from floodmind.agent.native.model_client import ModelClient
-            from floodmind.config.settings import get_config
+            from floodmind.config.settings import reload_config
 
+            reload_config()  # pick up the just-saved settings.json
             sid = self._agent.session_id
             _, persist_dir = self._memory_target(sid)
 
-            cfg = get_config() or {}
-            m = cfg.get("model", {}) or {}
-            provider = m.get("provider", "")
-            opts = ((cfg.get("provider", {}) or {}).get(provider, {}) or {}).get("options", {}) or {}
-            self._llm = ModelClient.from_settings(
-                api_key=opts.get("apiKey") or None,
-                base_url=opts.get("baseURL") or None,
-                model_name=m.get("model") or None,
-                temperature=m.get("temperature"),
-                max_tokens=m.get("maxTokens"),
-                enable_thinking=bool(m.get("enableReasoning", False)),
-            )
-            self._agent = self._build_agent(sid, persist_dir)
+            self._llm = self._resolve_llm()
+            with self._fg():
+                self._agent = self._build_agent(sid, persist_dir)
             return True
         except Exception as e:
             print(f"[sidecar] reload_model failed: {e}", file=sys.stderr)
@@ -595,8 +847,9 @@ class FloodMindAgent:
         try:
             sid = self._agent.session_id
             _, persist_dir = self._memory_target(sid)
-            self._agent = self._build_agent(sid, persist_dir)
-            self._set_workspace()  # rebind workspace + refresh cached prompt
+            with self._fg():
+                self._agent = self._build_agent(sid, persist_dir)
+                self._set_workspace()  # rebind workspace + refresh cached prompt
             return True
         except Exception as e:
             print(f"[sidecar] reload_persona failed: {e}", file=sys.stderr)
@@ -612,7 +865,8 @@ class FloodMindAgent:
         """
         try:
             sid, persist_dir = self._memory_target(session_id)
-            self._agent = self._build_agent(sid, persist_dir)
+            with self._fg():
+                self._agent = self._build_agent(sid, persist_dir)
         except Exception as e:
             print(f"[sidecar] activate_conversation failed for {session_id}: {e}", file=sys.stderr)
 
@@ -678,6 +932,15 @@ class FloodMindAgent:
                 for ev in translate_event(raw):
                     if ev.get("type") == "done":
                         continue
+                    if ev.get("type") == "permission":
+                        # Automated/headless tasks run unattended — auto-approve
+                        # every permission ask so the SDK executor doesn't block
+                        # waiting for a user response that never comes (which
+                        # otherwise hangs the task unless the global mode is
+                        # always-trust). The trust-once/always-ask mode only
+                        # governs the foreground interactive conversation.
+                        self._respond_to_ask(raw, approved=True)
+                        ev = {**ev, "approved": True, "auto_approved": True}
                     events.append(ev)
                     if ev.get("type") == "artifact":
                         artifacts.append(
@@ -701,16 +964,43 @@ class FloodMindAgent:
         return events, artifacts, final_text
 
     def generate_title(self, message: str) -> str:
-        """LLM-generate a short Chinese title (mirrors the SDK server-layer prompt).
+        """LLM-generate a short Chinese title using the DESKTOP's active model.
 
-        Uses a dedicated low-temperature ModelClient; '' on any failure so callers
-        can keep a fallback title.
+        Mirrors _resolve_llm: resolve_model() is given the GUI's activeModel +
+        activeProvider so the SAME provider/credentials the user selected are
+        used. resolve_model() with no args picks the catalog-first provider,
+        which can be a different region/key (e.g. official deepseek vs a LAN
+        proxy serving the same model id) and 401 on title generation — leaving
+        every conversation stuck on the "新会话" fallback title. '' on any
+        failure so callers keep a fallback.
         """
         import re
         try:
             from floodmind.agent.native.model_client import ModelClient
+            from floodmind.config.model_resolver import resolve_model
 
-            llm = ModelClient.from_settings(temperature=0.2, max_tokens=60, enable_thinking=False)
+            desktop = self._desktop_block()
+            active = desktop.get("activeModel") or None
+            provider = desktop.get("activeProvider") or None
+            try:
+                rm = resolve_model(model_key=active, provider_id=provider)
+            except Exception:
+                # Selected model/provider unconfigured — fall back to the
+                # catalog default rather than failing title generation entirely.
+                rm = resolve_model()
+            # max_tokens must accommodate reasoning models: they emit their
+            # chain-of-thought into reasoning_content BEFORE the answer lands in
+            # content, so a small budget (e.g. 60) gets exhausted mid-reasoning
+            # and content comes back empty. 10000 lets the reasoning finish and a
+            # short title through; non-reasoning models simply stop early.
+            llm = ModelClient(
+                api_key=rm.api_key,
+                base_url=rm.base_url,
+                model_name=rm.id,
+                temperature=0.2,
+                max_tokens=10000,
+                enable_thinking=False,
+            )
             prompt = (
                 "请根据用户问题拟一个简短的中文会话标题，用于左侧历史会话列表展示。"
                 "要求：10到18个字，突出任务目标，不要带引号，不要解释，不要句号。\n\n"
@@ -720,7 +1010,10 @@ class FloodMindAgent:
             if result is None or not hasattr(result, "content"):
                 return ""
             raw = (getattr(result, "content", "") or "").strip()
-            title = raw.splitlines()[0].strip().strip('"""')
+            lines = raw.splitlines() if raw else []
+            if not lines:
+                return ""
+            title = lines[0].strip().strip('"""')
             title = re.sub(r"^[#\-*\d.\s]+", "", title).strip()
             return title[:24] if title else ""
         except Exception as e:
@@ -729,44 +1022,78 @@ class FloodMindAgent:
 
     # ── main entry ─────────────────────────────────────────────
     def stream(self, messages: list[Message]) -> Iterator[dict]:
-        if getattr(self, "_agent", None) is None:
-            yield {"type": "error", "content": "模型未配置，请先在左侧「设置」中配置 API Key 后保存。"}
-            yield {"type": "done"}
-            return
-
-        user_text = messages[-1]["content"] if messages else ""
-        # Fresh run: clear any stale pause signal, then let the SDK poll
-        # self._abort.is_set as its abort_check. (_abort is created in __init__;
-        # the getattr guard keeps the unit tests' bare __new__ instances working.)
+        # Serialize foreground chats: only one /api/chat run at a time. The
+        # shared self._agent + the process-global session context mean two
+        # concurrent streams could otherwise cross-bind workspaces. Acquire the
+        # stream lock non-blocking so a second request fails fast instead of
+        # queueing behind a (possibly long) run. getattr guard keeps bare
+        # __new__ test instances working (no _stream_lock attribute set).
+        stream_lock = getattr(self, "_stream_lock", None)
+        acquired = stream_lock.acquire(blocking=False) if stream_lock is not None else True
         abort = getattr(self, "_abort", None)
-        if abort is not None:
-            abort.clear()
-        abort_check = abort.is_set if abort is not None else None
-        before: dict[str, float] = {}
-        errored = False
         try:
-            self._set_workspace()
-            before = self._snapshot_outputs()
-            # Pass abort_check only when armed (production always sets _abort in
-            # __init__). Test stubs mimic the SDK stream() signature optionally,
-            # so we avoid forcing the kwarg on them.
-            stream_kwargs = {"abort_check": abort_check} if abort_check is not None else {}
-            for raw in self._agent.stream(user_text, **stream_kwargs):
-                for ev in translate_event(raw):
-                    if ev.get("type") == "permission":
-                        ev = self._handle_permission_ask(raw, ev)
-                    yield ev
-        except Exception as e:
-            # A mid-stream SDK failure (network drop, 401, internal error) must
-            # still surface to the UI: fetch won't reject on a half-closed body,
-            # so without this the user gets a silent partial answer.
-            errored = True
-            yield {"type": "error", "content": f"代理执行出错：{e}"}
+            if not acquired:
+                yield {"type": "error", "content": "已有任务正在执行，请等待当前任务结束。"}
+                yield {"type": "done"}
+                return
 
-        # Artifacts: the SDK emits file/image_generated after its loop breaks, so
-        # they never reach the stream. Diff the output dir instead. Skip on crash
-        # so we don't report half-written files as deliverables.
-        if not errored:
-            for ev in self._diff_outputs(before):
-                yield ev
-        yield {"type": "done"}
+            # We hold the stream lock for this run — safe to reset any stale
+            # pause signal from a previous run. Done AFTER the acquire check so
+            # a rejected (busy) request never clears the active run's abort.
+            if abort is not None:
+                abort.clear()
+
+            if getattr(self, "_agent", None) is None:
+                yield {"type": "error", "content": "模型未配置，请先在左侧「设置」中配置 API Key 后保存。"}
+                yield {"type": "done"}
+                return
+
+            user_text = messages[-1]["content"] if messages else ""
+            abort_check = abort.is_set if abort is not None else None
+            before: dict[str, float] = {}
+            errored = False
+            agent = None
+            try:
+                # Bind workspace + capture the agent reference under the
+                # foreground lock so a concurrent rebind/reload can't swap
+                # self._agent mid-bind. The (long) iteration then runs without
+                # the lock, against the locally-captured agent — an in-flight
+                # rebuild leaves this stream iterating the old agent, exactly
+                # as the rebind docstring promises.
+                with self._fg():
+                    self._set_workspace()
+                    agent = self._agent
+                    before = self._snapshot_outputs()
+                # Pass abort_check only when armed (production always sets _abort
+                # in __init__). Test stubs mimic the SDK stream() signature
+                # optionally, so we avoid forcing the kwarg on them.
+                stream_kwargs = {"abort_check": abort_check} if abort_check is not None else {}
+                for raw in agent.stream(user_text, **stream_kwargs):
+                    for ev in translate_event(raw):
+                        if ev.get("type") == "permission":
+                            ev = self._handle_permission_ask(raw, ev)
+                        yield ev
+            except Exception as e:
+                # A mid-stream SDK failure (network drop, 401, internal error) must
+                # still surface to the UI: fetch won't reject on a half-closed body,
+                # so without this the user gets a silent partial answer.
+                errored = True
+                yield {"type": "error", "content": f"代理执行出错：{e}"}
+
+            # Artifacts: the SDK emits file/image_generated after its loop breaks, so
+            # they never reach the stream. Diff the output dir instead. Skip on crash
+            # so we don't report half-written files as deliverables.
+            if not errored:
+                for ev in self._diff_outputs(before):
+                    yield ev
+            yield {"type": "done"}
+        finally:
+            # A client disconnect raises GeneratorExit here (Flask closes the
+            # response). Set the abort signal so the SDK run stops at its next
+            # boundary instead of leaking an orphaned run that keeps burning
+            # tokens and writing files the user never sees. Harmless on normal
+            # completion — the next stream() clears it.
+            if abort is not None and acquired:
+                abort.set()
+            if stream_lock is not None and acquired:
+                stream_lock.release()

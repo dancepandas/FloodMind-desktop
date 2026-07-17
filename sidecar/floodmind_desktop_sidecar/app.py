@@ -3,8 +3,10 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import sys
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -23,18 +25,68 @@ def _first_user_text(turns: list) -> str:
     return ""
 
 
+# ── feedback hardening (I3) ────────────────────────────────────
+# Bound the on-disk footprint of user-submitted feedback and scrub obvious
+# secrets out of any attached logs before persisting, so a feedback file can be
+# shared/diagnosed without leaking API keys or bearer tokens.
+FEEDBACK_MAX_DESCRIPTION = 8000
+FEEDBACK_MAX_CONTACT = 320
+FEEDBACK_MAX_LOG_ENTRIES = 200
+FEEDBACK_MAX_LOG_BYTES = 256 * 1024
+
+# Each pattern either has a leading capture group (the label, kept) followed by
+# the secret, or matches the bare secret. The replacer keeps the label and
+# substitutes "[REDACTED]" for the credential itself.
+_SECRET_PATTERNS = [
+    re.compile(r"sk-[A-Za-z0-9_\-]{16,}"),
+    re.compile(r"(?i)(authorization\s*[:=]\s*bearer\s+)[A-Za-z0-9._\-]+"),
+    re.compile(r"(?i)(api[_\-]?key\s*[:=]\s*[\"']?)[A-Za-z0-9_\-]{12,}"),
+    re.compile(r"(?i)(token\s*[:=]\s*[\"']?)[A-Za-z0-9_\-]{20,}"),
+    re.compile(r"(?i)(secret\s*[:=]\s*[\"']?)[A-Za-z0-9_\-]{12,}"),
+]
+
+
+def _scrub_secrets(text: str) -> str:
+    for pat in _SECRET_PATTERNS:
+        text = pat.sub(
+            lambda m: (m.group(1) + "[REDACTED]") if m.groups() else "[REDACTED]",
+            text,
+        )
+    return text
+
+
+def _sanitize_logs(logs: Any) -> list[dict] | None:
+    """Cap log volume and scrub secrets from each message. Returns None if not a list."""
+    if not isinstance(logs, list):
+        return None
+    out: list[dict] = []
+    total = 0
+    for entry in logs[-FEEDBACK_MAX_LOG_ENTRIES:]:
+        if isinstance(entry, dict):
+            clean = dict(entry)
+            clean["message"] = _scrub_secrets(str(clean.get("message", "")))
+        else:
+            clean = {"message": _scrub_secrets(str(entry))}
+        total += len(clean.get("message", ""))
+        if total > FEEDBACK_MAX_LOG_BYTES:
+            break
+        out.append(clean)
+    return out
+
+
 def create_app(agent: Agent, workspace_manager=None, conversation_store=None,
                task_runtime=None, task_index=None,
                task_run_store=None, task_runner=None, start_runner=True) -> Flask:
     app = Flask(__name__)
 
-    # The Tauri WebView (origin http://127.0.0.1:1420 in dev, tauri://localhost in
-    # prod) and the sidecar (127.0.0.1:<port>) are different origins, so a POST
-    # with Content-Type: application/json triggers a CORS preflight. flask-cors
-    # answers OPTIONS and adds the allow-origin header. Sidecar is 127.0.0.1-only,
-    # so a wildcard is acceptable here; Plan 5 should restrict to the Tauri origin
-    # or switch to tauri-plugin-http (requests via Rust, no CORS at all).
-    CORS(app, resources={r"/api/*": {"origins": "*"}})
+    # The Tauri WebView and the sidecar are different origins, so a POST with
+    # Content-Type: application/json triggers a CORS preflight and the GETs need
+    # an Access-Control-Allow-Origin echo. Restrict to the Tauri webview origins
+    # only — never a wildcard ("*"), which would let any website the user visits
+    # POST to every endpoint. NB: Tauri 2 on Windows uses http://tauri.localhost
+    # (Tauri 1 used https://), macOS/Linux use tauri://localhost, and dev runs
+    # on the Vite port — match all of them via one regex.
+    CORS(app, resources={r"/api/*": {"origins": r"^(https?://tauri\.localhost|tauri://localhost|https?://(localhost|127\.0\.0\.1)(:\d+)?)$"}})
 
     if conversation_store is None:
         from .workspace import _app_data_dir
@@ -69,8 +121,15 @@ def create_app(agent: Agent, workspace_manager=None, conversation_store=None,
             return jsonify({"error": "messages must be a non-empty list"}), 400
 
         def generate():
-            for event in agent.stream(messages):
-                yield json.dumps(event, ensure_ascii=False) + "\n"
+            gen = agent.stream(messages)
+            try:
+                for event in gen:
+                    yield json.dumps(event, ensure_ascii=False) + "\n"
+            finally:
+                # On client disconnect Werkzeug throws GeneratorExit into this
+                # generator; close the underlying agent stream so its abort
+                # signal fires promptly instead of leaking a running SDK agent.
+                gen.close()
 
         return Response(generate(), mimetype="application/x-ndjson")
 
@@ -219,6 +278,16 @@ def create_app(agent: Agent, workspace_manager=None, conversation_store=None,
         tasks = task_runtime.list_tasks("")
         if ws:
             index = task_index.all()
+            # Agent-created tasks (via the ScheduleTask tool inside an agent
+            # conversation) live in the SDK runtime but were never written to the
+            # desktop's per-workspace index — they'd be invisible in the UI. The
+            # frontend only queries for the active workspace, so auto-index any
+            # orphaned task under it. Once indexed they survive workspace switches.
+            for t in tasks:
+                tid = t["id"]
+                if tid not in index:
+                    task_index.set(tid, ws)
+                    index[tid] = ws
             tasks = [t for t in tasks if index.get(t["id"]) == ws]
         return jsonify({"tasks": tasks})
 
@@ -436,14 +505,54 @@ def create_app(agent: Agent, workspace_manager=None, conversation_store=None,
 
     @app.get("/api/mcp")
     def mcp_list():
+        """Every MCP server the UI should show: configured servers (connected or
+        not) + any runtime-loaded ones (LoadMcpServer) not in config. Each carries
+        a truthful ``connected`` flag + tool count, so a configured-but-failed
+        server is still visible instead of silently hidden."""
+        from .catalog_api import read_mcp_config
+        configured = read_mcp_config()
         try:
             from floodmind.agent.mcp_client import get_mcp_client_pool
-            from .catalog_api import read_mcp_config
-            servers = get_mcp_client_pool().list_servers()
-        except Exception as e:
-            return jsonify({"servers": [], "error": str(e)})
-        configured = {s.get("name"): s for s in read_mcp_config()}
-        return jsonify({"servers": servers, "configured": configured})
+            connected = {s["name"]: s for s in get_mcp_client_pool().list_servers()}
+        except Exception:
+            connected = {}
+        # Most-recent tool-call outcome per server (stronger than "connected"):
+        # a connected MCP wrapper can still fail when the backend it proxies is
+        # down. None = no call yet.
+        health = getattr(agent, "mcp_call_health", lambda: {})()
+
+        servers: list[dict] = []
+        seen: set[str] = set()
+        for s in configured:
+            name = s.get("name")
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            c = connected.get(name, {})
+            h = health.get(name, {})
+            servers.append({
+                "name": name,
+                "transport": s.get("transport") or c.get("transport"),
+                "tools": c.get("tools", 0),
+                "connected": bool(c.get("connected", False)),
+                "health_ok": h.get("ok"),
+                "health_error": h.get("error"),
+            })
+        # Runtime-loaded servers not present in config (e.g. agent LoadMcpServer).
+        for name, c in connected.items():
+            if name in seen:
+                continue
+            seen.add(name)
+            h = health.get(name, {})
+            servers.append({
+                "name": name,
+                "transport": c.get("transport"),
+                "tools": c.get("tools", 0),
+                "connected": bool(c.get("connected", False)),
+                "health_ok": h.get("ok"),
+                "health_error": h.get("error"),
+            })
+        return jsonify({"servers": servers})
 
     @app.get("/api/mcp/<name>")
     def mcp_detail(name):
@@ -451,10 +560,22 @@ def create_app(agent: Agent, workspace_manager=None, conversation_store=None,
             from floodmind.agent.mcp_client import get_mcp_client_pool
             info = get_mcp_client_pool().get_server_info(name)
         except Exception:
-            return jsonify({"error": "mcp pool unavailable"}), 404
-        if not info:
-            return jsonify({"error": "server not found"}), 404
-        return jsonify(info)
+            info = None
+        if info:
+            return jsonify(info)
+        # Not connected — fall back to the configured entry so the UI can still
+        # show it (with a "未连接" status + the test button) instead of 404.
+        from .catalog_api import read_mcp_config
+        cfg = next((s for s in read_mcp_config() if s.get("name") == name), None)
+        if cfg:
+            return jsonify({
+                "name": name,
+                "transport": cfg.get("transport"),
+                "tools": [],
+                "connected": False,
+                **{k: v for k, v in cfg.items() if k in ("command", "args", "env", "url", "headers")},
+            })
+        return jsonify({"error": "server not found"}), 404
 
     @app.post("/api/mcp")
     def mcp_create():
@@ -618,6 +739,10 @@ def create_app(agent: Agent, workspace_manager=None, conversation_store=None,
             content = base64.b64encode(target.read_bytes()).decode()
             previewable = True
         elif ext in binary_doc_exts:
+            # Serve the raw file (base64) + its office mime; the client renders
+            # it with format-specific components (docx-preview / SheetJS / pptx).
+            # Legacy .doc/.xls/.ppt are served too — the client renderer fails
+            # gracefully and offers "open in system".
             mime = {
                 ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                 ".doc": "application/msword",
@@ -626,8 +751,8 @@ def create_app(agent: Agent, workspace_manager=None, conversation_store=None,
                 ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
                 ".ppt": "application/vnd.ms-powerpoint",
             }.get(ext, "application/octet-stream")
-            content = ""
-            previewable = False
+            content = base64.b64encode(target.read_bytes()).decode()
+            previewable = True
         else:
             content = target.read_text(encoding="utf-8", errors="replace")
             previewable = True
@@ -659,6 +784,28 @@ def create_app(agent: Agent, workspace_manager=None, conversation_store=None,
                 agent.rebind_workspace(summary["path"])
             except Exception as e:  # pragma: no cover - defensive
                 app.logger.warning("agent.rebind_workspace failed: %s", e)
+            return jsonify(summary)
+
+        @app.post("/api/workspace/forget")
+        def workspace_forget():
+            """Remove a path from the recent list (unpin from the sidebar).
+
+            Does not delete anything on disk. If the forgotten path was the
+            current workspace, current switches to the next recent entry and the
+            agent is rebound; with none left, current becomes None and the agent
+            keeps its last binding (the UI forces an open before sending).
+            """
+            body = request.get_json(silent=True) or {}
+            path = str(body.get("path", "")).strip()
+            if not path:
+                return jsonify({"error": "path required"}), 400
+            summary, current_changed = workspace_manager.forget(path)
+            new_current = (summary.get("current") or {}).get("path")
+            if current_changed and new_current:
+                try:
+                    agent.rebind_workspace(new_current)
+                except Exception as e:  # pragma: no cover - defensive
+                    app.logger.warning("agent.rebind_workspace after forget failed: %s", e)
             return jsonify(summary)
 
         @app.get("/api/workspace/files")
@@ -723,5 +870,48 @@ def create_app(agent: Agent, workspace_manager=None, conversation_store=None,
                 except Exception as e:
                     return jsonify({"error": f"write failed for {rel}: {e}"}), 500
             return jsonify({"ok": True, "files": written})
+
+    # ── Feedback ──────────────────────────────────────────────
+    @app.post("/api/feedback")
+    def feedback_create():
+        body = request.get_json(silent=True) or {}
+        description = str(body.get("description", "")).strip()
+        if not description:
+            return jsonify({"error": "description required"}), 400
+        if len(description) > FEEDBACK_MAX_DESCRIPTION:
+            return jsonify({"error": f"description too long (max {FEEDBACK_MAX_DESCRIPTION})"}), 400
+        contact = str(body.get("contact", "")).strip()
+        if len(contact) > FEEDBACK_MAX_CONTACT:
+            return jsonify({"error": f"contact too long (max {FEEDBACK_MAX_CONTACT})"}), 400
+        include_logs = bool(body.get("include_logs", False))
+        logs = _sanitize_logs(body.get("logs")) if include_logs else None
+
+        workspace = _require_workspace()
+        if workspace:
+            feedback_dir = Path(workspace) / ".floodmind" / "feedback"
+        else:
+            feedback_dir = _app_data_dir() / "feedback"
+        feedback_dir.mkdir(parents=True, exist_ok=True)
+
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-%f")[:-3]
+        filename = f"feedback-{timestamp}.json"
+        path = feedback_dir / filename
+
+        payload = {
+            "version": __version__,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "workspace": workspace,
+            "description": description,
+            "include_logs": include_logs,
+            "contact": contact or None,
+            "logs": logs,
+        }
+        try:
+            path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception as e:
+            return jsonify({"error": f"failed to write feedback: {e}"}), 500
+        # Return only the filename, never the absolute path — avoids leaking the
+        # user's directory layout to anything that can read the HTTP response.
+        return jsonify({"ok": True, "file": filename})
 
     return app

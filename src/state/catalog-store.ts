@@ -26,12 +26,18 @@ export interface McpServer {
   transport?: string;
   tools?: number;
   connected?: boolean;
+  /** Most-recent tool-call outcome. null = no call yet; a connected wrapper can
+   *  still fail when the backend it proxies is down. */
+  health_ok?: boolean | null;
+  health_error?: string | null;
 }
 export interface McpServerDetail {
   name: string;
   transport?: string;
   tools?: string[];
   connected?: boolean;
+  health_ok?: boolean | null;
+  health_error?: string | null;
 }
 export interface McpServerForm {
   name?: string;

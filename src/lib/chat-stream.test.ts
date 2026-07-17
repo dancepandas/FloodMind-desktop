@@ -82,4 +82,20 @@ describe("streamChat", () => {
     }
     expect(events.map((e) => e.type)).toEqual(["tool_start", "text", "artifact", "done"]);
   });
+
+  it("skips a malformed line without aborting the stream", async () => {
+    (globalThis.fetch as any).mockResolvedValue(
+      ndjsonResponse([
+        "this is not json\n",
+        '{"type":"text","content":"after"}\n',
+        '{"type":"done"}\n',
+      ])
+    );
+    const events = [];
+    for await (const e of streamChat("http://x", [{ role: "user", content: "hi" }])) {
+      events.push(e);
+    }
+    // The bad line is dropped; valid events still arrive, including the terminal.
+    expect(events.map((e) => e.type)).toEqual(["text", "done"]);
+  });
 });

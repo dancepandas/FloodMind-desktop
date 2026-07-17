@@ -97,3 +97,26 @@ def test_set_and_get_active(tmp_path):
     s.set_active("/ws/A", a["id"])
     assert s.get_active("/ws/A") == a["id"]
     assert next(i for i in s.list("/ws/A") if i["id"] == a["id"])["active"] is True
+
+
+def test_traversal_conv_id_is_treated_as_missing(tmp_path):
+    """A conv_id from the URL path must not escape the store root (C2)."""
+    s = _store(tmp_path)
+    # Drop a sibling file outside the conversations dir that a traversal would hit.
+    victim = tmp_path / "secret.json"
+    victim.write_text('{"pwned": true}', encoding="utf-8")
+
+    bad = "../../secret"
+    assert s.get(bad) is None
+    assert s.append_turns(bad, [{"role": "user", "content": "x"}]) is None
+    assert s.update_title(bad, "hax") is False
+    assert s.delete(bad) is None
+    # Nothing outside the store was touched.
+    assert victim.read_text(encoding="utf-8") == '{"pwned": true}'
+
+
+def test_invalid_format_conv_id_is_missing(tmp_path):
+    s = _store(tmp_path)
+    assert s.get("conv-nope") is None
+    assert s.get("not-a-conv-id") is None
+    assert s.delete("conv-deadbeefdeadbeef") is None  # 16 hex chars, wrong length

@@ -232,18 +232,18 @@ def write_mcp_config(servers: list[dict[str, Any]]) -> None:
 
 
 def test_mcp_server(server_config: dict[str, Any]) -> dict[str, Any]:
+    """Probe an MCP server with a real handshake (initialize + tools/list).
+
+    On success the connection STAYS in the pool — so the UI status reflects it
+    (the caller refreshes the list) and we don't disconnect a server that was
+    already working. On failure the connection was never stored, so the pool is
+    left untouched."""
     _validate_mcp_server_transport(server_config)
     try:
         from floodmind.agent.mcp_client import get_mcp_client_pool
+
         pool = get_mcp_client_pool()
-        pool.connect_server(server_config)
-        return {"ok": True, "error": None}
+        conn = pool.connect_server(server_config)  # raises on a real failure
+        return {"ok": True, "error": None, "tools": len(conn.list_tools())}
     except Exception as e:
         return {"ok": False, "error": str(e)}
-    finally:
-        try:
-            from floodmind.agent.mcp_client import get_mcp_client_pool
-            pool = get_mcp_client_pool()
-            pool.disconnect_server(server_config["name"])
-        except Exception:
-            pass

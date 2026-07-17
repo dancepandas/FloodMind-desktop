@@ -58,8 +58,8 @@ describe("Sidebar", () => {
     render(<Sidebar />);
     expect(screen.getByText("新建任务")).toBeInTheDocument();
     expect(screen.getByText("对话")).toBeInTheDocument();
-    expect(screen.getByText("技能")).toBeInTheDocument();
-    expect(screen.getByText("连接器")).toBeInTheDocument();
+    expect(screen.getByText("Skills")).toBeInTheDocument();
+    expect(screen.getByText("MCP")).toBeInTheDocument();
     expect(screen.getByText("自动化")).toBeInTheDocument();
     expect(screen.getByText("设置")).toBeInTheDocument();
   });

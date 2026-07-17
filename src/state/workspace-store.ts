@@ -19,6 +19,7 @@ interface WorkspaceState {
   load: () => Promise<void>;
   pickAndOpen: () => Promise<boolean>;
   openPath: (path: string) => Promise<void>;
+  remove: (path: string) => Promise<void>;
   listFiles: (relPath?: string) => Promise<FileEntry[]>;
 }
 
@@ -60,6 +61,20 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   async openPath(path) {
     const ok = await postOpen(path);
     if (ok) await get().load();
+  },
+
+  async remove(path) {
+    try {
+      const b = await getBaseUrl();
+      await fetch(`${b}/api/workspace/forget`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path }),
+      });
+      await get().load();
+    } catch {
+      /* best-effort — the path is unpinned on the backend regardless */
+    }
   },
 
   async listFiles(relPath = ".") {

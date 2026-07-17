@@ -27,6 +27,13 @@ vi.mock("../state/chat-store", () => ({
     }),
 }));
 
+vi.mock("../state/config-store", () => ({
+  useConfigStore: (selector: (s: any) => any) =>
+    selector({
+      permissionMode: "trust-once",
+    }),
+}));
+
 vi.mock("../state/workspace-store", () => ({
   useWorkspaceStore: (selector: (s: any) => any) =>
     selector({

@@ -50,6 +50,66 @@ def test_permission_ask_carries_session_id():
     assert out[0]["ask_id"] == "a1"
 
 
+def test_mcp_call_health_tracks_outcome():
+    # The McpClientPool.call_tool wrapper records the most-recent tool-call
+    # outcome per server, so the UI can flag a connected wrapper whose backend
+    # is actually down (e.g. hydro-rag "无法连接").
+    from floodmind.agent.mcp_client import McpClientPool
+    from floodmind_desktop_sidecar.floodmind_agent import _MCP_CALL_HEALTH
+
+    saved = dict(_MCP_CALL_HEALTH)
+    try:
+        pool = McpClientPool()
+
+        class DownConn:
+            def call_tool(self, tool, args):
+                return "知识库服务无法连接"
+            def list_tools(self):
+                return []
+
+        class UpConn:
+            def call_tool(self, tool, args):
+                return "正常的检索结果"
+            def list_tools(self):
+                return []
+
+        pool._connections["hydro-rag"] = DownConn()
+        pool.call_tool("mcp:hydro-rag:search", {})
+        assert _MCP_CALL_HEALTH["hydro-rag"]["ok"] is False
+        assert "无法连接" in _MCP_CALL_HEALTH["hydro-rag"]["error"]
+
+        pool._connections["ok-svc"] = UpConn()
+        pool.call_tool("mcp:ok-svc:query", {})
+        assert _MCP_CALL_HEALTH["ok-svc"]["ok"] is True
+    finally:
+        _MCP_CALL_HEALTH.clear()
+        _MCP_CALL_HEALTH.update(saved)
+
+
+def test_persist_runtime_mcp_writes_and_dedupes(tmp_path, monkeypatch):
+    # A runtime-loaded MCP (LoadMcpServer) must be appended to mcp.json so it
+    # survives restart and shows in the MCP menu; repeated calls don't duplicate.
+    import json
+    from floodmind_desktop_sidecar import catalog_api, floodmind_agent
+
+    monkeypatch.setattr(catalog_api, "_mcp_path", lambda: tmp_path / "mcp.json")
+
+    floodmind_agent._persist_runtime_mcp(
+        {"name": "chronos-flow-predictor", "transport": "stdio", "command": "python",
+         "args": [r"E:\forecast\chronos_mcp_server.py"]}
+    )
+    data = json.loads((tmp_path / "mcp.json").read_text(encoding="utf-8"))
+    names = [s["name"] for s in data["servers"]]
+    assert "chronos-flow-predictor" in names
+
+    # Idempotent: a second persist for the same name doesn't duplicate.
+    floodmind_agent._persist_runtime_mcp(
+        {"name": "chronos-flow-predictor", "transport": "stdio", "command": "python"}
+    )
+    data = json.loads((tmp_path / "mcp.json").read_text(encoding="utf-8"))
+    assert sum(1 for s in data["servers"] if s["name"] == "chronos-flow-predictor") == 1
+
+
 def test_file_generated_becomes_artifact():
     out = translate_event({"type": "file_generated", "filename": "r.xlsx", "download_url": "/x", "size": 10})
     assert out == [{"type": "artifact", "kind": "file", "name": "r.xlsx", "path": "/x"}]
@@ -91,47 +151,51 @@ def test_unknown_event_passes_through_minimal():
     assert out == [{"type": "something_new", "content": "x"}]
 
 
-def test_reload_model_passes_explicit_config_to_from_settings(monkeypatch):
-    # C1 guard: from_settings() reads a module-level singleton frozen at import,
-    # so reload_model must derive values from get_config() and pass them
-    # explicitly. Assert those exact args are forwarded.
+def test_reload_model_resolves_active_model_and_rebuilds(monkeypatch):
+    # reload_model() must re-read settings.json, resolve the desktop's active
+    # model via resolve_model() (single source of truth), construct a ModelClient
+    # with that model's credentials/params, and rebuild the agent.
+    import importlib
+    from floodmind.config.model_resolver import ResolvedModel
     from floodmind_desktop_sidecar.floodmind_agent import FloodMindAgent
 
     captured = {}
 
     class FakeMC:
-        @classmethod
-        def from_settings(cls, **kw):
+        def __init__(self, **kw):
             captured.update(kw)
-            return "NEW_LLM"
 
     a = FloodMindAgent.__new__(FloodMindAgent)
     a._llm = "OLD_LLM"
     a._agent = type("A", (), {"session_id": "desktop-default"})()
     a._build_agent = lambda sid, pd: ("AGENT", sid, pd)  # avoid real create_flood_agent
 
+    rm = ResolvedModel(
+        provider="openai", id="gpt-4o-mini", name="GPT-4o mini",
+        api_key="sk-new", base_url="https://api.openai.com/v1",
+        temperature=0.9, max_tokens=2048, context_window=128000,
+        supports_reasoning=True, supports_vision=False,
+    )
     # Patch the real module objects (floodmind.config.settings is shadowed by a
-    # Settings singleton at the package level, so use import_module, not a
-    # dotted string).
-    import importlib
-
+    # Settings singleton at the package level, so use import_module).
     monkeypatch.setattr(
-        importlib.import_module("floodmind.agent.native.model_client"), "ModelClient", FakeMC
+        importlib.import_module("floodmind.config.model_resolver"),
+        "resolve_model",
+        lambda model_key=None, provider_id=None: rm,
+    )
+    monkeypatch.setattr(
+        importlib.import_module("floodmind.agent.native.model_client"),
+        "ModelClient",
+        FakeMC,
     )
     monkeypatch.setattr(
         importlib.import_module("floodmind.config.settings"),
-        "get_config",
-        lambda: {
-            "model": {
-                "provider": "openai",
-                "model": "gpt-4o-mini",
-                "temperature": 0.9,
-                "maxTokens": 2048,
-                "enableReasoning": True,
-                "enableSearch": False,
-            },
-            "provider": {"openai": {"options": {"apiKey": "sk-new", "baseURL": "https://api.openai.com/v1"}}},
-        },
+        "reload_config",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        FloodMindAgent, "_desktop_block",
+        lambda self: {"activeModel": "gpt-4o-mini", "enableReasoning": True},
     )
 
     assert a.reload_model() is True
@@ -141,7 +205,7 @@ def test_reload_model_passes_explicit_config_to_from_settings(monkeypatch):
     assert captured["temperature"] == 0.9
     assert captured["max_tokens"] == 2048
     assert captured["enable_thinking"] is True
-    assert a._llm == "NEW_LLM"
+    assert isinstance(a._llm, FakeMC)
 
 
 def test_diff_outputs_yields_artifacts(tmp_path):
@@ -225,42 +289,105 @@ def test_generate_title_invokes_llm_and_cleans_output(monkeypatch):
     class FakeResult:
         content = "  1. 帮我画个销售折线图\nignore me"
 
+    class FakeRM:
+        api_key = "k"
+        base_url = "http://x/v1"
+        id = "deepseek-v4-flash"
+
     class FakeMC:
+        last_kwargs = None
         last_prompt = None
 
-        @classmethod
-        def from_settings(cls, **kw):
-            cls.last_kwargs = kw
-            llm = type("L", (), {"invoke": lambda self, p: setattr(FakeMC, "last_prompt", p) or FakeResult()})()
-            return llm
+        def __init__(self, **kw):
+            FakeMC.last_kwargs = kw
 
-    monkeypatch.setattr(
-        importlib.import_module("floodmind.agent.native.model_client"), "ModelClient", FakeMC
-    )
+        def invoke(self, prompt):
+            FakeMC.last_prompt = prompt
+            return FakeResult()
+
+    resolver = importlib.import_module("floodmind.config.model_resolver")
+    monkeypatch.setattr(resolver, "resolve_model", lambda **kw: FakeRM())
+    mc = importlib.import_module("floodmind.agent.native.model_client")
+    monkeypatch.setattr(mc, "ModelClient", FakeMC)
 
     a = FloodMindAgent.__new__(FloodMindAgent)
+    monkeypatch.setattr(a, "_desktop_block", lambda: {})
     title = a.generate_title("帮我画个销售折线图")
 
     assert title == "帮我画个销售折线图"           # leading "1. " stripped, trailing line dropped, ≤24
     assert FakeMC.last_kwargs["temperature"] == 0.2
-    assert FakeMC.last_kwargs["max_tokens"] == 60
+    assert FakeMC.last_kwargs["max_tokens"] == 10000
     assert FakeMC.last_kwargs["enable_thinking"] is False
     assert "销售折线图" in FakeMC.last_prompt
+
+
+def test_generate_title_uses_desktop_active_provider(monkeypatch):
+    """Regression: generate_title must hand resolve_model the GUI's activeModel
+    + activeProvider. Without it, resolve_model picks the catalog-first provider,
+    which can be a different region/key and 401 — leaving every conversation on
+    the "新会话" fallback title."""
+    import importlib
+    from floodmind_desktop_sidecar.floodmind_agent import FloodMindAgent
+
+    resolver = importlib.import_module("floodmind.config.model_resolver")
+    mc = importlib.import_module("floodmind.agent.native.model_client")
+    captured = {}
+
+    class FakeRM:
+        api_key = "proxy-key"
+        base_url = "http://192.168.30.112:3000/v1"
+        id = "deepseek-v4-flash"
+
+    def fake_resolve(*, model_key=None, provider_id=None):
+        captured["model_key"] = model_key
+        captured["provider_id"] = provider_id
+        return FakeRM()
+
+    class FakeLLM:
+        def __init__(self, **kw):
+            captured["client_kwargs"] = kw
+
+        def invoke(self, prompt):
+            return type("R", (), {"content": "预报分析"})()
+
+    monkeypatch.setattr(resolver, "resolve_model", fake_resolve)
+    monkeypatch.setattr(mc, "ModelClient", FakeLLM)
+
+    a = FloodMindAgent.__new__(FloodMindAgent)
+    monkeypatch.setattr(
+        a, "_desktop_block",
+        lambda: {"activeModel": "deepseek-v4-flash", "activeProvider": "openai"},
+    )
+    a.generate_title("建一个chronos预报MCP")
+
+    assert captured["model_key"] == "deepseek-v4-flash"
+    assert captured["provider_id"] == "openai"
+    # The resolved model's provider credentials are what get used — not the
+    # catalog default. This is what avoids the cross-provider 401.
+    assert captured["client_kwargs"]["base_url"] == "http://192.168.30.112:3000/v1"
+    assert captured["client_kwargs"]["api_key"] == "proxy-key"
+    assert captured["client_kwargs"]["model_name"] == "deepseek-v4-flash"
 
 
 def test_generate_title_returns_empty_on_failure(monkeypatch):
     import importlib
     from floodmind_desktop_sidecar.floodmind_agent import FloodMindAgent
 
+    class FakeRM:
+        api_key = "k"
+        base_url = "http://x/v1"
+        id = "m"
+
     class FakeMC:
-        @classmethod
-        def from_settings(cls, **kw):
+        def __init__(self, **kw):
             raise RuntimeError("llm down")
 
-    monkeypatch.setattr(
-        importlib.import_module("floodmind.agent.native.model_client"), "ModelClient", FakeMC
-    )
+    resolver = importlib.import_module("floodmind.config.model_resolver")
+    monkeypatch.setattr(resolver, "resolve_model", lambda **kw: FakeRM())
+    mc = importlib.import_module("floodmind.agent.native.model_client")
+    monkeypatch.setattr(mc, "ModelClient", FakeMC)
     a = FloodMindAgent.__new__(FloodMindAgent)
+    monkeypatch.setattr(a, "_desktop_block", lambda: {})
     assert a.generate_title("anything") == ""    # swallowed, not raised
 
 
@@ -341,6 +468,35 @@ def test_run_headless_diffs_output_dir_for_artifacts(tmp_path, monkeypatch):
     assert final_text == "ok"
 
 
+def test_run_headless_auto_approves_permission_asks(tmp_path, monkeypatch):
+    # Headless/scheduled tasks run unattended, so every permission_ask must be
+    # auto-approved — otherwise the executor blocks forever waiting for a user.
+    monkeypatch.chdir(tmp_path)
+    from floodmind_desktop_sidecar.floodmind_agent import FloodMindAgent
+
+    class FakeAgent:
+        def stream(self, command):
+            yield {"type": "permission_ask", "ask_id": "a1", "session_id": "s1",
+                   "tool_name": "Write", "tool_input": {}, "reason": "写文件"}
+            yield {"type": "answer_delta", "content": "done"}
+
+    a = FloodMindAgent.__new__(FloodMindAgent)
+    a._agent = "FOREGROUND_AGENT"
+    a._build_agent = lambda sid, pd: FakeAgent()
+    a._set_workspace_for = lambda path: None
+
+    approved_calls = []
+    a._respond_to_ask = lambda raw, approved=False: approved_calls.append((raw.get("ask_id"), approved))
+
+    events, _artifacts, _final = a.run_headless("sess-x", "/ws/A", "go")
+
+    # The ask was auto-approved (headless is unattended — no global mode needed).
+    assert approved_calls == [("a1", True)]
+    perm = next(e for e in events if e["type"] == "permission")
+    assert perm["approved"] is True
+    assert perm["auto_approved"] is True
+
+
 def test_reload_persona_rebuilds_and_rebinds_workspace():
     """reload_persona builds a fresh agent (same session) and re-binds the
     workspace so the new SOUL.md/AGENTS.md takes effect immediately."""
@@ -360,6 +516,137 @@ def test_reload_persona_rebuilds_and_rebinds_workspace():
     assert built == ["sid-1"]          # rebuilt with the SAME session_id
     assert rebinds == [True]           # workspace re-bound (+ prompt refreshed)
     assert a._agent.session_id == "sid-1"
+
+
+def test_patch_tool_policies_upgrades_non_readonly_to_ask():
+    from floodmind_desktop_sidecar.floodmind_agent import FloodMindAgent
+    from floodmind.agent.runtime.contracts.permissions import (
+        PermissionBehavior,
+        ToolPermissionPolicy,
+    )
+
+    class FakeTool:
+        def __init__(self, name, policy_type):
+            self.name = name
+            self.permission_policy = ToolPermissionPolicy(policy_type=policy_type)
+            self.check_permissions_fn = None
+
+    class FakeRegistry:
+        def __init__(self, tools):
+            self._tools = tools
+
+        def all(self):
+            return self._tools
+
+    class FakeAgent:
+        def __init__(self, tools):
+            self._orchestrator_registry = FakeRegistry(tools)
+            self._specialist_registry = FakeRegistry(tools)
+
+    a = FloodMindAgent.__new__(FloodMindAgent)
+    tools = [
+        FakeTool("Bash", "exec"),
+        FakeTool("WriteFile", "write"),
+        FakeTool("ReadFile", "read_path"),
+        FakeTool("WebSearch", "network"),
+        FakeTool("Glob", "readonly"),
+        FakeTool("SubAgent", "internal"),
+        FakeTool("UpdateProjectInstructions", "ask"),
+    ]
+    fake_agent = FakeAgent(tools)
+    a._patch_tool_policies_for_desktop_permission(fake_agent)
+
+    for tool in fake_agent._orchestrator_registry.all():
+        policy_type = tool.permission_policy.policy_type
+        if policy_type in {"readonly", "internal", "ask"}:
+            assert tool.check_permissions_fn is None, f"{tool.name} should keep original policy"
+        else:
+            assert tool.check_permissions_fn is not None, f"{tool.name} should get desktop check fn"
+            result = tool.check_permissions_fn({})
+            assert result.behavior == PermissionBehavior.ASK, f"{tool.name} should ask"
+
+
+# ── permission respond round-trip (I6) ──────────────────────────
+def _permission_agent(tmp_path, monkeypatch, ask_service):
+    """A FloodMindAgent wired for trust-once, with the SDK AskService mocked."""
+    monkeypatch.chdir(tmp_path)
+    import importlib
+    from floodmind_desktop_sidecar.floodmind_agent import FloodMindAgent
+    from floodmind_desktop_sidecar.permissions import PermissionMode, PENDING_ASKS
+
+    ask_mod = importlib.import_module("floodmind.agent.runtime.services.ask_service")
+    monkeypatch.setattr(ask_mod, "get_ask_service", lambda: ask_service)
+
+    PENDING_ASKS.clear()
+    a = FloodMindAgent.__new__(FloodMindAgent)
+    a._permission_mode = PermissionMode.TRUST_ONCE
+    a._workspace_manager = type("W", (), {"current_path": lambda self: str(tmp_path)})()
+    a._permission_cache = None
+    return a
+
+
+class _RecordingAskService:
+    def __init__(self):
+        self.responded = []
+
+    def respond(self, resp):
+        self.responded.append((resp.ask_id, resp.approved))
+
+
+def test_respond_caches_fingerprint_on_approve(tmp_path, monkeypatch):
+    from floodmind_desktop_sidecar.permissions import (
+        PENDING_ASKS, PermissionCache, permission_fingerprint,
+    )
+
+    svc = _RecordingAskService()
+    a = _permission_agent(tmp_path, monkeypatch, svc)
+    PENDING_ASKS.register("ask-1", "sess-1", "ignored-stored-fp", "Bash", {"command": "ls -la"})
+
+    assert a.respond_to_permission_ask("ask-1", True) == {"ok": True}
+    assert svc.responded == [("ask-1", True)]
+    assert PENDING_ASKS.pop("ask-1") is None            # registry drained
+
+    expected_fp = permission_fingerprint("Bash", {"command": "ls -la"}, str(tmp_path))
+    assert PermissionCache(str(tmp_path)).is_approved(expected_fp)
+    assert (tmp_path / ".floodmind" / "permissions.json").exists()
+
+
+def test_respond_does_not_cache_on_reject(tmp_path, monkeypatch):
+    from floodmind_desktop_sidecar.permissions import PENDING_ASKS
+
+    svc = _RecordingAskService()
+    a = _permission_agent(tmp_path, monkeypatch, svc)
+    PENDING_ASKS.register("ask-2", "sess-2", "fp", "WriteFile", {"path": "x.txt"})
+
+    assert a.respond_to_permission_ask("ask-2", False) == {"ok": True}
+    assert svc.responded == [("ask-2", False)]
+    # Rejected fingerprints are never cached (no file written).
+    assert not (tmp_path / ".floodmind" / "permissions.json").exists()
+
+
+def test_respond_unknown_ask_returns_error(tmp_path, monkeypatch):
+    from floodmind_desktop_sidecar.permissions import PENDING_ASKS
+
+    a = _permission_agent(tmp_path, monkeypatch, _RecordingAskService())
+    PENDING_ASKS.clear()
+    result = a.respond_to_permission_ask("does-not-exist", True)
+    assert "error" in result
+
+
+def test_respond_sdk_failure_returns_error(tmp_path, monkeypatch):
+    from floodmind_desktop_sidecar.permissions import PENDING_ASKS
+
+    class BoomAskService:
+        def respond(self, resp):
+            raise RuntimeError("ask service down")
+
+    a = _permission_agent(tmp_path, monkeypatch, BoomAskService())
+    PENDING_ASKS.register("ask-3", "sess-3", "fp", "Bash", {"command": "rm"})
+
+    result = a.respond_to_permission_ask("ask-3", True)
+    assert "error" in result
+    # The pending ask was popped before the SDK call, so a retry won't find it.
+    assert PENDING_ASKS.pop("ask-3") is None
 
 
 def test_mcp_tool_names_sanitized_for_openai_endpoints():
@@ -391,3 +678,90 @@ def test_mcp_tool_names_sanitized_for_openai_endpoints():
     # The bound function still uses the original colon-separated full name.
     specs[names.index("mcp_hydro-rag_search_docs")].func()
     assert calls == ["mcp:hydro-rag:search:docs"]
+
+
+# ── concurrency: stream serialization + disconnect teardown (C3 + I1) ──
+import threading  # noqa: E402
+
+
+def _concurrent_agent():
+    """A bare FloodMindAgent with locks + abort set, bypassing __init__."""
+    from floodmind_desktop_sidecar.floodmind_agent import FloodMindAgent
+    a = FloodMindAgent.__new__(FloodMindAgent)
+    a._workspace_manager = None
+    a._abort = threading.Event()
+    a._stream_lock = threading.Lock()
+    a._fg_lock = threading.RLock()
+    a._set_workspace = lambda: None
+    return a
+
+
+def test_stream_serializes_concurrent_runs(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    class BlockingAgent:
+        def stream(self, _msg, **_kw):
+            yield {"type": "answer_delta", "content": "x"}
+            release.wait(timeout=2)          # hold the stream open
+            yield {"type": "answer_delta", "content": "y"}
+
+    release = threading.Event()
+    a = _concurrent_agent()
+    a._agent = BlockingAgent()
+
+    out1 = []
+
+    def run1():
+        out1.extend(a.stream([{"role": "user", "content": "hi"}]))
+
+    t = threading.Thread(target=run1)
+    t.start()
+    # Give the thread a beat to acquire the lock + yield its first event.
+    import time
+    time.sleep(0.05)
+    # While run1 holds the stream lock, a second stream must fail fast.
+    out2 = list(a.stream([{"role": "user", "content": "second"}]))
+    assert out2[0]["type"] == "error"
+    assert "执行" in out2[0]["content"]
+    assert out2[1]["type"] == "done"
+
+    release.set()
+    t.join(timeout=2)
+    assert out1 and out1[-1]["type"] == "done"
+
+
+def test_stream_releases_lock_and_allows_followup(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    class DoneAgent:
+        def stream(self, _msg, **_kw):
+            yield {"type": "answer_delta", "content": "ok"}
+
+    a = _concurrent_agent()
+    a._agent = DoneAgent()
+
+    out = list(a.stream([{"role": "user", "content": "hi"}]))
+    assert out[-1]["type"] == "done"
+    assert not a._stream_lock.locked()       # lock released on completion
+    assert a._abort.is_set()                 # abort set in finally (cleared next run)
+    # Follow-up run works because the lock was released.
+    out2 = list(a.stream([{"role": "user", "content": "again"}]))
+    assert out2[-1]["type"] == "done"
+
+
+def test_stream_sets_abort_and_releases_on_disconnect(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    class LongAgent:
+        def stream(self, _msg, **_kw):
+            for i in range(5):
+                yield {"type": "answer_delta", "content": str(i)}
+
+    a = _concurrent_agent()
+    a._agent = LongAgent()
+
+    g = a.stream([{"role": "user", "content": "hi"}])
+    next(g)                                   # consume one event; generator suspended, lock held
+    g.close()                                 # simulate client disconnect
+    assert a._abort.is_set()                  # teardown armed the abort signal
+    assert not a._stream_lock.locked()        # lock released even on abnormal close

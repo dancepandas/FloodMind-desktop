@@ -71,6 +71,12 @@ export default function McpView() {
     if (!selected) return;
     const r = await testMcpServer(selected);
     setTestResult(r);
+    if (r.ok) {
+      // A successful test leaves the server connected in the pool — refresh so
+      // the status dot/detail reflect the new state.
+      await loadMcp();
+      await loadMcpServer(selected);
+    }
   };
 
   return (
@@ -88,21 +94,33 @@ export default function McpView() {
       <div className="page-body master-detail">
         <ul className="cat-list">
           {servers.length === 0 && <li className="cat-empty">未配置 MCP 服务器</li>}
-          {servers.map((s) => (
-            <li key={s.name}>
-              <button
-                className={selected === s.name ? "cat-item active" : "cat-item"}
-                onClick={() => { setSelected(s.name); setTestResult(null); }}
-                type="button"
-              >
-                <span className="cat-name">
-                  <span className={s.connected ? "sdot sdot-up" : "sdot sdot-down"} /> {s.name}
-                </span>
-                {s.transport && <span className="cat-tag">{s.transport}</span>}
-                <span className="cat-desc">{s.tools ?? 0} 个工具</span>
-              </button>
-            </li>
-          ))}
+          {servers.map((s) => {
+            const dotClass = s.health_ok === false
+              ? "sdot sdot-warn"
+              : s.connected
+                ? "sdot sdot-up"
+                : "sdot sdot-down";
+            const title = s.health_ok === false
+              ? `最近调用失败：${s.health_error ?? "未知错误"}`
+              : s.connected
+                ? "已连接"
+                : "未连接";
+            return (
+              <li key={s.name}>
+                <button
+                  className={selected === s.name ? "cat-item active" : "cat-item"}
+                  onClick={() => { setSelected(s.name); setTestResult(null); }}
+                  type="button"
+                >
+                  <span className="cat-name" title={title}>
+                    <span className={dotClass} /> {s.name}
+                  </span>
+                  {s.transport && <span className="cat-tag">{s.transport}</span>}
+                  <span className="cat-desc">{s.tools ?? 0} 个工具</span>
+                </button>
+              </li>
+            );
+          })}
         </ul>
         <div className="cat-detail">
           {!selected && <div className="cat-empty">选择左侧服务器查看工具</div>}
@@ -111,10 +129,19 @@ export default function McpView() {
               <div className="cat-detail-head">
                 <h2>{detail.name}</h2>
                 {detail.transport && <span className="cat-tag">{detail.transport}</span>}
-                <span className={detail.connected ? "cat-tag ok" : "cat-tag"}>
-                  {detail.connected ? "已连接" : "未连接"}
-                </span>
+                {detail.health_ok === false ? (
+                  <span className="cat-tag warn" title={detail.health_error ?? ""}>调用异常</span>
+                ) : (
+                  <span className={detail.connected ? "cat-tag ok" : "cat-tag"}>
+                    {detail.connected ? "已连接" : "未连接"}
+                  </span>
+                )}
               </div>
+              {detail.health_ok === false && detail.health_error && (
+                <div className="env-warn" style={{ margin: "0.5rem 0" }}>
+                  最近一次工具调用失败：{detail.health_error}（连接正常，但服务实际不可用）
+                </div>
+              )}
               <div className="cat-tools">
                 <div className="cat-subhead">工具（{(detail.tools || []).length}）</div>
                 {(detail.tools || []).length === 0 ? (

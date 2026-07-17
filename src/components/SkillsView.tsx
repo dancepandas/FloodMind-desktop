@@ -81,7 +81,7 @@ export default function SkillsView() {
       </PageHeader>
       <div className="page-body master-detail">
         <ul className="cat-list">
-          {skills.length === 0 && <li className="cat-empty">暂无技能</li>}
+          {skills.length === 0 && <li className="cat-empty">暂无 Skill</li>}
           {skills.map((s) => (
             <li key={s.name}>
               <button
@@ -97,7 +97,7 @@ export default function SkillsView() {
           ))}
         </ul>
         <div className="cat-detail">
-          {!selected && <div className="cat-empty">选择左侧技能查看详情</div>}
+          {!selected && <div className="cat-empty">选择左侧 Skill 查看详情</div>}
           {selected && detail && (
             <>
               <div className="cat-detail-head">
@@ -149,7 +149,7 @@ export default function SkillsView() {
             </>
           )}
           {selected && detailLoading && <div className="cat-empty">加载中…</div>}
-          {selected && !detailLoading && !detail && <div className="cat-empty">无法加载该技能</div>}
+          {selected && !detailLoading && !detail && <div className="cat-empty">无法加载该 Skill</div>}
         </div>
       </div>
       <SkillEditModal

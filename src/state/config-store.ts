@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { getBaseUrl } from "../lib/sidecar-client";
+import { CURATED_PROVIDERS, CURATED_PROVIDER_IDS, getProviderDef, getTierDefaultTokens } from "../lib/providers";
 
 export interface ModelConfig {
   provider: string;
@@ -9,24 +10,82 @@ export interface ModelConfig {
   enableReasoning: boolean;
   enableSearch: boolean;
 }
+export interface ModelEntry {
+  name: string;
+  maxTokens: number | null; // null = 默认 (use SDK preset / safe fallback)
+  /** Context-window size in tokens; only meaningful for custom OpenAI/Ollama models. */
+  contextSize?: number | null;
+  /** Per-model temperature; only meaningful for custom OpenAI/Ollama models. */
+  temperature?: number | null;
+}
 export interface ProviderInfo {
   id: string;
   name: string;
   baseURL: string;
-  models: string[];
+  models: ModelEntry[];
+  apiKeyPresent: boolean;
+}
+/** One editable provider entry in the Settings model form. apiKey is left empty
+ *  by load() (a password field is never prefilled); empty on save = keep the
+ *  existing key on disk. */
+export interface ProviderFormEntry {
+  id: string;
+  name: string;
+  baseURL: string;
+  apiKey: string;
+  models: ModelEntry[];
 }
 export interface ModelForm {
-  provider: string;
-  model: string;
-  apiKey: string; // empty means "leave unchanged"
-  baseURL: string;
-  temperature: number;
-  maxTokens: number;
-  enableReasoning: boolean;
-  enableSearch: boolean;
+  provider: string;   // active provider id
+  model: string;      // active model name
+  providers: ProviderFormEntry[];
 }
 
 export type PermissionMode = "always-trust" | "trust-once" | "always-ask";
+
+/** Merge providers returned by the backend with the curated provider list. Saved
+ *  values (apiKeyPresent, baseURL, models) are preserved; missing curated
+ *  providers are injected with their defaults so the UI always shows them. */
+function mergeWithCurated(saved: ProviderInfo[]): ProviderInfo[] {
+  const byId = new Map(saved.map((p) => [p.id, p]));
+  return CURATED_PROVIDERS.map((def) => {
+    const savedProvider = byId.get(def.id);
+    if (savedProvider) {
+      const savedModelMap = new Map((savedProvider.models || []).map((m) => [m.name, m]));
+      const mergedModels = def.models.map((dm) => {
+        const savedModel = savedModelMap.get(dm.name);
+        const defaultTokens = getTierDefaultTokens(dm);
+        return {
+          name: dm.name,
+          maxTokens: savedModel?.maxTokens ?? defaultTokens ?? null,
+        };
+      });
+      // Append any extra models the user saved (OpenAI/Ollama custom models).
+      const fixedNames = new Set(def.models.map((m) => m.name));
+      const extraModels = (savedProvider.models || [])
+        .filter((m) => !fixedNames.has(m.name))
+        .map((m) => ({
+          name: m.name,
+          maxTokens: m.maxTokens ?? null,
+          contextSize: m.contextSize ?? null,
+          temperature: m.temperature ?? null,
+        }));
+      return {
+        ...savedProvider,
+        name: def.name,
+        baseURL: savedProvider.baseURL || def.baseURL,
+        models: [...mergedModels, ...extraModels],
+      };
+    }
+    return {
+      id: def.id,
+      name: def.name,
+      baseURL: def.baseURL,
+      models: def.models.map((m) => ({ name: m.name, maxTokens: getTierDefaultTokens(m) ?? null })),
+      apiKeyPresent: false,
+    };
+  });
+}
 
 interface ConfigState {
   model: ModelConfig | null;
@@ -99,7 +158,7 @@ export const useConfigStore = create<ConfigState>((set) => ({
       const data = await r.json();
       set({
         model: data.model,
-        providers: data.providers || [],
+        providers: mergeWithCurated(data.providers || []),
         apiKeyPresent: !!data.apiKeyPresent,
         baseURL: data.baseURL || "",
         envOverrides: data.envOverrides || [],
@@ -111,34 +170,38 @@ export const useConfigStore = create<ConfigState>((set) => ({
   },
 
   async save(form) {
-    // Client-side validation.
+    // Client-side validation: need an active provider + model.
     if (!form.provider || !form.model) {
       set({ error: "请选择服务商和模型", savedAt: null });
-      return false;
-    }
-    if (form.temperature < 0 || form.temperature > 2) {
-      set({ error: "温度须在 0–2 之间", savedAt: null });
-      return false;
-    }
-    if (!(form.maxTokens > 0)) {
-      set({ error: "最大 token 须为正整数", savedAt: null });
       return false;
     }
 
     set({ saving: true, error: null, savedAt: null });
     try {
       const b = await getBaseUrl();
-      // Only send apiKey when the user typed one (empty = leave unchanged).
-      const body: Record<string, unknown> = {
-        provider: form.provider,
-        model: form.model,
-        baseURL: form.baseURL,
-        temperature: form.temperature,
-        maxTokens: form.maxTokens,
-        enableReasoning: form.enableReasoning,
-        enableSearch: form.enableSearch,
-      };
-      if (form.apiKey) body.apiKey = form.apiKey;
+      // Provider-centric payload. apiKey is only included when the user typed a
+      // new one for that provider; omitting it tells the sidecar to keep the
+      // existing key on disk.
+      const providers = form.providers
+        .filter((p) => p.id.trim())
+        .map((p) => {
+          const entry: Record<string, unknown> = {
+            id: p.id.trim(),
+            name: p.name.trim() || p.id.trim(),
+            baseURL: p.baseURL.trim(),
+            models: p.models
+              .filter((m) => m.name.trim())
+              .map((m) => {
+                const entry: Record<string, unknown> = { name: m.name.trim(), maxTokens: m.maxTokens };
+                if (m.contextSize != null) entry.contextSize = m.contextSize;
+                if (m.temperature != null) entry.temperature = m.temperature;
+                return entry;
+              }),
+          };
+          if (p.apiKey) entry.apiKey = p.apiKey;
+          return entry;
+        });
+      const body = { provider: form.provider, model: form.model, providers };
       const r = await fetch(`${b}/api/config/model`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },

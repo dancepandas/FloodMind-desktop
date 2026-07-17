@@ -10,8 +10,13 @@ src-tauri/data/
 # sidecar/agent runtime data created when the process cwd is the repo or sidecar/
 # (in production cwd = app-data, so these never appear there)
 sidecar/data/
+sidecar/feedback/
+sidecar/.floodmind/
 /default-workspace/
 /desktop-default/
+/conversations/
+/task_runs/
+/data/
 ws-*/
 /config.json
 
@@ -34,4 +39,25 @@ research/
 
 # stray reference screenshots pasted at the repo root (never source)
 /codex.png
+/screenshot_*.png
+/workbuddy*.png
 /截图*.png
+/执行*.png
+/输入框*.png
+/*模型*.png
+# stray Windows null-device artifact (e.g. a `taskkill > NUL` misredirect)
+/NUL
+
+# debug / temp artifacts
+/chat_dev.ndjson
+/chat_resp.ndjson
+/qwen_models_content.html
+/nuitka-crash-report.xml
+sidecar/nuitka-crash-report.xml
+
+# bundled sidecar (built by sidecar/build_sidecar.sh, copied here before tauri build)
+src-tauri/resources/
+sidecar/build-nuitka/
+sidecar/dist/
+sidecar/build/
+sidecar/*.spec

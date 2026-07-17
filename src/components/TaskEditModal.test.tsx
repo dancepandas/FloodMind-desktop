@@ -27,7 +27,7 @@ describe("TaskEditModal", () => {
   it("renders create mode with default one-shot scheduled time", () => {
     const html = render({ workspace: "/ws/A", editing: null });
     expect(html).toContain("新建定时任务");
-    expect(html).toContain('placeholder="例如：生成上周销售周报"');
+    expect(html).toContain('placeholder="例如：生成上周水文情势简报"');
     expect(html).toContain("datetime-local");
     expect(html).not.toContain("编辑定时任务");
   });

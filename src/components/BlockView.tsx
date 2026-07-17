@@ -1,9 +1,26 @@
 import { useEffect, useRef, useState } from "react";
 import { useChatStore, type Block, type PlanStep } from "../state/chat-store";
+import { useConfigStore } from "../state/config-store";
+import { useWorkspaceStore } from "../state/workspace-store";
 import { useUiStore } from "../state/ui-store";
 import { scrollToBlock } from "../lib/scroll-to-block";
 import Markdown from "./Markdown";
 import ArtifactCard from "./ArtifactCard";
+
+const TRUST_ONCE_WARNING_KEY = "floodmind.trustOnceWarningSeen";
+
+function hasSeenTrustOnceWarning(path: string | null): boolean {
+  // Safety gate: when we can't read localStorage (no window / SSR / test), the
+  // safe default is "NOT seen yet" → show the warning, rather than silently
+  // suppressing it.
+  if (typeof window === "undefined") return false;
+  return localStorage.getItem(`${TRUST_ONCE_WARNING_KEY}.${path ?? "__none__"}`) === "1";
+}
+
+function markTrustOnceWarningSeen(path: string | null) {
+  if (typeof window === "undefined") return;
+  localStorage.setItem(`${TRUST_ONCE_WARNING_KEY}.${path ?? "__none__"}`, "1");
+}
 
 /**
  * Collapse hook: a block starts at its default collapsed state, is forced
@@ -157,14 +174,17 @@ function ArtifactBlock({ block }: { block: Extract<Block, { kind: "artifact" }> 
 
 function PermissionBlock({ block }: { block: Extract<Block, { kind: "permission" }> }) {
   const respond = useChatStore((s) => s.respondToPermission);
+  const permissionMode = useConfigStore((s) => s.permissionMode);
+  const workspacePath = useWorkspaceStore((s) => s.current?.path ?? null);
   const [resolved, setResolved] = useState(block.approved !== undefined);
+  const [showInput, setShowInput] = useState(false);
+  const [trustModalOpen, setTrustModalOpen] = useState(false);
   const approved = block.approved === true;
 
-  if (block.approved === true) {
+  if (block.approved === true && block.auto_approved) {
     return (
       <div className="blk blk-permission">
-        🔓 已自动批准 <strong>{block.tool_name}</strong>
-        {block.reason && <span className="perm-reason">：{block.reason}</span>}
+        <span className="perm-badge perm-auto">🔓 已自动批准 {block.tool_name}</span>
       </div>
     );
   }
@@ -172,43 +192,115 @@ function PermissionBlock({ block }: { block: Extract<Block, { kind: "permission"
   if (resolved) {
     return (
       <div className="blk blk-permission">
-        {approved ? "🔓 已批准" : "🚫 已拒绝"} <strong>{block.tool_name}</strong>
+        <span className={`perm-badge ${approved ? "perm-approved" : "perm-rejected"}`}>
+          {approved ? "🔓 已批准" : "🚫 已拒绝"} {block.tool_name}
+        </span>
       </div>
     );
   }
 
+  const hasInput = block.input != null && Object.keys(block.input).length > 0;
+
+  function doApprove() {
+    if (permissionMode === "trust-once" && !hasSeenTrustOnceWarning(workspacePath)) {
+      setTrustModalOpen(true);
+      return;
+    }
+    setResolved(true);
+    respond(block.ask_id, true);
+  }
+
+  function confirmTrustApprove() {
+    markTrustOnceWarningSeen(workspacePath);
+    setTrustModalOpen(false);
+    setResolved(true);
+    respond(block.ask_id, true);
+  }
+
   return (
-    <div className="blk blk-permission permission-ask">
-      <div className="permission-ask-header">
-        🔒 请求执行 <strong>{block.tool_name}</strong>
+    <>
+      <div className="blk blk-permission permission-ask">
+        <div className="permission-ask-header">
+          <div className="permission-ask-title">
+            <span className="sdot sdot-checking" />
+            <span className="tname">{block.tool_name}</span>
+            <span className="tstat">等待授权</span>
+          </div>
+          <div className="permission-ask-actions">
+            <button
+              type="button"
+              className="btn-secondary permission-reject"
+              onClick={() => {
+                setResolved(true);
+                respond(block.ask_id, false);
+              }}
+            >
+              拒绝
+            </button>
+            <button
+              type="button"
+              className="save-btn permission-approve"
+              onClick={doApprove}
+            >
+              批准
+            </button>
+          </div>
+        </div>
+        {block.reason && <div className="permission-ask-reason">{block.reason}</div>}
+        {hasInput && (
+          <button
+            type="button"
+            className="permission-input-toggle"
+            onClick={() => setShowInput((s) => !s)}
+          >
+            {showInput ? "▾ 隐藏参数" : "▸ 查看参数"}
+          </button>
+        )}
+        {hasInput && showInput && (
+          <pre className="permission-ask-input">{JSON.stringify(block.input, null, 2)}</pre>
+        )}
       </div>
-      {block.reason && <div className="permission-ask-reason">{block.reason}</div>}
-      {block.input != null && (
-        <pre className="permission-ask-input">{JSON.stringify(block.input, null, 2)}</pre>
+
+      {trustModalOpen && (
+        <div className="modal-overlay" onClick={() => setTrustModalOpen(false)}>
+          <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-title">⚠️ 首次授权提醒</div>
+            <div style={{ fontSize: "13px", lineHeight: "1.6", color: "var(--fg-secondary)" }}>
+              <p>
+                您当前处于<strong>「首次询问」</strong>模式。批准本次操作后，FloodMind 会记住这次授权。
+              </p>
+              <ul style={{ paddingLeft: "1.2rem", margin: "0.4rem 0" }}>
+                <li>
+                  之后<strong>完全相同的操作</strong>（相同工具 + 相同参数）将不再询问，直接执行。
+                </li>
+                <li>
+                  如果后续出现相似的指令，系统可能会默认放行，存在误操作或被诱导执行的风险。
+                </li>
+              </ul>
+              <p>
+                <strong>请确认您理解并同意此风险。</strong>
+              </p>
+            </div>
+            <div className="modal-actions">
+              <button
+                className="btn-secondary"
+                type="button"
+                onClick={() => setTrustModalOpen(false)}
+              >
+                取消
+              </button>
+              <button
+                className="btn-primary"
+                type="button"
+                onClick={confirmTrustApprove}
+              >
+                我已了解，批准
+              </button>
+            </div>
+          </div>
+        </div>
       )}
-      <div className="permission-ask-actions">
-        <button
-          type="button"
-          className="btn-secondary permission-reject"
-          onClick={() => {
-            setResolved(true);
-            respond(block.ask_id, false);
-          }}
-        >
-          拒绝
-        </button>
-        <button
-          type="button"
-          className="save-btn permission-approve"
-          onClick={() => {
-            setResolved(true);
-            respond(block.ask_id, true);
-          }}
-        >
-          批准
-        </button>
-      </div>
-    </div>
+    </>
   );
 }
 

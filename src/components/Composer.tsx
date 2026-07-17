@@ -1,11 +1,18 @@
 import { useRef, useState } from "react";
 import { useChatStore } from "../state/chat-store";
 import { useWorkspaceStore } from "../state/workspace-store";
+import { useConfigStore, type PermissionMode } from "../state/config-store";
 import { useUiStore } from "../state/ui-store";
 import { useAttachmentStore } from "../state/attachment-store";
 import FilePickerModal from "./FilePickerModal";
 import ComposerFilePicker from "./ComposerFilePicker";
 import SlashPicker, { type SlashItem } from "./SlashPicker";
+
+const PERMISSION_MODE_LABELS: Record<PermissionMode, string> = {
+  "always-trust": "完全信任",
+  "trust-once": "首次询问",
+  "always-ask": "每次都问",
+};
 
 export default function Composer() {
   const [text, setText] = useState("");
@@ -22,6 +29,8 @@ export default function Composer() {
   const recent = useWorkspaceStore((s) => s.recent);
   const openPath = useWorkspaceStore((s) => s.openPath);
   const pickAndOpen = useWorkspaceStore((s) => s.pickAndOpen);
+  const permissionMode = useConfigStore((s) => s.permissionMode);
+  const modelName = useConfigStore((s) => s.model?.model ?? null);
   const setView = useUiStore((s) => s.setView);
   const attachments = useAttachmentStore((s) => s.pending);
   const addAttachments = useAttachmentStore((s) => s.add);
@@ -212,7 +221,7 @@ export default function Composer() {
           placeholder={
             streaming
               ? "追加指令到当前任务…"
-              : "使用 @ 快速引用文件，使用 / 指定 Skill 和 MCP 工具"
+              : "描述水文任务…用 @ 引用文件，用 / 选择 Skill 与 MCP 工具"
           }
           onChange={handleChange}
           onKeyDown={onKeyDown}
@@ -231,7 +240,9 @@ export default function Composer() {
             >
               ＋
             </button>
-            <span className="ctx-pill model">deepseek-v4-flash</span>
+            <span className="ctx-pill model" title={modelName ?? "未配置模型"}>
+              {modelName ?? "未配置模型"}
+            </span>
           </div>
           <div className="composer-actions">
             <button
@@ -305,7 +316,17 @@ export default function Composer() {
             ))}
           <option value="__pick__">打开其他工作区…</option>
         </select>
-        <span>Enter 发送，Shift+Enter 换行</span>
+        <div className="composer-meta-right">
+          <button
+            type="button"
+            className="permission-mode-pill"
+            onClick={() => setView("settings")}
+            title="点击打开权限设置"
+          >
+            授权：{PERMISSION_MODE_LABELS[permissionMode]}
+          </button>
+          <span>Enter 发送，Shift+Enter 换行</span>
+        </div>
       </div>
 
       {filePickerOpen && (

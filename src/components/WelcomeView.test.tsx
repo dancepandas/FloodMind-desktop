@@ -1,37 +1,29 @@
-import { render, screen, fireEvent, cleanup } from "@testing-library/react";
-import { test, expect, vi, afterEach } from "vitest";
+import { render, screen, cleanup } from "@testing-library/react";
+import { test, expect, afterEach } from "vitest";
 import WelcomeView from "./WelcomeView";
 
 afterEach(cleanup);
 
-const SCENARIOS = [
-  { label: "文档处理", prompt: "帮我整理一份文档" },
-  { label: "数据分析", prompt: "分析当前工作区里的数据文件" },
-  { label: "生成 PPT", prompt: "根据工作区内容生成一份 PPT" },
-  { label: "写代码", prompt: "帮我写一段代码" },
-];
-
-test("renders title, chips, and quick actions", () => {
-  const onSend = vi.fn();
-  render(<WelcomeView onSend={onSend} />);
+test("renders title and subtitle", () => {
+  render(<WelcomeView />);
 
   expect(screen.getByText("FloodMind")).toBeInTheDocument();
-  expect(screen.getByText(/智能工作助手/)).toBeInTheDocument();
-
-  expect(screen.getByText("日常办公")).toBeInTheDocument();
-  expect(screen.getByText("代码开发")).toBeInTheDocument();
-  expect(screen.getByText("设计创意")).toBeInTheDocument();
-
-  fireEvent.click(screen.getByRole("button", { name: "生成 PPT" }));
-  expect(onSend).toHaveBeenCalledWith(expect.stringContaining("PPT"));
+  expect(screen.getByText(/水文智能助手/)).toBeInTheDocument();
 });
 
-test("each quick action calls onSend with its prompt", () => {
-  const onSend = vi.fn();
-  render(<WelcomeView onSend={onSend} />);
+test("renders a hydrology usage example", () => {
+  render(<WelcomeView />);
 
-  for (const scenario of SCENARIOS) {
-    fireEvent.click(screen.getByRole("button", { name: scenario.label }));
-    expect(onSend).toHaveBeenLastCalledWith(scenario.prompt);
-  }
+  // Hint copy must be hydrology-themed (降雨/径流/流量) — matches both the
+  // subtitle and the example line.
+  expect(screen.getAllByText(/径流/).length).toBeGreaterThan(0);
+});
+
+test("does not render quick-action options or chips", () => {
+  render(<WelcomeView />);
+
+  // The quick-action buttons and scenario chips were removed.
+  expect(screen.queryByRole("button")).toBeNull();
+  expect(screen.queryByText("文档处理")).toBeNull();
+  expect(screen.queryByText("日常办公")).toBeNull();
 });

@@ -37,9 +37,15 @@ export default function TaskEditModal({ workspace, editing, onClose }: Props) {
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal-card" onClick={(e) => e.stopPropagation()}>
         <div className="modal-title">{editing ? "编辑定时任务" : "新建定时任务"}</div>
+        {!editing && (
+          <div className="modal-notice" role="note">
+            <strong>授权说明：</strong>自动任务在后台无人值守运行，将以<strong>完全授权</strong>方式执行
+            （所有工具操作自动批准），不受「授权」模式（完全信任 / 首次询问 / 总是询问）限制。请仅创建你信任的任务。
+          </div>
+        )}
         <label className="modal-label">任务描述（给 FloodMind 的指令）</label>
         <textarea className="modal-textarea" rows={4} value={command}
-          onChange={(e) => setCommand(e.target.value)} placeholder="例如：生成上周销售周报" />
+          onChange={(e) => setCommand(e.target.value)} placeholder="例如：生成上周水文情势简报" />
         <div className="modal-row">
           <label><input type="radio" checked={repeat === "none"} onChange={() => setRepeat("none")} /> 一次性</label>
           <label><input type="radio" checked={repeat === "daily"} onChange={() => setRepeat("daily")} /> 每日</label>

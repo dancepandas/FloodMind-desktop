@@ -107,3 +107,14 @@ def test_delete_removes_conversation(tmp_path, monkeypatch):
     assert r.status_code == 200
     assert client.get(f"/api/conversations/{conv['id']}").status_code == 404
     assert client.delete(f"/api/conversations/{conv['id']}").status_code == 404
+
+
+def test_traversal_conv_id_is_rejected(tmp_path, monkeypatch):
+    """A conv_id that tries to escape the conversations dir must 404, not 500 (C2)."""
+    client, _ = _client(tmp_path, monkeypatch)
+    bad = "..%2F..%2Fsecret"  # URL-encoded "../../secret"
+    assert client.get(f"/api/conversations/{bad}").status_code == 404
+    assert client.post(f"/api/conversations/{bad}/turns", json={"turns": []}).status_code == 404
+    assert client.post(f"/api/conversations/{bad}/activate").status_code == 404
+    assert client.delete(f"/api/conversations/{bad}").status_code == 404
+
