@@ -550,6 +550,22 @@ button:focus-visible,
   word-break: break-word;
 }
 
+.user-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.4rem;
+}
+
+.user-image-thumb {
+  width: 120px;
+  height: 120px;
+  object-fit: cover;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  cursor: zoom-in;
+}
+
 .assistant-turn {
   padding-right: 1rem;
 }

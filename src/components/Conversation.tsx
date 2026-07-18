@@ -40,9 +40,23 @@ function TurnView({ turn, isLast, streaming }: { turn: Msg; isLast: boolean; str
   const [showProcess, setShowProcess] = useState(false);
 
   if (turn.role === "user") {
+    const imgs = turn.images;
     return (
       <div className="turn user-turn">
         <div className="msg-user">{turn.content}</div>
+        {imgs && imgs.length > 0 && (
+          <div className="user-images">
+            {imgs.map((im, idx) => (
+              <img
+                key={idx}
+                className="user-image-thumb"
+                src={im.thumb}
+                alt={im.name}
+                title={im.name}
+              />
+            ))}
+          </div>
+        )}
       </div>
     );
   }
