@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { useChatStore, reduceEvent, deriveStatusText, _resetBlockIdsForTest } from "./chat-store";
 import type { AssistantTurn } from "./chat-store";
+import type { ImageAttachmentWire } from "../lib/chat-stream";
 
 vi.mock("../lib/sidecar-client", () => ({
   getBaseUrl: vi.fn(async () => "http://test"),
@@ -334,6 +335,73 @@ describe("chat-store.send", () => {
 
     await useChatStore.getState().send("hi");
     expect(fetchMock).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
+
+  it("send forwards attachments to streamChat and tags the user turn with images", async () => {
+    // Vision: send(text, attachments?, images?) — attachments flow into the
+    // /api/chat POST body (via streamChat's 4th arg) and the local user turn
+    // is stamped with images[] for live thumbnail display (single-turn, not
+    // persisted). Adapted to the file's existing mock convention: streamChat
+    // is mocked, so we assert on its captured call args rather than fetch.
+    (streamChat as any).mockImplementation(async function* () {
+      yield { type: "done" };
+    });
+    useChatStore.setState({ turns: [], streaming: false, conversationId: null });
+    _resetBlockIdsForTest();
+
+    const attachments: ImageAttachmentWire[] = [{ source: "file", path: "D:/x.png", mime: "image/png" }];
+    const images = [{ name: "x.png", thumb: "data:..." }];
+
+    await useChatStore.getState().send("看图", attachments, images);
+
+    // streamChat was called with attachments as the 4th positional argument.
+    expect(streamChat).toHaveBeenCalledWith(
+      "http://test",
+      [{ role: "user", content: "看图" }],
+      expect.any(AbortSignal),
+      attachments,
+    );
+    // The local user turn carries images for live display.
+    const userTurn = useChatStore.getState().turns.find((t) => t.role === "user");
+    expect((userTurn as any).images).toEqual(images);
+  });
+
+  it("send persists [已附图片：…] prefix instead of the images payload", async () => {
+    // Images are single-turn only — persistence must strip the `images` key
+    // from the user turn and prepend a [已附图片：a.png, b.jpg] marker line so
+    // a reloaded transcript shows the marker instead of a vanished image.
+    (streamChat as any).mockImplementation(async function* () {
+      yield { type: "done" };
+    });
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) =>
+      new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    useChatStore.setState({ turns: [], streaming: false, conversationId: "c1" });
+    _resetBlockIdsForTest();
+
+    await useChatStore.getState().send(
+      "看这两张",
+      [
+        { source: "file", path: "D:/a.png", mime: "image/png" },
+        { source: "file", path: "D:/b.jpg", mime: "image/jpeg" },
+      ] as ImageAttachmentWire[],
+      [{ name: "a.png", thumb: "d1" }, { name: "b.jpg", thumb: "d2" }],
+    );
+    // The persistence POST is async — wait for it to land.
+    await vi.waitFor(() => {
+      expect(fetchMock.mock.calls.some((c) => String(c[0]).includes("/api/conversations/c1/turns"))).toBe(true);
+    });
+
+    const posted = fetchMock.mock.calls.find((c) =>
+      String(c[0]).includes("/api/conversations/c1/turns"),
+    );
+    const body = JSON.parse((posted![1] as RequestInit).body as string);
+    const persistedUser = body.turns.find((t: any) => t.role === "user");
+    // Prefix present.
+    expect(persistedUser.content).toBe("[已附图片：a.png, b.jpg]\n看这两张");
+    // images key stripped.
+    expect(persistedUser.images).toBeUndefined();
     vi.unstubAllGlobals();
   });
 });

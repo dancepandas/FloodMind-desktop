@@ -1,3 +1,10 @@
+import type { ImageAttachmentWire } from "../state/attachment-store";
+
+// Re-export so chat-store.ts (and other callers) can import the canonical wire
+// type from either location. attachment-store.ts is the single source of truth
+// (see Task 7) — do not duplicate the union here.
+export type { ImageAttachmentWire } from "../state/attachment-store";
+
 export type ChatMessage = { role: string; content: string };
 
 export type ChatEvent =
@@ -49,12 +56,13 @@ export async function respondToPermissionAsk(
 export async function* streamChat(
   baseUrl: string,
   messages: ChatMessage[],
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  attachments?: ImageAttachmentWire[],
 ): AsyncGenerator<ChatEvent> {
   const res = await fetch(`${baseUrl}/api/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ messages }),
+    body: JSON.stringify({ messages, attachments: attachments ?? [] }),
     signal,
   });
   if (!res.ok || !res.body) {

@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { getBaseUrl } from "../lib/sidecar-client";
-import { streamChat, appendInstruction as postAppendInstruction, pauseChat, respondToPermissionAsk, type ChatEvent, type ChatMessage } from "../lib/chat-stream";
+import { streamChat, appendInstruction as postAppendInstruction, pauseChat, respondToPermissionAsk, type ChatEvent, type ChatMessage, type ImageAttachmentWire } from "../lib/chat-stream";
 import { useConversationStore } from "./conversation-store";
 
 export interface PlanStep {
@@ -32,7 +32,9 @@ export type Block =
   | { id: string; kind: "permission"; ask_id: string; call_id: string; tool_name: string; reason: string; input?: unknown; approved?: boolean; auto_approved?: boolean }
   | { id: string; kind: "error"; content: string };
 
-export type Msg = { id: string; role: "user"; content: string } | AssistantTurn;
+export type Msg =
+  | { id: string; role: "user"; content: string; images?: { name: string; thumb: string }[] }
+  | AssistantTurn;
 export interface AssistantTurn {
   id: string;
   role: "assistant";
@@ -64,7 +66,11 @@ interface ChatState {
    *  conversation-store record; updated on new/load/turns-POST so the TopBar
    *  shows the generated title instead of the raw first user message. */
   title: string;
-  send: (text: string) => Promise<void>;
+  send: (
+    text: string,
+    attachments?: ImageAttachmentWire[],
+    images?: { name: string; thumb: string }[],
+  ) => Promise<void>;
   appendInstruction: (text: string) => Promise<void>;
   pause: () => Promise<void>;
   respondToPermission: (askId: string, approved: boolean) => Promise<void>;
@@ -219,7 +225,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
   conversationId: null,
   title: "新会话",
 
-  async send(text: string) {
+  async send(
+    text: string,
+    attachments?: ImageAttachmentWire[],
+    images?: { name: string; thumb: string }[],
+  ) {
     if (!text.trim()) return;
     // While a stream is active, route to the append path: the message is added
     // to the agent's memory and the SDK executor injects it into the running
@@ -233,7 +243,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set((s) => ({
       turns: [
         ...s.turns,
-        { id: nextTurnId(), role: "user", content: text },
+        // Images are single-turn display only — stamped on the user bubble for
+        // live thumbnail rendering, but NOT persisted (the finally block strips
+        // them and writes a [已附图片：…] prefix into the stored content).
+        { id: nextTurnId(), role: "user", content: text, ...(images ? { images } : {}) },
         { id: nextTurnId(), role: "assistant", blocks: [], usage: null, done: false },
       ],
       streaming: true,
@@ -243,7 +256,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     let errored = false;
     try {
       const baseUrl = await getBaseUrl();
-      for await (const ev of streamChat(baseUrl, [{ role: "user", content: text }], controller.signal)) {
+      for await (const ev of streamChat(baseUrl, [{ role: "user", content: text }], controller.signal, attachments)) {
         if (ev.type === "done") continue;
         set((s) => {
           const turns = s.turns.slice();
@@ -292,10 +305,25 @@ export const useChatStore = create<ChatState>((set, get) => ({
           if (last && last.role === "assistant") {
             getBaseUrl()
               .then(async (b) => {
+                // Persistence: images are single-turn only, so the user turn's
+                // `images` key is dropped entirely and a [已附图片：a.png, …]
+                // marker line is prepended to the stored content — a reloaded
+                // transcript shows the marker instead of a vanished thumbnail.
+                const persistedPair = pair.map((t) => {
+                  const userImages = (t as { images?: { name: string }[] }).images;
+                  if (t.role === "user" && userImages && userImages.length) {
+                    const names = userImages.map((i) => i.name).join(", ");
+                    return { id: t.id, role: "user", content: `[已附图片：${names}]\n${t.content}` };
+                  }
+                  // Assistant turns + image-less user turns: pass through as
+                  // stored, but strip any stray `images` key defensively.
+                  const { images: _drop, ...rest } = t as { images?: unknown };
+                  return rest;
+                });
                 const r = await fetch(`${b}/api/conversations/${cid}/turns`, {
                   method: "POST",
                   headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ turns: pair }),
+                  body: JSON.stringify({ turns: persistedPair }),
                 });
                 if (!r.ok) return;
                 const data = await r.json().catch(() => ({}));
