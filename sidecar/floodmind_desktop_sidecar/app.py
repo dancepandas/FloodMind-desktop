@@ -79,6 +79,14 @@ def create_app(agent: Agent, workspace_manager=None, conversation_store=None,
                task_run_store=None, task_runner=None, start_runner=True) -> Flask:
     app = Flask(__name__)
 
+    # Clear clipboard-image staging orphans left by a previous session.
+    try:
+        from .attachments import cleanup_staging
+        from .workspace import _app_data_dir
+        cleanup_staging(_app_data_dir() / "image-staging")
+    except Exception as e:  # pragma: no cover - never block startup over cleanup
+        print(f"[sidecar] image-staging cleanup failed: {e}", file=sys.stderr)
+
     # The Tauri WebView and the sidecar are different origins, so a POST with
     # Content-Type: application/json triggers a CORS preflight and the GETs need
     # an Access-Control-Allow-Origin echo. Restrict to the Tauri webview origins
@@ -762,6 +770,49 @@ def create_app(agent: Agent, workspace_manager=None, conversation_store=None,
             "previewable": previewable,
             "path": str(target),
         })
+
+    @app.get("/api/attachment/thumb")
+    def attachment_thumb():
+        """Return base64 + mime of an image for thumbnail display.
+
+        ``path`` may be workspace-relative (resolved against the current
+        workspace) or absolute (a drag-drop target the user explicitly attached).
+        Image extensions only, 10MB cap. CORS is already restricted to the Tauri
+        webview origins, and only images are returned — reading a file the user
+        is actively attaching for display is intended.
+        """
+        from .attachments import IMAGE_EXTS, MAX_IMAGE_BYTES
+        raw_path = request.args.get("path", "").strip()
+        if not raw_path:
+            return jsonify({"error": "需要提供路径"}), 400
+        if os.path.isabs(raw_path):
+            target = Path(raw_path)
+        else:
+            workspace = _require_workspace()
+            if not workspace:
+                return jsonify({"error": "未打开工作区"}), 400
+            target = (Path(workspace) / raw_path).resolve()
+            root = Path(workspace).resolve()
+            if root not in target.parents and target != root:
+                return jsonify({"error": "禁止访问"}), 403
+        target = target.resolve()
+        ext = target.suffix.lower()
+        if ext not in IMAGE_EXTS:
+            return jsonify({"error": "仅支持图片"}), 400
+        if not target.exists() or not target.is_file():
+            return jsonify({"error": "未找到"}), 404
+        try:
+            size = target.stat().st_size
+        except OSError:
+            return jsonify({"error": "无法读取"}), 500
+        if size > MAX_IMAGE_BYTES:
+            return jsonify({"error": "图片过大（>10MB）"}), 413
+        if ext == ".jpg":
+            mime = "image/jpeg"
+        else:
+            mime = f"image/{ext.lstrip('.').lower()}"
+        content = base64.b64encode(target.read_bytes()).decode()
+        return jsonify({"content": content, "mime": mime, "size": size})
 
     if workspace_manager is not None:
         @app.get("/api/workspace")

@@ -92,3 +92,17 @@ def test_clipboard_staging_failure_does_not_raise(tmp_path):
     assert atts == []
     assert len(errs) == 1
     assert "写入失败" in errs[0]
+
+
+from floodmind_desktop_sidecar.attachments import cleanup_staging
+
+
+def test_cleanup_staging_removes_files(tmp_path):
+    stage = tmp_path / "stage"; stage.mkdir()
+    (stage / "a.png").write_bytes(b"x"); (stage / "b.png").write_bytes(b"y")
+    cleanup_staging(stage)
+    assert list(stage.iterdir()) == []
+
+
+def test_cleanup_staging_missing_dir_ok(tmp_path):
+    cleanup_staging(tmp_path / "does-not-exist")  # must not raise

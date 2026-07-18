@@ -186,3 +186,31 @@ def test_read_workspace_file_serves_legacy_doc_bytes(client, tmp_path, monkeypat
     assert j["previewable"] is True
     assert j["mime"] == "application/msword"
     assert base64.b64decode(j["content"])[:4] == b"\xd0\xcf\x11\xe0"
+
+
+def test_attachment_thumb_returns_base64_for_workspace_image(client, tmp_path, monkeypatch):
+    # repo convention: shared `client` fixture + monkeypatched FLOODMIND_DESKTOP_WORKSPACE
+    # (the brief's `client_with_ws` fixture maps to this pattern — see existing
+    # /api/workspace/file tests above).
+    monkeypatch.setenv("FLOODMIND_DESKTOP_WORKSPACE", str(tmp_path))
+    (tmp_path / "pic.png").write_bytes(b"\x89PNG\r\n\x1a\n")  # tiny png-ish bytes
+    r = client.get("/api/attachment/thumb?path=pic.png")
+    assert r.status_code == 200
+    data = r.get_json()
+    assert data["mime"] == "image/png"
+    assert data["content"]  # base64 non-empty
+
+
+def test_attachment_thumb_rejects_non_image(client, tmp_path, monkeypatch):
+    monkeypatch.setenv("FLOODMIND_DESKTOP_WORKSPACE", str(tmp_path))
+    (tmp_path / "note.txt").write_text("hi")
+    r = client.get("/api/attachment/thumb?path=note.txt")
+    assert r.status_code == 400
+
+
+def test_attachment_thumb_rejects_oversized(client, tmp_path, monkeypatch):
+    from floodmind_desktop_sidecar.attachments import MAX_IMAGE_BYTES
+    monkeypatch.setenv("FLOODMIND_DESKTOP_WORKSPACE", str(tmp_path))
+    (tmp_path / "big.png").write_bytes(b"\0" * (MAX_IMAGE_BYTES + 1))
+    r = client.get("/api/attachment/thumb?path=big.png")
+    assert r.status_code == 413
