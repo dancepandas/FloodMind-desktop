@@ -124,3 +124,93 @@ describe("config-store supportsVision", () => {
     expect(sent.providers[0].models[0].supportsVision).toBe(true);
   });
 });
+
+// ---- Task 4: resolveActiveModel + switchActive ----
+
+const baseState = {
+  providers: [], apiKeyPresent: false, baseURL: "", envOverrides: [],
+  loading: false, saving: false, savedAt: null, reloadFailed: false, error: null,
+  soul: "", soulIsDefault: true, agents: "",
+  personaLoading: false, personaSaving: false, personaError: null,
+  permissionMode: "trust-once" as const, permissionLoading: false, permissionSaving: false,
+  permissionSavedAt: null, permissionError: null,
+  load: vi.fn(), clearSaved: vi.fn(), loadPersona: vi.fn(), loadPermissions: vi.fn(),
+};
+
+describe("resolveActiveModel", () => {
+  beforeEach(() => {
+    useConfigStore.setState({ ...baseState, model: null, enabledModels: [] } as any);
+  });
+
+  it("prefers conversation override", () => {
+    useConfigStore.setState({
+      model: { provider: "qwen", model: "qwen3.7-plus", temperature: 0.3, maxTokens: 131072,
+        enableReasoning: false, enableSearch: false, supportsVision: true } as any,
+      enabledModels: [{ provider: "qwen", model: "qwen3.7-plus" }],
+    } as any);
+    expect(useConfigStore.getState().resolveActiveModel({ provider: "moonshot", model: "kimi-2.6" }))
+      .toEqual({ provider: "moonshot", model: "kimi-2.6" });
+  });
+
+  it("falls back to active model when no override", () => {
+    useConfigStore.setState({
+      model: { provider: "qwen", model: "qwen3.7-plus" } as any,
+      enabledModels: [{ provider: "qwen", model: "qwen3.7-plus" }],
+    } as any);
+    expect(useConfigStore.getState().resolveActiveModel(null))
+      .toEqual({ provider: "qwen", model: "qwen3.7-plus" });
+  });
+
+  it("falls back to first enabled when active not enabled", () => {
+    useConfigStore.setState({
+      model: { provider: "deepseek", model: "deepseek-v4-pro" } as any,
+      enabledModels: [{ provider: "qwen", model: "qwen3.7-plus" }],
+    } as any);
+    expect(useConfigStore.getState().resolveActiveModel(null))
+      .toEqual({ provider: "qwen", model: "qwen3.7-plus" });
+  });
+
+  it("returns null when nothing enabled", () => {
+    useConfigStore.setState({ model: null, enabledModels: [] } as any);
+    expect(useConfigStore.getState().resolveActiveModel(null)).toBeNull();
+  });
+});
+
+describe("switchActive", () => {
+  beforeEach(() => {
+    useConfigStore.setState({ ...baseState, model: { provider: "qwen", model: "qwen3.7-plus" } as any,
+      enabledModels: [{ provider: "qwen", model: "qwen3.7-plus" }] } as any);
+  });
+
+  it("optimistically updates, calls active-model endpoint, persists conv binding", async () => {
+    const calls: any[] = [];
+    const fetchMock = (async (url: string, init?: any) => {
+      calls.push({ url, init });
+      return { ok: true, json: async () => ({ ok: true, reloaded: true,
+        // POST 响应：快照裹在 model 下；snapshot.model = ModelConfig
+        model: { model: { provider: "moonshot", model: "kimi-2.6", temperature: 0.3, maxTokens: 131072,
+                          enableReasoning: false, enableSearch: false, supportsVision: true },
+                 apiKeyPresent: true, baseURL: "u2", providers: [], enabledModels: [] } }) } as any;
+    }) as any;
+    vi.stubGlobal("fetch", fetchMock);
+    const ok = await useConfigStore.getState().switchActive("moonshot", "kimi-2.6", "conv-1");
+    expect(ok).toBe(true);
+    expect(calls.some((c) => c.url.endsWith("/api/config/active-model"))).toBe(true);
+    expect((useConfigStore.getState().model as any)?.model).toBe("kimi-2.6");
+    expect(calls.some((c) => c.url.includes("/api/conversations/conv-1/model") && c.init?.method === "PUT")).toBe(true);
+    vi.unstubAllGlobals();
+  });
+
+  it("rolls back on active-model failure", async () => {
+    const fetchMock = (async (url: string) => {
+      if (url.endsWith("/api/config/active-model")) return { ok: false, json: async () => ({}) } as any;
+      return { ok: true, json: async () => ({}) } as any;
+    }) as any;
+    vi.stubGlobal("fetch", fetchMock);
+    const before = useConfigStore.getState().model;
+    const ok = await useConfigStore.getState().switchActive("moonshot", "kimi-2.6", "conv-1");
+    expect(ok).toBe(false);
+    expect(useConfigStore.getState().model).toEqual(before);
+    vi.unstubAllGlobals();
+  });
+});

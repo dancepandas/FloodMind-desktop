@@ -42,45 +42,33 @@ export interface ModelForm {
   provider: string;   // active provider id
   model: string;      // active model name
   providers: ProviderFormEntry[];
+  enabledModels?: EnabledModel[];
+}
+
+export interface EnabledModel {
+  provider: string;
+  model: string;
 }
 
 export type PermissionMode = "always-trust" | "trust-once" | "always-ask";
 
-/** Merge providers returned by the backend with the curated provider list. Saved
- *  values (apiKeyPresent, baseURL, models) are preserved; missing curated
- *  providers are injected with their defaults so the UI always shows them. */
+/** Merge providers returned by the backend with the curated provider list.
+ *  Authoritative: saved model list wins (this is what makes "delete a model"
+ *  stick); curated defaults are seeded only when a provider is absent from
+ *  saved. Non-curated providers (e.g. user's openai-compatible) are appended. */
 function mergeWithCurated(saved: ProviderInfo[]): ProviderInfo[] {
   const byId = new Map(saved.map((p) => [p.id, p]));
-  return CURATED_PROVIDERS.map((def) => {
+  const merged: ProviderInfo[] = CURATED_PROVIDERS.map((def) => {
     const savedProvider = byId.get(def.id);
     if (savedProvider) {
-      const savedModelMap = new Map((savedProvider.models || []).map((m) => [m.name, m]));
-      const mergedModels = def.models.map((dm) => {
-        const savedModel = savedModelMap.get(dm.name);
-        const defaultTokens = getTierDefaultTokens(dm);
-        return {
-          name: dm.name,
-          maxTokens: savedModel?.maxTokens ?? defaultTokens ?? null,
-          supportsVision: dm.supportsVision ?? false,
-        };
-      });
-      // Append any extra models the user saved (OpenAI/Ollama custom models).
-      const fixedNames = new Set(def.models.map((m) => m.name));
-      const extraModels = (savedProvider.models || [])
-        .filter((m) => !fixedNames.has(m.name))
-        .map((m) => ({
-          name: m.name,
-          maxTokens: m.maxTokens ?? null,
-          contextSize: m.contextSize ?? null,
-          temperature: m.temperature ?? null,
-          supportsVision: m.supportsVision ?? false,
-        }));
-      return {
-        ...savedProvider,
-        name: def.name,
-        baseURL: savedProvider.baseURL || def.baseURL,
-        models: [...mergedModels, ...extraModels],
-      };
+      const models = (savedProvider.models || []).map((m) => ({
+        name: m.name,
+        maxTokens: m.maxTokens ?? null,
+        contextSize: m.contextSize ?? null,
+        temperature: m.temperature ?? null,
+        supportsVision: m.supportsVision ?? false,
+      }));
+      return { ...savedProvider, name: def.name, models };
     }
     return {
       id: def.id,
@@ -94,10 +82,17 @@ function mergeWithCurated(saved: ProviderInfo[]): ProviderInfo[] {
       apiKeyPresent: false,
     };
   });
+  // Keep non-curated custom providers (e.g. user added under openai-compatible).
+  for (const p of saved) {
+    if (!CURATED_PROVIDER_IDS.has(p.id)) merged.push(p);
+  }
+  return merged;
 }
 
 interface ConfigState {
   model: ModelConfig | null;
+  enabledModels: EnabledModel[];
+  switching: boolean;
   providers: ProviderInfo[];
   apiKeyPresent: boolean;
   baseURL: string;
@@ -123,6 +118,9 @@ interface ConfigState {
   load: () => Promise<void>;
   save: (form: ModelForm) => Promise<boolean>;
   clearSaved: () => void;
+  resolveActiveModel: (convOverride?: EnabledModel | null) => EnabledModel | null;
+  switchActive: (provider: string, model: string, convId?: string) => Promise<boolean>;
+  loadConversationModel: (convId: string) => Promise<EnabledModel | null>;
   loadPersona: () => Promise<void>;
   saveSoul: (text: string) => Promise<boolean>;
   saveAgents: (text: string) => Promise<boolean>;
@@ -133,6 +131,8 @@ interface ConfigState {
 
 export const useConfigStore = create<ConfigState>((set) => ({
   model: null,
+  enabledModels: [],
+  switching: false,
   providers: [],
   apiKeyPresent: false,
   baseURL: "",
@@ -171,6 +171,7 @@ export const useConfigStore = create<ConfigState>((set) => ({
         apiKeyPresent: !!data.apiKeyPresent,
         baseURL: data.baseURL || "",
         envOverrides: data.envOverrides || [],
+        enabledModels: (data.enabledModels || []) as EnabledModel[],
         loading: false,
       });
     } catch {
@@ -211,7 +212,8 @@ export const useConfigStore = create<ConfigState>((set) => ({
           if (p.apiKey) entry.apiKey = p.apiKey;
           return entry;
         });
-      const body = { provider: form.provider, model: form.model, providers };
+      const body = { provider: form.provider, model: form.model,
+                     enabledModels: form.enabledModels ?? [], providers };
       const r = await fetch(`${b}/api/config/model`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -222,10 +224,13 @@ export const useConfigStore = create<ConfigState>((set) => ({
         return false;
       }
       const data = await r.json();
+      const snap = data.model || {};
       set({
-        model: data.model?.model ?? null,
-        apiKeyPresent: data.model?.apiKeyPresent ?? false,
-        baseURL: data.model?.baseURL ?? "",
+        model: snap.model ?? null,
+        providers: snap.providers ?? [],
+        apiKeyPresent: !!snap.apiKeyPresent,
+        baseURL: snap.baseURL ?? "",
+        enabledModels: snap.enabledModels ?? [],
         saving: false,
         savedAt: Date.now(),
         reloadFailed: data.reloaded === false,
@@ -238,6 +243,73 @@ export const useConfigStore = create<ConfigState>((set) => ({
   },
 
   clearSaved: () => set({ savedAt: null, reloadFailed: false }),
+
+  resolveActiveModel(convOverride) {
+    const s: ConfigState = useConfigStore.getState();
+    if (convOverride && convOverride.provider && convOverride.model) return convOverride;
+    const active = s.model;
+    if (active && active.provider && active.model) {
+      const inEnabled = s.enabledModels.some(
+        (e: EnabledModel) => e.provider === active.provider && e.model === active.model,
+      );
+      if (inEnabled || s.enabledModels.length === 0) {
+        return { provider: active.provider, model: active.model };
+      }
+    }
+    return s.enabledModels[0] ?? null;
+  },
+
+  async switchActive(provider, model, convId) {
+    const prev = useConfigStore.getState().model;
+    useConfigStore.setState((s: ConfigState) => ({
+      switching: true,
+      model: { ...(s.model as any), provider, model } as any,
+    }));
+    try {
+      const b = await getBaseUrl();
+      const [, activeRes] = await Promise.all([
+        convId
+          ? fetch(`${b}/api/conversations/${encodeURIComponent(convId)}/model`, {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ provider, model }),
+            })
+          : Promise.resolve({ ok: true } as Response),
+        fetch(`${b}/api/config/active-model`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ provider, model }),
+        }),
+      ]);
+      if (!activeRes.ok) throw new Error("active-model failed");
+      const data = await activeRes.json();
+      const snap = data.model || {};
+      useConfigStore.setState({
+        model: snap.model ?? null,
+        enabledModels: snap.enabledModels ?? useConfigStore.getState().enabledModels,
+        switching: false,
+        savedAt: Date.now(),
+        reloadFailed: data.reloaded === false,
+      });
+      return true;
+    } catch {
+      useConfigStore.setState({ model: prev, switching: false });
+      return false;
+    }
+  },
+
+  async loadConversationModel(convId) {
+    try {
+      const b = await getBaseUrl();
+      const r = await fetch(`${b}/api/conversations/${encodeURIComponent(convId)}/model`);
+      if (!r.ok) return null;
+      const data = await r.json();
+      const m = data?.model;
+      return m && m.provider && m.model ? m : null;
+    } catch {
+      return null;
+    }
+  },
 
   async loadPersona() {
     set({ personaLoading: true, personaError: null });
