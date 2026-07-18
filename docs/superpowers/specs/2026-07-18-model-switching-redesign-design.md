@@ -15,7 +15,7 @@
 3. 全局唯一模型，无"按会话绑定"。
 4. `enableReasoning`、`temperature` 在数据模型里存在、已传给 agent，但前端无任何开关。
 5. 只有 openai/ollama 可增删模型；其余 5 家（deepseek/zhipu/moonshot/qwen/minimax）模型写死在 `providers.ts`。
-6. 潜在 bug：`config-store.ts:226` `model: data.model?.model ?? null`——`data.model` 是 `ModelConfig` 对象，`.model` 取到的是模型名字符串，导致每次设置保存后 store 的 `model` 塌成字符串，直到下次 `load()` 才恢复。
+6. `config-store.ts` save() 响应解析（**非 bug**）：POST `/api/config/model` 把快照裹在 `"model"` 字段下返回（`{ok, reloaded, model: <snapshot>}`，snapshot 顶层又有 `model` 键即 `ModelConfig`），所以 `data.model.model` = `ModelConfig`，现有代码正确。唯一缺口：save() 未从快照刷新 `providers`/`enabledModels`，新值要等下次 load()——本重构在 store 任务里补上（顺带刷新 enabledModels）。
 
 ## 非目标（YAGNI，本轮不做）
 
@@ -157,9 +157,9 @@ composer 底部模型标签 `<span>` → `<button>`，点击**向上**展开菜�
 3. composer 标签按 §2 规则解析显示。
 4. reload 可能有亚秒级延迟 → 标签处显示极简 loading 态（如 "切换中…"），完成即恢复。
 
-### 7. 顺手修 bug
+### 7. save() 响应刷新（补全，非 bug 修正）
 
-`config-store.ts:226`：`model: data.model?.model ?? null` → `model: data.model ?? null`（`data.model` 本就是 `ModelConfig`）。加回归测试：保存后 `model` 仍是对象、`s.model.model` 可读。
+POST `/api/config/model` 响应为 `{ok, reloaded, model: <snapshot>}`，snapshot = `read_model_config()`（顶层 `model` 键即 `ModelConfig`，另含 `apiKeyPresent/baseURL/providers/enabledModels`）。现有 `data.model.model` 取 `ModelConfig` 正确。本重构在 save() 里额外从 snapshot 刷新 `providers` 与 `enabledModels`（当前只更新了 `model/apiKeyPresent/baseURL`），避免设置保存后下拉/启用集滞后到下次 load()。随 store 任务的测试覆盖，无需单独回归测试。
 
 ## 边界与错误
 
