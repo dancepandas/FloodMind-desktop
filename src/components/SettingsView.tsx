@@ -66,6 +66,10 @@ function ModelTab() {
         models: def.models.map((m) => ({
           name: m.name,
           maxTokens: savedModelMap.get(m.name)?.maxTokens ?? getTierDefaultTokens(m) ?? null,
+          // Carry the curated vision flag (providers.ts) into the form so save()
+          // writes it back to settings.json. Without this, save wrote
+          // supports_vision=false for every model and wiped the flag.
+          supportsVision: m.supportsVision ?? savedModelMap.get(m.name)?.supportsVision ?? false,
         })),
       };
       // Append custom models the user added to OpenAI / Ollama.
@@ -78,6 +82,7 @@ function ModelTab() {
               maxTokens: m.maxTokens ?? null,
               contextSize: m.contextSize ?? null,
               temperature: m.temperature ?? null,
+              supportsVision: m.supportsVision ?? false,
             });
           }
         }
