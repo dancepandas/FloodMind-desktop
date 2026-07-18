@@ -26,6 +26,7 @@ export default function App() {
   const previewPath = useUiStore((s) => s.previewPath);
   const closePreview = useUiStore((s) => s.closePreview);
   const planPanelOpen = useUiStore((s) => s.planPanelOpen);
+  const toast = useUiStore((s) => s.toast);
   const currentPath = useWorkspaceStore((s) => s.current?.path);
 
   // One-time first-launch welcome splash. Show only until the user dismisses it
@@ -94,6 +95,11 @@ export default function App() {
   return (
     <div className="app">
       {showWelcome && <WelcomeSplash onEnter={enterApp} />}
+      {toast && (
+        <div className="toast" role="status" aria-live="polite">
+          {toast.message}
+        </div>
+      )}
       <div className="sidebar-wrap" style={{ width: sidebarResize.width }} data-resizable="right">
         <Sidebar />
         <div className="resize-handle resize-handle-right" onMouseDown={sidebarResize.startResize} />

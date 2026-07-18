@@ -22,6 +22,7 @@ const listFilesMock = vi.fn(() => Promise.resolve(mockFiles));
 const openPathMock = vi.fn();
 const pickAndOpenMock = vi.fn();
 const setViewMock = vi.fn();
+const showToastMock = vi.fn();
 
 vi.mock("../state/chat-store", () => ({
   useChatStore: (selector: (s: any) => any) =>
@@ -55,6 +56,7 @@ vi.mock("../state/ui-store", () => ({
   useUiStore: (selector: (s: any) => any) =>
     selector({
       setView: setViewMock,
+      showToast: showToastMock,
     }),
 }));
 
@@ -413,9 +415,11 @@ describe("Composer", () => {
     expect(addAttachmentsMock).not.toHaveBeenCalled();
   });
 
-  it("insertFile routes image files to pending when model lacks vision", async () => {
-    // Task 10 fallback: with supportsVision=false the image can't be seen, so
-    // the @ selection degrades to a text reference the agent reads by name.
+  it("insertFile blocks image files and toasts when the model lacks vision", async () => {
+    // Fix: on a non-vision model, @-selecting an image must NOT degrade to a
+    // text reference — that handed the agent a filename it couldn't actually
+    // see and invited the "智能体说它看了" hallucination. Block it and surface
+    // a toast instead. Non-image files still go to the text-reference channel.
     mockModel = { ...mockModel, supportsVision: false };
     mockFiles = [{ name: "chart.png", type: "file", path: "chart.png" }];
     render(<Composer />);
@@ -426,10 +430,12 @@ describe("Composer", () => {
     const row = await screen.findByRole("option", { name: /chart\.png/ });
     expect(row).toHaveClass("is-image");
     fireEvent.click(row);
-    // No vision → no thumbnail fetch, no visual channel push.
+    // No vision → image blocked: not added to either channel, and a toast
+    // tells the user why (so they don't think the model saw the image).
     expect(pathToDataUrlMock).not.toHaveBeenCalled();
     expect(addImagesMock).not.toHaveBeenCalled();
-    expect(addAttachmentsMock).toHaveBeenCalledWith(["chart.png"]);
+    expect(addAttachmentsMock).not.toHaveBeenCalled();
+    expect(showToastMock).toHaveBeenCalledWith(expect.stringContaining("不支持图片"));
   });
 
   it("insertFile keeps non-image files on the text-reference channel", async () => {

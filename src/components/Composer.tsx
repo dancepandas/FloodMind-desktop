@@ -70,6 +70,7 @@ export default function Composer() {
   const modelName = useConfigStore((s) => s.model?.model ?? null);
   const supportsVision = useConfigStore((s) => !!s.model?.supportsVision);
   const setView = useUiStore((s) => s.setView);
+  const showToast = useUiStore((s) => s.showToast);
   const attachments = useAttachmentStore((s) => s.pending);
   const addAttachments = useAttachmentStore((s) => s.add);
   const removeAttachment = useAttachmentStore((s) => s.remove);
@@ -139,12 +140,18 @@ export default function Composer() {
     resize();
     textareaRef.current?.focus();
 
-    // Task 10: bifurcate @ selections by file type and model vision support.
-    // Image-extension files on a vision model are routed into the visual channel
-    // (thumb fetched via the sidecar /api/attachment/thumb). Non-vision models
-    // can't see images, so image files fall back to a text reference the agent
-    // reads by name; non-image files always go through the text-reference path.
-    if (isImageName(name) && supportsVision) {
+    // Bifurcate @ selections by file type and model vision support.
+    // Image files on a vision model → visual channel (thumb via the sidecar
+    // /api/attachment/thumb). Image files on a NON-vision model are BLOCKED
+    // (not downgraded to a text reference): silently turning an image the user
+    // expected the model to SEE into a mere filename invited the model to
+    // hallucinate "我看了这张图". Surface a toast so the user knows why.
+    // Non-image files always go through the text-reference path.
+    if (isImageName(name)) {
+      if (!supportsVision) {
+        showToast("当前模型不支持图片输入，请在设置中切换视觉模型后再附加图片");
+        return;
+      }
       try {
         const thumb = await pathToDataUrl(name);
         addImages([
@@ -226,12 +233,18 @@ export default function Composer() {
   }
 
   async function onPaste(e: React.ClipboardEvent<HTMLTextAreaElement>) {
-    // Single-turn: only the initiating send carries images. While streaming,
-    // paste is text-only — bail before touching the image chip store.
-    if (!supportsVision || streaming) return;
     const items = Array.from(e.clipboardData?.items ?? []);
     const hasImage = items.some((it) => it.kind === "file" && it.type.startsWith("image/"));
-    if (!hasImage) return;
+    if (!hasImage) return; // plain-text paste — let the browser handle it.
+    // Single-turn: only the initiating send carries images. While streaming,
+    // paste is text-only — bail before touching the image chip store.
+    if (streaming) return;
+    if (!supportsVision) {
+      // Don't silently swallow an image paste on a non-vision model — tell the
+      // user why nothing was attached, so they don't think the model saw it.
+      showToast("当前模型不支持图片输入，请在设置中切换视觉模型后再附加图片");
+      return;
+    }
     e.preventDefault();
     const next = await collectPastedImages(items as unknown as Parameters<typeof collectPastedImages>[0]);
     if (next.length) addImages(next);
@@ -247,10 +260,18 @@ export default function Composer() {
     let active = true;
     (async () => {
       unlisten = await win.onDragDropEvent(async (ev) => {
+        const payload = ev.payload as { type: string; paths?: string[] };
         // Single-turn: drops while streaming would attach to the wrong (next)
         // turn, so ignore them — text appends remain allowed via the textarea.
-        if (!supportsVision || streaming) return;
-        const payload = ev.payload as { type: string; paths?: string[] };
+        if (streaming) return;
+        if (!supportsVision) {
+          // Tell the user why their image drop did nothing (only for image
+          // drops; non-image drops are also ignored but aren't worth a toast).
+          if ((payload.paths ?? []).some((p) => isImageName(p))) {
+            showToast("当前模型不支持图片输入，请在设置中切换视觉模型后再附加图片");
+          }
+          return;
+        }
         if (payload.type === "enter" || payload.type === "over") {
           if ((payload.paths ?? []).some((p) => isImageName(p))) setDragOver(true);
         } else {
@@ -492,7 +513,15 @@ export default function Composer() {
             // thumb fetch failure we degrade the path to a text reference so
             // the user's selection is never silently dropped.
             for (const p of paths) {
-              if (isImageName(p) && supportsVision) {
+              if (isImageName(p)) {
+                if (!supportsVision) {
+                  // Defense: the ＋ affordance is disabled on non-vision models,
+                  // so this is unreachable in normal use — but if an image ever
+                  // reaches here, block it (don't text-ref) + toast, matching
+                  // the inline @ path.
+                  showToast("当前模型不支持图片输入，请在设置中切换视觉模型后再附加图片");
+                  continue;
+                }
                 try {
                   const thumb = await pathToDataUrl(p);
                   addImages([
