@@ -33,6 +33,7 @@ vi.mock("./conversation-store", () => ({
 // Import after mocks are registered.
 import { streamChat, appendInstruction as postAppendInstruction, pauseChat, respondToPermissionAsk } from "../lib/chat-stream";
 import { useConversationStore } from "./conversation-store";
+import { useConfigStore } from "./config-store";
 
 function emptyTurn(): AssistantTurn {
   return { id: "t0", role: "assistant", blocks: [], usage: null, done: false };
@@ -469,5 +470,95 @@ describe("respondToPermission", () => {
 
     const first = useChatStore.getState().turns[0] as AssistantTurn;
     expect((first.blocks[0] as any).approved).toBe(true);
+  });
+});
+
+describe("loadConversation sticky model restore", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // Reset config-store to a known empty baseline before each case.
+    const { setState } = useConfigStore;
+    setState({ model: null, enabledModels: [] } as any);
+  });
+
+  it("loadConversation restores the conversation's bound model when it differs", async () => {
+    const fetchMock = vi.fn().mockImplementation(async (url: string) => {
+      if (url.includes("/api/conversations/") && url.endsWith("/model")) {
+        return { ok: true, json: async () => ({ model: { provider: "moonshot", model: "kimi-2.6" } }) } as any;
+      }
+      if (url.endsWith("/api/config/active-model")) {
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            reloaded: true,
+            model: { model: { provider: "moonshot", model: "kimi-2.6" } },
+          }),
+        } as any;
+      }
+      return { ok: true, json: async () => ({ id: "conv-1", session_id: "s1", turns: [] }) } as any;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    // 预设当前活动模型为 qwen，与绑定 moonshot 不同 → 应触发 active-model POST
+    const { setState } = useConfigStore;
+    setState({
+      model: { provider: "qwen", model: "qwen3.7-plus" } as any,
+      enabledModels: [
+        { provider: "moonshot", model: "kimi-2.6" },
+        { provider: "qwen", model: "qwen3.7-plus" },
+      ],
+    } as any);
+    await useChatStore.getState().loadConversation("conv-1");
+    expect(
+      fetchMock.mock.calls.some((c) => (c[0] as string).endsWith("/api/config/active-model")),
+    ).toBe(true);
+    vi.unstubAllGlobals();
+  });
+
+  it("loadConversation does NOT switch when the bound model equals the active model", async () => {
+    const fetchMock = vi.fn().mockImplementation(async (url: string) => {
+      if (url.includes("/api/conversations/") && url.endsWith("/model")) {
+        return { ok: true, json: async () => ({ model: { provider: "moonshot", model: "kimi-2.6" } }) } as any;
+      }
+      // Should never be reached: bound == active, so no switch.
+      return { ok: true, json: async () => ({}) } as any;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const { setState } = useConfigStore;
+    setState({
+      model: { provider: "moonshot", model: "kimi-2.6" } as any,
+      enabledModels: [{ provider: "moonshot", model: "kimi-2.6" }],
+    } as any);
+
+    await useChatStore.getState().loadConversation("conv-same");
+
+    expect(
+      fetchMock.mock.calls.some((c) => (c[0] as string).endsWith("/api/config/active-model")),
+    ).toBe(false);
+    vi.unstubAllGlobals();
+  });
+
+  it("loadConversation swallows model-restore failures (conversation still loads)", async () => {
+    const fetchMock = vi.fn().mockImplementation(async (url: string) => {
+      if (url.includes("/api/conversations/") && url.endsWith("/model")) {
+        // loadConversationModel returns null on !ok → no switch attempted.
+        return { ok: false, json: async () => ({}) } as any;
+      }
+      return { ok: true, json: async () => ({}) } as any;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const { setState } = useConfigStore;
+    setState({
+      model: { provider: "qwen", model: "qwen3.7-plus" } as any,
+      enabledModels: [{ provider: "qwen", model: "qwen3.7-plus" }],
+    } as any);
+
+    // Must not throw — turns are still hydrated from the conversation-store mock.
+    await useChatStore.getState().loadConversation("conv-broken");
+    expect(useChatStore.getState().conversationId).toBe("conv-broken");
+    expect(
+      fetchMock.mock.calls.some((c) => (c[0] as string).endsWith("/api/config/active-model")),
+    ).toBe(false);
+    vi.unstubAllGlobals();
   });
 });

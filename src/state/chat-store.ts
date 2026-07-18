@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { getBaseUrl } from "../lib/sidecar-client";
 import { streamChat, appendInstruction as postAppendInstruction, pauseChat, respondToPermissionAsk, type ChatEvent, type ChatMessage, type ImageAttachmentWire } from "../lib/chat-stream";
 import { useConversationStore } from "./conversation-store";
+import { useConfigStore } from "./config-store";
 
 export interface PlanStep {
   key: string;
@@ -471,5 +472,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
       conversationId: conv.id,
       title: conv.title,
     });
+    // 恢复该会话绑定的模型（sticky）。与当前活动模型不同则 reload。
+    // Wrapped so a model-restore failure never breaks conversation loading.
+    try {
+      const bound = await useConfigStore.getState().loadConversationModel(id);
+      const current = useConfigStore.getState().resolveActiveModel(null);
+      const differs =
+        !!bound &&
+        !!current &&
+        (bound.provider !== current.provider || bound.model !== current.model);
+      if (bound && differs) {
+        await useConfigStore.getState().switchActive(bound.provider, bound.model, id);
+      }
+    } catch {
+      /* 模型恢复失败不阻断会话加载 */
+    }
   },
 }));
