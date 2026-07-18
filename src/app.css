@@ -2928,9 +2928,12 @@ button:focus-visible,
   z-index: 1000;
   max-width: min(80vw, 520px);
   padding: 0.6rem 1rem;
-  background: var(--surface-2, #2a2a2a);
-  color: var(--fg-primary, #f0f0f0);
-  border: 1px solid var(--border, #444);
+  /* High-contrast dark toast — the app is a light theme, and --fg-primary is
+   * NOT a defined token (the theme uses --fg). Use --fg (#111827) + white so
+   * the message is actually readable. */
+  background: var(--fg, #111827);
+  color: #ffffff;
+  border: 1px solid var(--fg, #111827);
   border-radius: 8px;
   box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
   font-size: 13px;
