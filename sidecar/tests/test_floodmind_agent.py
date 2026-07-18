@@ -765,3 +765,88 @@ def test_stream_sets_abort_and_releases_on_disconnect(tmp_path, monkeypatch):
     g.close()                                 # simulate client disconnect
     assert a._abort.is_set()                  # teardown armed the abort signal
     assert not a._stream_lock.locked()        # lock released even on abnormal close
+
+
+# ── vision attachments: stream() forwards to SDK + non-vision gate (Task 5) ──
+def _bare_vision_agent(monkeypatch, supports_vision: bool):
+    """A bare FloodMindAgent wired for unit-testing stream()'s attachment path.
+
+    Avoids __init__ (no real SDK build, no filesystem setup). All bare attrs
+    are set to None so the getattr guards in stream()/_fg() handle them; the
+    FakeAgent is the only live piece. _set_workspace is monkeypatched to a
+    no-op so a bare instance never touches the real workspace/app-data setup
+    or the SDK's bind_workspace.
+    """
+    from floodmind_desktop_sidecar import floodmind_agent as fa
+
+    agent = fa.FloodMindAgent.__new__(fa.FloodMindAgent)
+    agent._agent = None  # caller sets
+    agent._workspace_manager = None
+    agent._stream_lock = None
+    agent._fg_lock = None
+    agent._output_dir = None
+    agent._abort = threading.Event()
+    agent._abort.clear()
+    monkeypatch.setattr(fa.FloodMindAgent, "_set_workspace", lambda self: None)
+    monkeypatch.setattr(
+        fa.FloodMindAgent, "_active_supports_vision", lambda self: supports_vision
+    )
+    monkeypatch.setattr(fa.FloodMindAgent, "_current_workspace_path", lambda self: None)
+    return agent
+
+
+def test_stream_passes_attachments_to_agent(monkeypatch, tmp_path):
+    """stream() normalizes descriptors and forwards SDK Attachments to agent.stream."""
+    import base64
+    from floodmind_desktop_sidecar import floodmind_agent as fa
+
+    captured = {}
+
+    class FakeAgent:
+        def stream(self, user_text, attachments=None, abort_check=None):
+            captured["text"] = user_text
+            captured["attachments"] = list(attachments or [])
+            yield {"type": "text", "content": "ok"}
+            yield {"type": "done"}
+
+    agent = _bare_vision_agent(monkeypatch, supports_vision=True)
+    agent._agent = FakeAgent()
+
+    png = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M8AAAMBAQDJ/pLvAAAAAElFTkSuQmCC")
+    img = tmp_path / "x.png"
+    img.write_bytes(png)
+    desc = [{"source": "file", "path": str(img), "name": "x.png", "mime": "image/png"}]
+    events = list(agent.stream([{"role": "user", "content": "看图"}], attachments=desc))
+    assert captured["text"] == "看图"
+    assert len(captured["attachments"]) == 1
+    assert captured["attachments"][0].kind == "image"
+    assert any(e.get("type") == "done" for e in events)
+
+
+def test_stream_non_vision_model_yields_error_and_drops_attachments(monkeypatch, tmp_path):
+    """Non-vision active model: attachments are dropped and an error event surfaces."""
+    import base64
+    from floodmind_desktop_sidecar import floodmind_agent as fa
+
+    captured = {}
+
+    class FakeAgent:
+        def stream(self, user_text, attachments=None, abort_check=None):
+            captured["attachments"] = list(attachments or [])
+            yield {"type": "done"}
+
+    agent = _bare_vision_agent(monkeypatch, supports_vision=False)
+    agent._agent = FakeAgent()
+
+    png = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M8AAAMBAQDJ/pLvAAAAAElFTkSuQmCC")
+    img = tmp_path / "x.png"
+    img.write_bytes(png)
+    events = list(agent.stream(
+        [{"role": "user", "content": "hi"}],
+        attachments=[{"source": "file", "path": str(img), "name": "x.png"}],
+    ))
+    assert captured["attachments"] == []
+    assert any("不支持图片" in e.get("content", "")
+               for e in events if e.get("type") == "error")

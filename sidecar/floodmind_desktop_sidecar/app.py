@@ -125,11 +125,15 @@ def create_app(agent: Agent, workspace_manager=None, conversation_store=None,
     def chat():
         body = request.get_json(silent=True) or {}
         messages: list[Message] = body.get("messages", [])
+        # Images are single-turn only — only /api/chat reads attachments; the
+        # /api/chat/append steering path stays text-only. None when absent so
+        # stream()'s `if attachments:` guard skips the normalize path entirely.
+        attachments = body.get("attachments") or None
         if not messages:
             return jsonify({"error": "messages must be a non-empty list"}), 400
 
         def generate():
-            gen = agent.stream(messages)
+            gen = agent.stream(messages, attachments=attachments)
             try:
                 for event in gen:
                     yield json.dumps(event, ensure_ascii=False) + "\n"

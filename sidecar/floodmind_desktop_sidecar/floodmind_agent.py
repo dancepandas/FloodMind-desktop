@@ -440,6 +440,26 @@ class FloodMindAgent:
             print(f"[sidecar] ModelClient fallback also failed: {e}", file=sys.stderr)
             return None
 
+    def _active_supports_vision(self) -> bool:
+        """Whether the desktop's active model accepts image input.
+
+        resolve_model() is the SDK's single source of truth (the curated flag
+        set on the model definition); falling back to False on any error
+        disables the image path rather than sending images to a model that
+        would error out at the provider.
+        """
+        try:
+            from floodmind.config.model_resolver import resolve_model
+
+            desktop = self._desktop_block()
+            rm = resolve_model(
+                model_key=desktop.get("activeModel") or None,
+                provider_id=desktop.get("activeProvider") or None,
+            )
+            return bool(getattr(rm, "supports_vision", False))
+        except Exception:
+            return False
+
     def _build_agent(self, session_id: str, persist_dir: str):
         """Construct a fresh SDK agent bound to a per-session DualMemory."""
         from floodmind.agent import create_flood_agent
@@ -1021,7 +1041,7 @@ class FloodMindAgent:
             return ""
 
     # ── main entry ─────────────────────────────────────────────
-    def stream(self, messages: list[Message]) -> Iterator[dict]:
+    def stream(self, messages: list[Message], attachments: list | None = None) -> Iterator[dict]:
         # Serialize foreground chats: only one /api/chat run at a time. The
         # shared self._agent + the process-global session context mean two
         # concurrent streams could otherwise cross-bind workspaces. Acquire the
@@ -1050,6 +1070,31 @@ class FloodMindAgent:
 
             user_text = messages[-1]["content"] if messages else ""
             abort_check = abort.is_set if abort is not None else None
+
+            # Normalize any image attachments into SDK Attachment objects with a
+            # real on-disk path. Errors are surfaced as NDJSON error events but
+            # do not abort the whole turn (one bad image shouldn't kill the run).
+            # Images are single-turn only — never persisted to memory by us.
+            sdk_attachments: list = []
+            if attachments:
+                from .attachments import normalize_attachments
+                from .workspace import _app_data_dir
+
+                staging_dir = _app_data_dir() / "image-staging"
+                ws_root = self._current_workspace_path()
+                sdk_attachments, att_errors = normalize_attachments(
+                    attachments, ws_root, staging_dir
+                )
+                # Non-vision active model: drop ALL images and tell the user.
+                # The front-end also disables entry; this is the authoritative
+                # back-stop so a stale GUI can't send images to a text model.
+                if sdk_attachments and not self._active_supports_vision():
+                    sdk_attachments = []
+                    yield {"type": "error",
+                           "content": "当前模型不支持图片输入，请在设置中切换到视觉模型。"}
+                for msg in att_errors:
+                    yield {"type": "error", "content": f"⚠️ {msg}"}
+
             before: dict[str, float] = {}
             errored = False
             agent = None
@@ -1068,6 +1113,8 @@ class FloodMindAgent:
                 # in __init__). Test stubs mimic the SDK stream() signature
                 # optionally, so we avoid forcing the kwarg on them.
                 stream_kwargs = {"abort_check": abort_check} if abort_check is not None else {}
+                if sdk_attachments:
+                    stream_kwargs["attachments"] = sdk_attachments
                 for raw in agent.stream(user_text, **stream_kwargs):
                     for ev in translate_event(raw):
                         if ev.get("type") == "permission":
