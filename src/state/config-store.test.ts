@@ -81,3 +81,46 @@ describe("config-store persona slice", () => {
     vi.unstubAllGlobals();
   });
 });
+
+function mockGetModel(payload: unknown) {
+  vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+    if (String(url).endsWith("/api/config/model")) {
+      return { ok: true, json: async () => payload } as any;
+    }
+    return { ok: true, json: async () => ({}) } as any;
+  }));
+}
+
+describe("config-store supportsVision", () => {
+  beforeEach(() => useConfigStore.setState({ model: null, providers: [] }));
+
+  it("reads active model supportsVision from /api/config/model", async () => {
+    mockGetModel({ model: { provider: "zhipu", model: "glm-5.2", supportsVision: true },
+                   providers: [], apiKeyPresent: true, baseURL: "" });
+    await useConfigStore.getState().load();
+    expect(useConfigStore.getState().model?.supportsVision).toBe(true);
+  });
+
+  it("defaults supportsVision to false when absent", async () => {
+    mockGetModel({ model: { provider: "deepseek", model: "deepseek-v4-flash" },
+                   providers: [], apiKeyPresent: true, baseURL: "" });
+    await useConfigStore.getState().load();
+    expect(useConfigStore.getState().model?.supportsVision).toBe(false);
+  });
+
+  it("includes supportsVision in save payload", async () => {
+    let sent: any = null;
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: any) => {
+      if (String(url).endsWith("/api/config/model") && init?.method === "POST") {
+        sent = JSON.parse(init.body);
+      }
+      return { ok: true, json: async () => ({ model: { model: "glm-5.2", supportsVision: true } }) } as any;
+    }));
+    await useConfigStore.getState().save({
+      provider: "zhipu", model: "glm-5.2",
+      providers: [{ id: "zhipu", name: "智谱", baseURL: "x", apiKey: "",
+                    models: [{ name: "glm-5.2", maxTokens: 131072, supportsVision: true }] }],
+    });
+    expect(sent.providers[0].models[0].supportsVision).toBe(true);
+  });
+});

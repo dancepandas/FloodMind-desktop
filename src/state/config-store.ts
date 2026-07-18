@@ -9,6 +9,7 @@ export interface ModelConfig {
   maxTokens: number;
   enableReasoning: boolean;
   enableSearch: boolean;
+  supportsVision: boolean;
 }
 export interface ModelEntry {
   name: string;
@@ -17,6 +18,8 @@ export interface ModelEntry {
   contextSize?: number | null;
   /** Per-model temperature; only meaningful for custom OpenAI/Ollama models. */
   temperature?: number | null;
+  /** 该模型是否接受 image_url 多模态输入。未核实的模型默认 false。 */
+  supportsVision?: boolean;
 }
 export interface ProviderInfo {
   id: string;
@@ -58,6 +61,7 @@ function mergeWithCurated(saved: ProviderInfo[]): ProviderInfo[] {
         return {
           name: dm.name,
           maxTokens: savedModel?.maxTokens ?? defaultTokens ?? null,
+          supportsVision: dm.supportsVision ?? false,
         };
       });
       // Append any extra models the user saved (OpenAI/Ollama custom models).
@@ -69,6 +73,7 @@ function mergeWithCurated(saved: ProviderInfo[]): ProviderInfo[] {
           maxTokens: m.maxTokens ?? null,
           contextSize: m.contextSize ?? null,
           temperature: m.temperature ?? null,
+          supportsVision: m.supportsVision ?? false,
         }));
       return {
         ...savedProvider,
@@ -81,7 +86,11 @@ function mergeWithCurated(saved: ProviderInfo[]): ProviderInfo[] {
       id: def.id,
       name: def.name,
       baseURL: def.baseURL,
-      models: def.models.map((m) => ({ name: m.name, maxTokens: getTierDefaultTokens(m) ?? null })),
+      models: def.models.map((m) => ({
+        name: m.name,
+        maxTokens: getTierDefaultTokens(m) ?? null,
+        supportsVision: m.supportsVision ?? false,
+      })),
       apiKeyPresent: false,
     };
   });
@@ -157,7 +166,7 @@ export const useConfigStore = create<ConfigState>((set) => ({
       }
       const data = await r.json();
       set({
-        model: data.model,
+        model: { ...data.model, supportsVision: !!data.model?.supportsVision } as ModelConfig,
         providers: mergeWithCurated(data.providers || []),
         apiKeyPresent: !!data.apiKeyPresent,
         baseURL: data.baseURL || "",
@@ -195,6 +204,7 @@ export const useConfigStore = create<ConfigState>((set) => ({
                 const entry: Record<string, unknown> = { name: m.name.trim(), maxTokens: m.maxTokens };
                 if (m.contextSize != null) entry.contextSize = m.contextSize;
                 if (m.temperature != null) entry.temperature = m.temperature;
+                entry.supportsVision = !!m.supportsVision;
                 return entry;
               }),
           };
