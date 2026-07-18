@@ -287,6 +287,30 @@ def create_app(agent: Agent, workspace_manager=None, conversation_store=None,
             return jsonify({"error": "未找到"}), 404
         return jsonify({"ok": True})
 
+    @app.get("/api/conversations/<conv_id>/model")
+    def conversation_model_get(conv_id):
+        from .conversation_meta import read_conversation_model
+        try:
+            return jsonify({"model": read_conversation_model(conv_id)})
+        except Exception as e:  # pragma: no cover - defensive
+            return jsonify({"error": str(e)}), 500
+
+    @app.put("/api/conversations/<conv_id>/model")
+    def conversation_model_set(conv_id):
+        from .conversation_meta import write_conversation_model
+        body = request.get_json(silent=True) or {}
+        provider = str(body.get("provider", "")).strip()
+        model = str(body.get("model", "")).strip()
+        if not provider or not model:
+            return jsonify({"error": "provider and model required"}), 400
+        try:
+            bound = write_conversation_model(conv_id, provider, model)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        except Exception as e:  # pragma: no cover - defensive
+            return jsonify({"error": str(e)}), 500
+        return jsonify({"ok": True, "model": bound})
+
     # ── Scheduled tasks ───────────────────────────────────────
     @app.get("/api/scheduled-tasks")
     def scheduled_tasks_list():
