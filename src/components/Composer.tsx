@@ -202,7 +202,9 @@ export default function Composer() {
   }
 
   async function onPaste(e: React.ClipboardEvent<HTMLTextAreaElement>) {
-    if (!supportsVision) return;
+    // Single-turn: only the initiating send carries images. While streaming,
+    // paste is text-only — bail before touching the image chip store.
+    if (!supportsVision || streaming) return;
     const items = Array.from(e.clipboardData?.items ?? []);
     const hasImage = items.some((it) => it.kind === "file" && it.type.startsWith("image/"));
     if (!hasImage) return;
@@ -221,7 +223,9 @@ export default function Composer() {
     let active = true;
     (async () => {
       unlisten = await win.onDragDropEvent(async (ev) => {
-        if (!supportsVision) return;
+        // Single-turn: drops while streaming would attach to the wrong (next)
+        // turn, so ignore them — text appends remain allowed via the textarea.
+        if (!supportsVision || streaming) return;
         const payload = ev.payload as { type: string; paths?: string[] };
         if (payload.type === "enter" || payload.type === "over") {
           if ((payload.paths ?? []).some((p) => isImageName(p))) setDragOver(true);
@@ -255,7 +259,7 @@ export default function Composer() {
       active = false;
       if (unlisten) unlisten();
     };
-  }, [supportsVision, addImages]);
+  }, [supportsVision, streaming, addImages]);
 
   return (
     <div className="composer-wrap">

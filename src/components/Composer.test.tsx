@@ -17,6 +17,7 @@ let mockRecent: { path: string; name: string }[] = [{ path: "/ws2", name: "ws2" 
 let mockPending: string[] = [];
 let mockImages: any[] = [];
 let mockModel: any = null;
+let mockStreaming = false;
 const listFilesMock = vi.fn(() => Promise.resolve(mockFiles));
 const openPathMock = vi.fn();
 const pickAndOpenMock = vi.fn();
@@ -25,7 +26,7 @@ const setViewMock = vi.fn();
 vi.mock("../state/chat-store", () => ({
   useChatStore: (selector: (s: any) => any) =>
     selector({
-      streaming: false,
+      streaming: mockStreaming,
       send: sendMock,
       pause: pauseMock,
     }),
@@ -105,6 +106,7 @@ describe("Composer", () => {
     mockCurrent = { path: "/ws", name: "ws" };
     mockPending = [];
     mockImages = [];
+    mockStreaming = false;
     // Default: vision-capable model so existing tests behave as before.
     mockModel = {
       provider: "deepseek",
@@ -325,6 +327,29 @@ describe("Composer", () => {
     expect(first.thumb.startsWith("data:image/png;base64,")).toBe(true);
     expect(typeof first.data).toBe("string");
     expect(first.data!.length).toBeGreaterThan(0);
+  });
+
+  it("does not accept pasted images while streaming", async () => {
+    // Single-turn contract: only the initiating send carries images. A paste
+    // during an active stream must NOT add an image chip — otherwise it would
+    // silently attach to the wrong (next) turn. jsdom has no DataTransfer, so
+    // synthesize a clipboardData carrying one image item (same shape the pure
+    // collectPastedImages helper expects) and drive the real onPaste handler.
+    mockStreaming = true;
+
+    render(<Composer />);
+    const textarea = screen.getByLabelText("任务输入") as HTMLTextAreaElement;
+
+    const file = new File([new Uint8Array([1, 2, 3])], "shot.png", { type: "image/png" });
+    const clipboardData = {
+      items: [{ kind: "file", type: "image/png", getAsFile: () => file }],
+    };
+    fireEvent.paste(textarea, { clipboardData });
+
+    // Give the async handler a tick in case it had leaked through the gate.
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(addImagesMock).not.toHaveBeenCalled();
   });
 
   it("forwards attachments + images snapshot when sending", () => {
