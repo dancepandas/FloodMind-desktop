@@ -109,9 +109,9 @@ composer 标签显示的"当前模型"，按优先级解析：
 
 > 这是设置页的**真改**（radio→checkbox、解锁增删），不是"只微调"——用户明确要求。
 
-### 4. ModelPicker 下拉组件（composer）
+### 4. ModelPicker 向上弹出菜单（composer）
 
-composer 底部模型标签 `<span>` → `<button>`，点击向上弹出 popover：
+composer 底部模型标签 `<span>` → `<button>`，点击**向上**展开菜单（composer 处于屏幕底部，菜单必须朝上展开，不是朝下的下拉框）：
 
 ```
 ┌──────────────────────────────────┐
@@ -131,9 +131,10 @@ composer 底部模型标签 `<span>` → `<button>`，点击向上弹出 popover
 
 - 内容源：`enabledModels`，按 provider 分组（provider 组头仅当其有 ≥1 启用模型时出现）。
 - 每行：模型名 + 👁（`supportsVision`）+ 当前打 ●。
+- **限高 + 内部滚动**：菜单设 `max-height`（约 320–360px），列表区 `overflow-y: auto`；启用模型多时在菜单内部滚动查看，不整体撑高、不顶出屏幕。过滤框与底部"管理模型"固定，只有中间列表滚。
 - provider 无 API key 的启用模型：置灰 + "需配置 Key"，点击只 toast 邀去设置，不切换。
-- 键盘：↑/↓ 导航、Enter 选、Esc 关、输入即过滤。
-- streaming 时整个下拉禁用（与其它 composer 入口一致）。
+- 键盘：↑/↓ 导航（滚动跟随选中项）、Enter 选、Esc 关、输入即过滤。
+- streaming 时整个菜单禁用（与其它 composer 入口一致）。
 - 底部"管理模型…"→ 跳设置模型 tab。
 - 完全没配模型（启用集空）：标签显"未配置模型"，点击 → toast 邀去设置。
 
@@ -197,7 +198,7 @@ composer 底部模型标签 `<span>` → `<button>`，点击向上弹出 popover
 **前端：**
 - `src/lib/providers.ts` — `editableModels` 废弃/保留为兼容；新增"恢复官方推荐"所需的 curated 查询。
 - `src/state/config-store.ts` — `enabledModels` 字段；活动模型解析；`switchActive(provider,model)` 调轻端点；修 save() bug；`mergeWithCurated` 调整为权威目录 + enabled 回退。
-- `src/components/ModelPicker.tsx` — 新建下拉组件。
+- `src/components/ModelPicker.tsx` — 新建向上弹出菜单组件（限高 + 内部滚动）。
 - `src/components/Composer.tsx` — 标签改 `<button>` + 挂 ModelPicker。
 - `src/components/SettingsView.tsx` — ModelTab 重构（checkbox / 增删全员 / 元数据 / 恢复推荐 / 默认只读标签）。
 - `src/state/conversation-store.ts` / `chat-store.ts` — 会话加载时取绑定模型 + 触发 reload。
