@@ -79,3 +79,16 @@ def test_multiple_attachments_partial_failure(tmp_path):
           "mime": "image/png"}],
         None, tmp_path / "stage")
     assert len(atts) == 1 and len(errs) == 1
+
+
+def test_clipboard_staging_failure_does_not_raise(tmp_path):
+    blocker = tmp_path / "blocker"
+    blocker.write_text("i am a file")  # staging dir's parent will be a file → mkdir fails
+    stage = blocker / "stage"  # uncreatable: parent is a file, not a dir
+    png_b64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M8AAAMBAQDJ/pLvAAAAAElFTkSuQmCC"
+    atts, errs = normalize_attachments(
+        [{"source": "clipboard", "data": png_b64, "mime": "image/png", "name": "p.png"}],
+        None, stage)
+    assert atts == []
+    assert len(errs) == 1
+    assert "写入失败" in errs[0]

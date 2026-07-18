@@ -84,9 +84,12 @@ def normalize_attachment(desc: dict, workspace_root: str | None,
             raw = base64.b64decode(str(desc.get("data", ""))) if desc.get("data") else b""
         except Exception:
             return None, f"剪贴板图片解码失败：{display_name}"
-        staging_dir.mkdir(parents=True, exist_ok=True)
-        abs_path = str(staging_dir / f"{uuid.uuid4().hex}{Path(display_name).suffix.lower()}")
-        Path(abs_path).write_bytes(raw)
+        try:
+            staging_dir.mkdir(parents=True, exist_ok=True)
+            abs_path = str(staging_dir / f"{uuid.uuid4().hex}{Path(display_name).suffix.lower()}")
+            Path(abs_path).write_bytes(raw)
+        except OSError:
+            return None, f"剪贴板图片写入失败：{display_name}"
     else:
         return None, "未知的附件来源"
 
