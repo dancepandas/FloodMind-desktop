@@ -690,6 +690,24 @@ def create_app(agent: Agent, workspace_manager=None, conversation_store=None,
             app.logger.warning("agent.reload_model failed: %s", e)
         return jsonify({"ok": True, "reloaded": reloaded, "model": snapshot})
 
+    @app.post("/api/config/active-model")
+    def config_active_model_set():
+        """Lightweight switch: set active model + reload, without rewriting providers."""
+        from .config_api import write_active_model
+        body = request.get_json(silent=True) or {}
+        try:
+            snapshot = write_active_model(body)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        except Exception as e:  # pragma: no cover - defensive
+            return jsonify({"error": str(e)}), 500
+        reloaded = False
+        try:
+            reloaded = bool(agent.reload_model())
+        except Exception as e:  # pragma: no cover - defensive
+            app.logger.warning("agent.reload_model failed: %s", e)
+        return jsonify({"ok": True, "reloaded": reloaded, "model": snapshot})
+
     @app.get("/api/config/soul")
     def config_soul_get():
         from .config_api import read_soul

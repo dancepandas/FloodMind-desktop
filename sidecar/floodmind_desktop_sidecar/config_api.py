@@ -363,6 +363,30 @@ def write_model_config(body: dict[str, Any]) -> dict:
     return read_model_config()
 
 
+def write_active_model(body: dict[str, Any]) -> dict:
+    """Lightweight active-model switch: patch ``desktop.activeModel/activeProvider``
+    only and save. Does NOT rebuild the providers section or touch api keys —
+    that's the heavy ``write_model_config`` path's job (settings save). Returns
+    the refreshed ``read_model_config()`` snapshot.
+    """
+    from floodmind.config.settings import save_config
+
+    provider = str((body or {}).get("provider", "")).strip()
+    model = str((body or {}).get("model", "")).strip()
+    if not provider or not model:
+        raise ValueError("provider and model required")
+
+    raw = _load_raw_settings()
+    desktop = raw.get("desktop") if isinstance(raw.get("desktop"), dict) else {}
+    desktop = dict(desktop)
+    desktop["activeModel"] = model
+    desktop["activeProvider"] = provider
+    raw["desktop"] = desktop
+    save_config(raw)
+    _neutralize_legacy_config()
+    return read_model_config()
+
+
 # ── Persona / rules files (SOUL.md + global AGENTS.md) ──────────────
 # Identity + behavior-rule editors for the Settings GUI. These edit ONLY the
 # ~/.floodmind/ files the runtime actually injects. Empty content = delete
