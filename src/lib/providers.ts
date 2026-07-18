@@ -15,6 +15,10 @@ export interface CuratedModelDef {
   contextTier?: ContextTier;
   /** Optional per-model output-token override. If omitted, the tier default is used. */
   maxTokens?: number | null;
+  /** 该模型 /chat/completions 是否接受 image_url 多模态输入。
+   *  取值来自各服务商官方文档；未核实或不确定时留空（视为 false）——
+   *  禁用入口是安全的，而把图发给纯文本模型会触发 API 报错。 */
+  supportsVision?: boolean;
 }
 
 export interface CuratedProviderDef {
@@ -61,8 +65,8 @@ export const CURATED_PROVIDERS: CuratedProviderDef[] = [
     editableBaseURL: false,
     editableModels: false,
     models: [
-      { name: "kimi-2.6", contextTier: "200K" },
-      { name: "kimi-2.5", contextTier: "200K" },
+      { name: "kimi-2.6", contextTier: "200K", supportsVision: true },
+      { name: "kimi-2.5", contextTier: "200K", supportsVision: true },
     ],
     docsURL: "https://platform.kimi.ai/docs",
   },
@@ -73,10 +77,10 @@ export const CURATED_PROVIDERS: CuratedProviderDef[] = [
     editableBaseURL: false,
     editableModels: false,
     models: [
-      { name: "qwen3.7-plus", contextTier: "1M" },
-      { name: "qwen3.6-plus", contextTier: "200K" },
+      { name: "qwen3.7-plus", contextTier: "1M", supportsVision: true },
+      { name: "qwen3.6-plus", contextTier: "200K", supportsVision: true },
       { name: "qwen3.7-flash", contextTier: "1M" },
-      { name: "qwen3.6-flash", contextTier: "200K" },
+      { name: "qwen3.6-flash", contextTier: "200K", supportsVision: true },
     ],
     docsURL: "https://help.aliyun.com/zh/model-studio/qwen-api-via-dashscope",
   },
@@ -87,7 +91,7 @@ export const CURATED_PROVIDERS: CuratedProviderDef[] = [
     editableBaseURL: false,
     editableModels: false,
     models: [
-      { name: "minimax3", contextTier: "1M" },
+      { name: "minimax3", contextTier: "1M", supportsVision: true },
       { name: "minimax2.7", contextTier: "200K" },
     ],
     docsURL: "https://platform.minimaxi.com/docs/",
