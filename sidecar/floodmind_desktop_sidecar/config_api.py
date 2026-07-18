@@ -165,6 +165,34 @@ def _active_provider(raw: dict) -> str:
     return ""
 
 
+def _normalize_enabled(raw: dict) -> list[dict]:
+    """desktop.enabledModels → list of {provider, model} (drop malformed)."""
+    desktop = raw.get("desktop")
+    if not isinstance(desktop, dict):
+        return []
+    items = desktop.get("enabledModels")
+    if not isinstance(items, list):
+        return []
+    out = []
+    for e in items:
+        if isinstance(e, dict) and e.get("provider") and e.get("model"):
+            out.append({"provider": str(e["provider"]), "model": str(e["model"])})
+    return out
+
+
+def _all_catalog_models(raw: dict) -> list[dict]:
+    """Every {provider, model} present in the providers catalog (default-enabled fallback)."""
+    out = []
+    for pid, pdata in (raw.get("providers") or {}).items():
+        if not isinstance(pdata, dict):
+            continue
+        for m in _iter_models(pdata):
+            mid = m.get("id", "")
+            if mid:
+                out.append({"provider": pid, "model": mid})
+    return out
+
+
 # ── Read ─────────────────────────────────────────────────────
 
 def read_model_config() -> dict:
@@ -189,6 +217,12 @@ def read_model_config() -> dict:
 
     active_id = _active_model_key(raw)
     active_provider_id = _active_provider(raw)
+    enabled = _normalize_enabled(raw) or _all_catalog_models(raw)
+    enabled_keys = {(e["provider"], e["model"]) for e in enabled}
+    if enabled and (active_provider_id, active_id) not in enabled_keys:
+        fb = enabled[0]
+        active_id = fb["model"]
+        active_provider_id = fb["provider"]
     found = _find_model(raw, active_id, active_provider_id) if active_id else None
     if found:
         pid, pdata, m = found
@@ -220,6 +254,7 @@ def read_model_config() -> dict:
         "apiKeyPresent": api_key_present,
         "baseURL": active_base,
         "providers": providers,
+        "enabledModels": enabled,
         "envOverrides": [v for v in _ENV_VARS if os.getenv(v)],
     }
 
@@ -315,6 +350,12 @@ def write_model_config(body: dict[str, Any]) -> dict:
         desktop["activeModel"] = model_name
     if body.get("provider"):
         desktop["activeProvider"] = body["provider"]
+    if isinstance(body.get("enabledModels"), list):
+        desktop["enabledModels"] = [
+            {"provider": str(e.get("provider", "")), "model": str(e.get("model", ""))}
+            for e in body["enabledModels"]
+            if isinstance(e, dict) and e.get("provider") and e.get("model")
+        ]
     raw["desktop"] = desktop
 
     save_config(raw)  # full write of the patched raw dict; clears the SDK cache

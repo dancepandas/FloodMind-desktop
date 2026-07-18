@@ -323,3 +323,69 @@ def test_write_agents_md_empty_deletes(isolated_home):
     res = write_agents_md("")
     assert res["content"] == ""
     assert not (isolated_home / "AGENTS.md").exists()
+
+
+def test_read_returns_enabled_models_defaulting_to_all(isolated_home):
+    """enabledModels 缺失时默认等于当前所有模型（升级不丢可用模型）。"""
+    _write_settings(isolated_home, {
+        "providers": {
+            "deepseek": {"base_url": "u", "api_key": "sk",
+                         "models": [{"id": "deepseek-v4-pro", "default_max_tokens": 131072},
+                                    {"id": "deepseek-v4-flash", "default_max_tokens": 65536}]},
+            "qwen": {"base_url": "u2", "api_key": "sk2",
+                     "models": [{"id": "qwen3.7-plus", "default_max_tokens": 131072}]},
+        },
+        "desktop": {"activeModel": "deepseek-v4-pro"},
+    })
+    cfg = read_model_config()
+    enabled = {(e["provider"], e["model"]) for e in cfg["enabledModels"]}
+    assert enabled == {("deepseek", "deepseek-v4-pro"), ("deepseek", "deepseek-v4-flash"), ("qwen", "qwen3.7-plus")}
+
+
+def test_read_returns_explicit_enabled_models(isolated_home):
+    _write_settings(isolated_home, {
+        "providers": {
+            "deepseek": {"base_url": "u", "api_key": "sk",
+                         "models": [{"id": "deepseek-v4-pro", "default_max_tokens": 131072},
+                                    {"id": "deepseek-v4-flash", "default_max_tokens": 65536}]},
+        },
+        "desktop": {"activeModel": "deepseek-v4-pro",
+                    "enabledModels": [{"provider": "deepseek", "model": "deepseek-v4-flash"}]},
+    })
+    cfg = read_model_config()
+    assert cfg["enabledModels"] == [{"provider": "deepseek", "model": "deepseek-v4-flash"}]
+
+
+def test_write_persists_enabled_models(isolated_home):
+    write_model_config({
+        "provider": "deepseek", "model": "deepseek-v4-pro",
+        "enabledModels": [{"provider": "deepseek", "model": "deepseek-v4-pro"},
+                          {"provider": "qwen", "model": "qwen3.7-plus"}],
+        "providers": [
+            {"id": "deepseek", "baseURL": "u", "apiKey": "sk",
+             "models": [{"name": "deepseek-v4-pro", "maxTokens": 131072}]},
+            {"id": "qwen", "baseURL": "u2", "apiKey": "sk2",
+             "models": [{"name": "qwen3.7-plus", "maxTokens": 131072}]},
+        ],
+    })
+    on_disk = json.loads((isolated_home / "settings.json").read_text(encoding="utf-8"))
+    assert on_disk["desktop"]["enabledModels"] == [
+        {"provider": "deepseek", "model": "deepseek-v4-pro"},
+        {"provider": "qwen", "model": "qwen3.7-plus"},
+    ]
+
+
+def test_read_active_falls_back_to_first_enabled_when_not_in_set(isolated_home):
+    """activeModel 不在 enabledModels → 解析为首个 enabled。"""
+    _write_settings(isolated_home, {
+        "providers": {
+            "deepseek": {"base_url": "u", "api_key": "sk",
+                         "models": [{"id": "deepseek-v4-pro", "default_max_tokens": 131072},
+                                    {"id": "deepseek-v4-flash", "default_max_tokens": 65536}]},
+        },
+        "desktop": {"activeModel": "deepseek-v4-pro",  # NOT enabled below
+                    "enabledModels": [{"provider": "deepseek", "model": "deepseek-v4-flash"}]},
+    })
+    cfg = read_model_config()
+    assert cfg["model"]["model"] == "deepseek-v4-flash"
+    assert cfg["model"]["provider"] == "deepseek"
