@@ -91,12 +91,13 @@ def _neutralize_legacy_config() -> None:
 # ── Model ↔ GUI field translation ────────────────────────────
 
 def _model_to_gui(m: dict) -> dict:
-    """SDK model dict → GUI {name, maxTokens, contextSize, temperature}."""
+    """SDK model dict → GUI {name, maxTokens, contextSize, temperature, supportsVision}."""
     return {
         "name": m.get("id", ""),
         "maxTokens": m.get("default_max_tokens", m.get("maxTokens")),
         "contextSize": m.get("context_window", m.get("contextSize")),
         "temperature": m.get("default_temperature", m.get("temperature")),
+        "supportsVision": bool(m.get("supports_vision", m.get("supportsVision", False))),
     }
 
 
@@ -195,11 +196,13 @@ def read_model_config() -> dict:
         api_key_present = bool(pdata.get("api_key"))
         temperature = m.get("default_temperature", DEFAULT_TEMPERATURE)
         max_tokens = m.get("default_max_tokens", DEFAULT_MAX_TOKENS)
+        supports_vision = bool(m.get("supports_vision", m.get("supportsVision", False)))
     else:
         active_provider = active_base = ""
         api_key_present = False
         temperature = DEFAULT_TEMPERATURE
         max_tokens = DEFAULT_MAX_TOKENS
+        supports_vision = False
 
     desktop = raw.get("desktop")
     desktop_cfg = desktop if isinstance(desktop, dict) else {}
@@ -212,6 +215,7 @@ def read_model_config() -> dict:
             "maxTokens": max_tokens,
             "enableReasoning": bool(desktop_cfg.get("enableReasoning", False)),
             "enableSearch": bool(desktop_cfg.get("enableSearch", False)),
+            "supportsVision": supports_vision,
         },
         "apiKeyPresent": api_key_present,
         "baseURL": active_base,
@@ -246,6 +250,11 @@ def _gui_model_to_sdk(mi: dict, prev_model: dict | None) -> dict:
         float(mtemp) if mtemp is not None
         else float(prev_model.get("default_temperature") or DEFAULT_TEMPERATURE)
     )
+    # Preserve the GUI's vision flag (curated models seed it; custom default false).
+    if "supportsVision" in mi:
+        sdk["supports_vision"] = bool(mi.get("supportsVision"))
+    elif "supports_vision" not in sdk and "supportsVision" not in sdk:
+        sdk["supports_vision"] = False
     return sdk
 
 
