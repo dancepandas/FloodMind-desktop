@@ -174,24 +174,31 @@ function ModelTab() {
     clearSaved();
     const curated = getCuratedModels(id);
     if (curated.length === 0) return;
+    // Compute the missing curated models ONCE from the current form so both the
+    // form append and the enable-set use the SAME additions list. Restoring must
+    // NOT re-check curated models the user deliberately unchecked — only the
+    // missing ones get added (and default-enabled).
+    const present = new Set((form[id]?.models ?? []).map((m) => m.name));
+    const additions: ModelEntry[] = curated
+      .filter((c) => !present.has(c.name))
+      .map((c) => ({
+        name: c.name,
+        maxTokens: c.maxTokens ?? null,
+        supportsVision: c.supportsVision ?? false,
+      }));
+    if (additions.length === 0) return;
     setForm((f) => {
       const p = f[id];
       if (!p) return f;
-      const present = new Set(p.models.map((m) => m.name));
-      const additions: ModelEntry[] = curated
-        .filter((c) => !present.has(c.name))
-        .map((c) => ({
-          name: c.name,
-          maxTokens: c.maxTokens ?? null,
-          supportsVision: c.supportsVision ?? false,
-        }));
-      if (additions.length === 0) return f;
-      return { ...f, [id]: { ...p, models: [...p.models, ...additions] } };
+      const existing = new Set(p.models.map((m) => m.name));
+      const fresh = additions.filter((a) => !existing.has(a.name));
+      if (fresh.length === 0) return f;
+      return { ...f, [id]: { ...p, models: [...p.models, ...fresh] } };
     });
-    // Newly-restored curated models default to enabled.
+    // Only the newly-restored models default to enabled.
     setEnabled((s) => {
       const next = new Set(s);
-      for (const c of curated) next.add(`${id}/${c.name}`);
+      for (const c of additions) next.add(`${id}/${c.name}`);
       return next;
     });
   }
