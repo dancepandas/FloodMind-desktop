@@ -3009,3 +3009,7 @@ button:focus-visible,
   font-size: 12px;
 }
 .model-picker-empty { padding: 16px; color: var(--fg-secondary, #374151); font-size: 13px; text-align: center; }
+
+/* T6: anchors the absolutely-positioned (upward) ModelPicker menu to the
+ * composer model pill so it opens directly above the trigger button. */
+.model-pill-wrap { position: relative; }

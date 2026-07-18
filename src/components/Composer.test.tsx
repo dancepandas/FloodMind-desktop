@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react";
 import Composer, { collectPastedImages } from "./Composer";
+import { useConfigStore } from "../state/config-store";
 import type { FileEntry } from "../state/workspace-store";
 
 const sendMock = vi.fn();
@@ -33,13 +34,22 @@ vi.mock("../state/chat-store", () => ({
     }),
 }));
 
-vi.mock("../state/config-store", () => ({
-  useConfigStore: (selector: (s: any) => any) =>
-    selector({
-      permissionMode: "trust-once",
-      model: mockModel,
-    }),
-}));
+// config-store is bridged to the real zustand store so that tests can drive
+// state via `useConfigStore.setState(...)` (the import-path setState) and have
+// both the Composer's own selectors AND any child component (e.g. ModelPicker
+// rendered by T6) see the updates. The selector is routed through the real
+// store's getState so writes and reads stay in sync.
+vi.mock("../state/config-store", async () => {
+  const actual = await vi.importActual<typeof import("../state/config-store")>("../state/config-store");
+  const bridged = Object.assign(
+    (selector: (s: any) => any) => selector(actual.useConfigStore.getState()),
+    {
+      getState: actual.useConfigStore.getState,
+      setState: actual.useConfigStore.setState,
+    },
+  );
+  return { ...actual, useConfigStore: bridged };
+});
 
 vi.mock("../state/workspace-store", () => ({
   useWorkspaceStore: (selector: (s: any) => any) =>
@@ -133,6 +143,15 @@ describe("Composer", () => {
       enableSearch: false,
       supportsVision: true,
     };
+    // config-store is bridged to the real zustand store (so ModelPicker, mounted
+    // by T6, sees test-driven state). Seed the default model + minimal providers
+    // slice; individual tests override via useConfigStore.setState({...}).
+    useConfigStore.setState({
+      model: mockModel,
+      providers: [],
+      enabledModels: [],
+      switching: false,
+    } as any);
   });
 
   it("opens the file picker when @ is typed", async () => {
@@ -279,6 +298,7 @@ describe("Composer", () => {
 
   it("disables the + affordance when the active model lacks vision", () => {
     mockModel = { ...mockModel, supportsVision: false };
+    useConfigStore.setState({ model: mockModel } as any);
     render(<Composer />);
     const addBtn = screen.getByLabelText("引用工作区文件") as HTMLButtonElement;
     expect(addBtn).toBeDisabled();
@@ -421,6 +441,7 @@ describe("Composer", () => {
     // see and invited the "智能体说它看了" hallucination. Block it and surface
     // a toast instead. Non-image files still go to the text-reference channel.
     mockModel = { ...mockModel, supportsVision: false };
+    useConfigStore.setState({ model: mockModel } as any);
     mockFiles = [{ name: "chart.png", type: "file", path: "chart.png" }];
     render(<Composer />);
     const textarea = screen.getByLabelText("任务输入") as HTMLTextAreaElement;
@@ -451,5 +472,29 @@ describe("Composer", () => {
     expect(addAttachmentsMock).toHaveBeenCalledWith(["readme.md"]);
     expect(addImagesMock).not.toHaveBeenCalled();
     expect(pathToDataUrlMock).not.toHaveBeenCalled();
+  });
+
+  it("clicking the model pill opens the model picker", async () => {
+    // T6: the composer model pill becomes a <button> that mounts ModelPicker.
+    // Drive the real config-store (the bridge routes reads to its getState) so
+    // the picker sees a populated catalog, then assert the listbox appears.
+    useConfigStore.setState({
+      model: { provider: "qwen", model: "qwen3.7-plus" } as any,
+      enabledModels: [{ provider: "qwen", model: "qwen3.7-plus" }],
+      providers: [
+        {
+          id: "qwen",
+          name: "通义千问",
+          baseURL: "",
+          apiKeyPresent: true,
+          models: [{ name: "qwen3.7-plus", maxTokens: 131072, supportsVision: true }],
+        },
+      ],
+      switching: false,
+    } as any);
+    render(<Composer />);
+    const pill = screen.getByRole("button", { name: /qwen3\.7-plus/ });
+    fireEvent.click(pill);
+    expect(await screen.findByRole("listbox", { name: "选择模型" })).toBeInTheDocument();
   });
 });

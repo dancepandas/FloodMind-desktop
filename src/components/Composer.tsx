@@ -9,6 +9,7 @@ import { fileToDataUrl, isImageName, mimeForName, pathToDataUrl } from "../lib/i
 import FilePickerModal from "./FilePickerModal";
 import ComposerFilePicker from "./ComposerFilePicker";
 import SlashPicker, { type SlashItem } from "./SlashPicker";
+import ModelPicker from "./ModelPicker";
 
 const PERMISSION_MODE_LABELS: Record<PermissionMode, string> = {
   "always-trust": "完全信任",
@@ -54,6 +55,7 @@ export default function Composer() {
   const [text, setText] = useState("");
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerQuery, setPickerQuery] = useState("");
+  const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [slashOpen, setSlashOpen] = useState(false);
   const [slashQuery, setSlashQuery] = useState("");
   const [filePickerOpen, setFilePickerOpen] = useState(false);
@@ -69,6 +71,7 @@ export default function Composer() {
   const permissionMode = useConfigStore((s) => s.permissionMode);
   const modelName = useConfigStore((s) => s.model?.model ?? null);
   const supportsVision = useConfigStore((s) => !!s.model?.supportsVision);
+  const switchActive = useConfigStore((s) => s.switchActive);
   const setView = useUiStore((s) => s.setView);
   const showToast = useUiStore((s) => s.showToast);
   const attachments = useAttachmentStore((s) => s.pending);
@@ -413,9 +416,40 @@ export default function Composer() {
             >
               ＋
             </button>
-            <span className="ctx-pill model" title={modelName ?? "未配置模型"}>
-              {modelName ?? "未配置模型"}
-            </span>
+            <div className="model-pill-wrap">
+              <button
+                className="ctx-pill model"
+                type="button"
+                onClick={() => setModelPickerOpen((v) => !v)}
+                // ModelPicker closes on any mousedown OUTSIDE its container (a
+                // document-level listener). Because mousedown fires before click,
+                // the same pointer that opens the picker would otherwise be seen
+                // as an "outside" mousedown and re-close it (open-then-close).
+                // Stopping propagation on the trigger's mousedown keeps it from
+                // reaching that listener. (T5 review note, option a.)
+                onMouseDown={(e) => e.stopPropagation()}
+                disabled={streaming}
+                title={modelName ?? "未配置模型"}
+                aria-haspopup="listbox"
+                aria-expanded={modelPickerOpen}
+              >
+                {modelName ?? "未配置模型"} ▾
+              </button>
+              {modelPickerOpen && (
+                <ModelPicker
+                  onPick={async (p, m) => {
+                    // Per-conversation binding: chat-store holds the active conv
+                    // id as `conversationId` (string | null). switchActive uses
+                    // it to PUT /api/conversations/:id/model; null = global only.
+                    const convId = useChatStore.getState().conversationId ?? undefined;
+                    const ok = await switchActive(p, m, convId);
+                    setModelPickerOpen(false);
+                    if (!ok) showToast("模型切换失败，已恢复");
+                  }}
+                  onClose={() => setModelPickerOpen(false)}
+                />
+              )}
+            </div>
           </div>
           <div className="composer-actions">
             <button
