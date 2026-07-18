@@ -133,3 +133,11 @@ export function getTierDefaultTokens(model: CuratedModelDef): number | null {
 export function isCustomProvider(def: CuratedProviderDef): boolean {
   return def.editableModels;
 }
+
+/** Curated (official default) models for a provider — the "恢复官方推荐" source.
+ *  Returns the full official list regardless of what the user has added /
+ *  removed in settings; the caller diffs against the current form to find
+ *  which curated models are missing and should be re-added. */
+export function getCuratedModels(providerId: string): CuratedModelDef[] {
+  return getProviderDef(providerId)?.models ?? [];
+}

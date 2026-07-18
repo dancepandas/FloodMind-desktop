@@ -5,7 +5,7 @@ import { useChatStore } from "../state/chat-store";
 import { useFeedbackStore, buildFeedbackMailto, type FeedbackForm } from "../state/feedback-store";
 import { openUrl } from "../lib/open-file";
 import SettingsNav, { type Tab } from "./SettingsNav";
-import { CURATED_PROVIDERS, getProviderDef, getTierDefaultTokens } from "../lib/providers";
+import { CURATED_PROVIDERS, getCuratedModels, getProviderDef } from "../lib/providers";
 import ProviderIcon from "./ProviderIcon";
 
 export default function SettingsView() {
@@ -27,10 +27,11 @@ export default function SettingsView() {
   );
 }
 
-/* ── 模型 tab：固定服务商列表，每家带官方模型 ─────────────────── */
+/* ── 模型 tab：编辑启用集 + 全员增删 + 每行元数据 + 恢复推荐 ──────── */
 function ModelTab() {
   const model = useConfigStore((s) => s.model);
   const providers = useConfigStore((s) => s.providers);
+  const enabledModels = useConfigStore((s) => s.enabledModels);
   const envOverrides = useConfigStore((s) => s.envOverrides);
   const loading = useConfigStore((s) => s.loading);
   const saving = useConfigStore((s) => s.saving);
@@ -41,9 +42,16 @@ function ModelTab() {
   const save = useConfigStore((s) => s.save);
   const clearSaved = useConfigStore((s) => s.clearSaved);
 
+  // form: editable catalog (id/name/baseURL/apiKey/models). Built directly from
+  // the authoritative store.providers (T4's mergeWithCurated seeds curated
+  // defaults and makes the saved list authoritative — so the form must NOT
+  // re-inject CURATED_PROVIDERS' def.models here).
   const [form, setForm] = useState<Record<string, ProviderFormEntry>>({});
-  const [activeProvider, setActiveProvider] = useState("");
-  const [activeModel, setActiveModel] = useState("");
+  // Display order: curated first (canonical order), then any non-curated.
+  const [order, setOrder] = useState<string[]>([]);
+  // Enabled set: the set of {provider}/{model} keys that feed the Composer
+  // dropdown. The active model is NOT chosen here — it's set via the Composer.
+  const [enabled, setEnabled] = useState<Set<string>>(new Set());
   const [newModelName, setNewModelName] = useState<Record<string, string>>({});
 
   useEffect(() => {
@@ -53,46 +61,50 @@ function ModelTab() {
   useEffect(() => {
     if (!model) return;
     clearSaved();
-    const map = new Map((providers || []).map((p) => [p.id, p]));
+    const savedMap = new Map((providers || []).map((p) => [p.id, p]));
     const next: Record<string, ProviderFormEntry> = {};
+    const nextOrder: string[] = [];
+    // Curated providers first, in canonical order.
     for (const def of CURATED_PROVIDERS) {
-      const saved = map.get(def.id);
-      const savedModelMap = new Map((saved?.models || []).map((m) => [m.name, m]));
+      const saved = savedMap.get(def.id);
       next[def.id] = {
         id: def.id,
         name: def.name,
         baseURL: saved?.baseURL ?? def.baseURL,
         apiKey: "", // password never prefilled; empty = keep on disk
-        models: def.models.map((m) => ({
+        models: (saved?.models || []).map((m) => ({
           name: m.name,
-          maxTokens: savedModelMap.get(m.name)?.maxTokens ?? getTierDefaultTokens(m) ?? null,
-          // Carry the curated vision flag (providers.ts) into the form so save()
-          // writes it back to settings.json. Without this, save wrote
-          // supports_vision=false for every model and wiped the flag.
-          supportsVision: m.supportsVision ?? savedModelMap.get(m.name)?.supportsVision ?? false,
+          maxTokens: m.maxTokens ?? null,
+          contextSize: m.contextSize ?? null,
+          temperature: m.temperature ?? null,
+          supportsVision: m.supportsVision ?? false,
         })),
       };
-      // Append custom models the user added to OpenAI / Ollama.
-      if (def.editableModels && saved) {
-        const fixed = new Set(def.models.map((m) => m.name));
-        for (const m of saved.models || []) {
-          if (!fixed.has(m.name)) {
-            next[def.id].models.push({
-              name: m.name,
-              maxTokens: m.maxTokens ?? null,
-              contextSize: m.contextSize ?? null,
-              temperature: m.temperature ?? null,
-              supportsVision: m.supportsVision ?? false,
-            });
-          }
-        }
-      }
+      nextOrder.push(def.id);
+      savedMap.delete(def.id);
+    }
+    // Any remaining (non-curated / user-added) providers.
+    for (const saved of savedMap.values()) {
+      next[saved.id] = {
+        id: saved.id,
+        name: saved.name,
+        baseURL: saved.baseURL,
+        apiKey: "",
+        models: (saved.models || []).map((m) => ({
+          name: m.name,
+          maxTokens: m.maxTokens ?? null,
+          contextSize: m.contextSize ?? null,
+          temperature: m.temperature ?? null,
+          supportsVision: m.supportsVision ?? false,
+        })),
+      };
+      nextOrder.push(saved.id);
     }
     setForm(next);
-    setActiveProvider(model.provider || "");
-    setActiveModel(model.model || "");
+    setOrder(nextOrder);
+    setEnabled(new Set((enabledModels || []).map((e) => `${e.provider}/${e.model}`)));
     setNewModelName({});
-  }, [model, providers, clearSaved]);
+  }, [model, providers, enabledModels, clearSaved]);
 
   if (loading || !model) {
     return <div className="cat-empty">{error || "加载中…"}</div>;
@@ -102,27 +114,46 @@ function ModelTab() {
     clearSaved();
     setForm((f) => ({ ...f, [id]: { ...f[id], ...patch } }));
   }
-  function addCustomModel(id: string) {
+  function toggleEnabled(id: string, name: string) {
+    clearSaved();
+    const key = `${id}/${name}`;
+    setEnabled((s) => {
+      const next = new Set(s);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
+  function addModel(id: string) {
     const name = (newModelName[id] || "").trim();
     if (!name) return;
     clearSaved();
     setForm((f) => {
       const p = f[id];
       if (!p || p.models.some((m) => m.name === name)) return f;
-      return { ...f, [id]: { ...p, models: [...p.models, { name, maxTokens: null, contextSize: null, temperature: null }] } };
+      return {
+        ...f,
+        [id]: {
+          ...p,
+          models: [...p.models, { name, maxTokens: null, contextSize: null, temperature: null, supportsVision: false }],
+        },
+      };
     });
     setNewModelName((s) => ({ ...s, [id]: "" }));
   }
-  function removeCustomModel(id: string, name: string) {
+  function removeModel(id: string, name: string) {
     clearSaved();
     setForm((f) => {
       const p = f[id];
       if (!p) return f;
       return { ...f, [id]: { ...p, models: p.models.filter((m) => m.name !== name) } };
     });
-    if (activeProvider === id && activeModel === name) {
-      setActiveModel("");
-    }
+    setEnabled((s) => {
+      if (!s.has(`${id}/${name}`)) return s;
+      const next = new Set(s);
+      next.delete(`${id}/${name}`);
+      return next;
+    });
   }
   function setModelField<K extends keyof ModelEntry>(id: string, name: string, field: K, value: ModelEntry[K]) {
     clearSaved();
@@ -138,16 +169,47 @@ function ModelTab() {
       };
     });
   }
-  function selectModel(id: string, name: string) {
+  /** 恢复官方推荐：把缺失的 curated 模型补回 form（默认勾选启用）。 */
+  function restoreDefaults(id: string) {
     clearSaved();
-    setActiveProvider(id);
-    setActiveModel(name);
+    const curated = getCuratedModels(id);
+    if (curated.length === 0) return;
+    setForm((f) => {
+      const p = f[id];
+      if (!p) return f;
+      const present = new Set(p.models.map((m) => m.name));
+      const additions: ModelEntry[] = curated
+        .filter((c) => !present.has(c.name))
+        .map((c) => ({
+          name: c.name,
+          maxTokens: c.maxTokens ?? null,
+          supportsVision: c.supportsVision ?? false,
+        }));
+      if (additions.length === 0) return f;
+      return { ...f, [id]: { ...p, models: [...p.models, ...additions] } };
+    });
+    // Newly-restored curated models default to enabled.
+    setEnabled((s) => {
+      const next = new Set(s);
+      for (const c of curated) next.add(`${id}/${c.name}`);
+      return next;
+    });
   }
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
-    const providerList = Object.values(form).filter((p) => p.id);
-    await save({ provider: activeProvider, model: activeModel, providers: providerList });
+    const enabledList = Array.from(enabled).map((k) => {
+      const [provider, modelName] = k.split("/");
+      return { provider, model: modelName };
+    });
+    const resolved = useConfigStore.getState().resolveActiveModel(null);
+    const providerList = order.map((id) => form[id]).filter((p): p is ProviderFormEntry => !!p && !!p.id);
+    await save({
+      provider: resolved?.provider ?? "",
+      model: resolved?.model ?? "",
+      enabledModels: enabledList,
+      providers: providerList,
+    });
   }
 
   return (
@@ -167,41 +229,48 @@ function ModelTab() {
         <div className="model-providers-hint">
           <span className="hint-icon">💡</span>
           <span>
-            官方服务商只需填入 API Key 并点选模型；OpenAI 兼容 / Ollama 本地需要手动配置 Base URL、API Key、模型名以及上下文/温度/输出参数。
+            勾选模型加入「启用集」（决定聊天框可切换的模型）；每位服务商都可添加 / 删除模型，并编辑最大输出与图片支持。当前默认模型在聊天框中切换。
           </span>
         </div>
 
         <div className="provider-grid">
-          {CURATED_PROVIDERS.map((def) => {
-            const p = form[def.id];
+          {order.map((id) => {
+            const def = getProviderDef(id);
+            const p = form[id];
             if (!p) return null;
-            const keyPresent = providers.find((x) => x.id === def.id)?.apiKeyPresent ?? false;
+            // Non-curated (user-added) providers default to fully editable.
+            const editableBaseURL = def?.editableBaseURL ?? true;
+            const displayName = def?.name ?? p.name ?? id;
+            const docsURL = def?.docsURL;
+            const keyPresent = providers.find((x) => x.id === id)?.apiKeyPresent ?? false;
             return (
-              <div className="provider-card" key={def.id}>
+              <div className="provider-card" key={id}>
                 <div className="provider-card-head">
                   <div className="provider-title">
                     <span className="provider-icon">
-                      <ProviderIcon provider={def.id} />
+                      <ProviderIcon provider={id} />
                     </span>
-                    <span className="provider-name-static">{def.name}</span>
+                    <span className="provider-name-static">{displayName}</span>
                   </div>
-                  <button
-                    className="provider-docs"
-                    onClick={(e) => { e.stopPropagation(); openUrl(def.docsURL); }}
-                    title="打开官方文档"
-                    type="button"
-                  >
-                    文档
-                  </button>
+                  {docsURL && (
+                    <button
+                      className="provider-docs"
+                      onClick={(e) => { e.stopPropagation(); openUrl(docsURL); }}
+                      title="打开官方文档"
+                      type="button"
+                    >
+                      文档
+                    </button>
+                  )}
                 </div>
 
-                <div className={`provider-fields${def.editableModels ? " provider-fields-custom" : ""}`}>
-                  {def.editableModels && (
+                <div className="provider-fields">
+                  {editableBaseURL && (
                     <label className="field">
                       <span className="field-label">Base URL</span>
                       <input
                         value={p.baseURL}
-                        onChange={(e) => patchProvider(def.id, { baseURL: e.target.value })}
+                        onChange={(e) => patchProvider(id, { baseURL: e.target.value })}
                         placeholder="https://api.example.com/v1"
                       />
                     </label>
@@ -213,7 +282,7 @@ function ModelTab() {
                     <input
                       type="password"
                       value={p.apiKey}
-                      onChange={(e) => patchProvider(def.id, { apiKey: e.target.value })}
+                      onChange={(e) => patchProvider(id, { apiKey: e.target.value })}
                       placeholder={keyPresent ? "••••••（留空保持原值）" : "输入 API Key"}
                       autoComplete="off"
                     />
@@ -223,7 +292,7 @@ function ModelTab() {
                 <div className="model-section">
                   <div className="model-section-head">
                     <span className="model-section-title">模型</span>
-                    <span className="model-section-hint">点选使用</span>
+                    <span className="model-section-hint">勾选启用</span>
                   </div>
 
                   {p.models.length === 0 ? (
@@ -231,117 +300,94 @@ function ModelTab() {
                   ) : (
                     <div className="model-rows">
                       {p.models.map((m) => {
-                        const isCurrent = activeProvider === def.id && activeModel === m.name;
-                        const tier = def.models.find((dm) => dm.name === m.name)?.contextTier;
-                        const isCustom = def.editableModels;
+                        const key = `${id}/${m.name}`;
+                        const checked = enabled.has(key);
+                        const isDefault = model?.provider === id && model?.model === m.name;
                         return (
-                          <label
-                            key={m.name}
-                            className={`model-row${isCurrent ? " current" : ""}${isCustom ? " custom" : ""}`}
-                            onClick={() => selectModel(def.id, m.name)}
-                          >
+                          <label key={m.name} className={`model-row${checked ? " enabled" : ""}`}>
                             <input
-                              type="radio"
-                              name="active-model"
-                              checked={isCurrent}
-                              onChange={() => selectModel(def.id, m.name)}
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() => toggleEnabled(id, m.name)}
                             />
                             <span className="model-name">{m.name}</span>
-                            {tier && <span className="model-tier">{tier} 上下文</span>}
-                            {isCurrent && <span className="model-current">当前使用</span>}
-                            <span className="model-row-spacer" />
-                            {isCustom ? (
-                              <>
-                                <input
-                                  type="number"
-                                  className="model-contextsize"
-                                  value={m.contextSize ?? ""}
-                                  onChange={(e) => {
-                                    const v = e.target.value;
-                                    setModelField(def.id, m.name, "contextSize", v === "" ? null : Number(v));
-                                  }}
-                                  onClick={(e) => e.stopPropagation()}
-                                  placeholder="上下文"
-                                  title="上下文大小（tokens）"
-                                />
-                                <input
-                                  type="number"
-                                  step="0.1"
-                                  min="0"
-                                  max="2"
-                                  className="model-temperature"
-                                  value={m.temperature ?? ""}
-                                  onChange={(e) => {
-                                    const v = e.target.value;
-                                    setModelField(def.id, m.name, "temperature", v === "" ? null : Number(v));
-                                  }}
-                                  onClick={(e) => e.stopPropagation()}
-                                  placeholder="温度"
-                                  title="温度"
-                                />
-                                <select
-                                  className="model-maxtokens"
-                                  value={m.maxTokens ?? ""}
-                                  onChange={(e) => {
-                                    const v = e.target.value;
-                                    setModelField(def.id, m.name, "maxTokens", v === "" ? null : Number(v));
-                                  }}
-                                  onClick={(e) => e.stopPropagation()}
-                                  title="最大输出 Token"
-                                >
-                                  <option value="">默认</option>
-                                  <option value="4096">4k</option>
-                                  <option value="8192">8k</option>
-                                  <option value="16384">16k</option>
-                                  <option value="32768">32k</option>
-                                  <option value="65536">64k</option>
-                                  <option value="131072">128k</option>
-                                </select>
-                                <button
-                                  type="button"
-                                  className="model-remove"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    removeCustomModel(def.id, m.name);
-                                  }}
-                                  aria-label={`移除 ${m.name}`}
-                                  title="移除模型"
-                                >
-                                  ✕
-                                </button>
-                              </>
-                            ) : null}
+                            {isDefault && <span className="model-default-tag">默认</span>}
+                            {m.supportsVision && <span className="model-vision-tag" title="支持图片">👁</span>}
+                            <select
+                              className="model-maxtokens"
+                              value={m.maxTokens ?? ""}
+                              onClick={(e) => e.stopPropagation()}
+                              onChange={(e) => setModelField(id, m.name, "maxTokens", e.target.value === "" ? null : Number(e.target.value))}
+                              title="最大输出 Token"
+                            >
+                              <option value="">默认</option>
+                              <option value="4096">4k</option>
+                              <option value="8192">8k</option>
+                              <option value="16384">16k</option>
+                              <option value="32768">32k</option>
+                              <option value="65536">64k</option>
+                              <option value="131072">128k</option>
+                            </select>
+                            <label
+                              className="model-vision-toggle"
+                              onClick={(e) => e.stopPropagation()}
+                              title="支持图片输入"
+                            >
+                              <input
+                                type="checkbox"
+                                checked={!!m.supportsVision}
+                                onChange={(e) => setModelField(id, m.name, "supportsVision", e.target.checked)}
+                              />
+                              👁
+                            </label>
+                            <button
+                              type="button"
+                              className="model-remove"
+                              aria-label={`移除 ${m.name}`}
+                              title="移除模型"
+                              onClick={(e) => { e.stopPropagation(); removeModel(id, m.name); }}
+                            >
+                              ✕
+                            </button>
                           </label>
                         );
                       })}
                     </div>
                   )}
 
-                  {def.editableModels && (
-                    <div className="model-add">
-                      <input
-                        value={newModelName[def.id] || ""}
-                        onChange={(e) => setNewModelName((s) => ({ ...s, [def.id]: e.target.value }))}
-                        placeholder="添加模型，如 llama3.1:8b"
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") {
-                            e.preventDefault();
-                            addCustomModel(def.id);
-                          }
-                        }}
-                      />
-                      <button type="button" className="btn-secondary" onClick={() => addCustomModel(def.id)}>
-                        ＋ 添加模型
+                  <div className="model-add">
+                    <input
+                      value={newModelName[id] || ""}
+                      onChange={(e) => setNewModelName((s) => ({ ...s, [id]: e.target.value }))}
+                      placeholder="添加模型，如 llama3.1:8b"
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          addModel(id);
+                        }
+                      }}
+                    />
+                    <button type="button" className="btn-secondary" onClick={() => addModel(id)}>
+                      ＋ 添加模型
+                    </button>
+                    {def && getCuratedModels(id).length > 0 && (
+                      <button
+                        type="button"
+                        className="restore-defaults-btn"
+                        onClick={() => restoreDefaults(id)}
+                        title="补回缺失的官方推荐模型"
+                      >
+                        ↻ 恢复官方推荐
                       </button>
-                    </div>
-                  )}
+                    )}
+                  </div>
                 </div>
               </div>
             );
           })}
         </div>
 
-        <button className="save-btn" type="submit" disabled={saving || !activeProvider || !activeModel}>
+        <button className="save-btn" type="submit" disabled={saving}>
           {saving ? "保存中…" : "保存并重载"}
         </button>
       </form>
