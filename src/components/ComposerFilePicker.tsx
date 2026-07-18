@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useWorkspaceStore, type FileEntry } from "../state/workspace-store";
+import { isImageName } from "../lib/image-thumb";
 
 export interface ComposerFilePickerProps {
   query: string;
@@ -88,11 +89,12 @@ export default function ComposerFilePicker({
       {files.map((f) => (
         <button
           key={f}
-          className="composer-picker-row"
+          className={`composer-picker-row${isImageName(f) ? " is-image" : ""}`}
           onClick={() => onSelect(f)}
           type="button"
           role="option"
         >
+          {isImageName(f) ? "🖼 " : ""}
           {f}
         </button>
       ))}

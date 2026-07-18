@@ -95,6 +95,20 @@ vi.mock("@tauri-apps/api/window", () => ({
   }),
 }));
 
+// pathToDataUrl hits the sidecar over the network; stub it so the @ image
+// bifurcation test (Task 10) doesn't need a running backend. fileToDataUrl is
+// exercised directly via collectPastedImages and stays unmocked; isImageName
+// and mimeForName are pure helpers used by the production code path. Use
+// vi.hoisted so the mock handle exists by the time vi.mock's hoisted factory
+// runs.
+const { pathToDataUrlMock } = vi.hoisted(() => ({
+  pathToDataUrlMock: vi.fn(async (path: string) => `data:image/png;base64,MOCK-${path}`),
+}));
+vi.mock("../lib/image-thumb", async () => {
+  const actual = await vi.importActual<typeof import("../lib/image-thumb")>("../lib/image-thumb");
+  return { ...actual, pathToDataUrl: pathToDataUrlMock };
+});
+
 describe("Composer", () => {
   afterEach(() => {
     cleanup();
@@ -372,5 +386,64 @@ describe("Composer", () => {
     const args = sendMock.mock.calls[0];
     // images snapshot must be { name, thumb } pairs
     expect(args[2]).toEqual([{ name: "shot.png", thumb: "data:image/png;base64,AAAA" }]);
+  });
+
+  it("insertFile routes image files to the visual channel (vision on)", async () => {
+    // Task 10: a .png selected via the @ picker must land in images, not pending.
+    mockFiles = [{ name: "chart.png", type: "file", path: "chart.png" }];
+    render(<Composer />);
+    const textarea = screen.getByLabelText("任务输入") as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: "see @c" } });
+    // The row carries a 🖼 prefix + is-image class now (Task 10 visual marker),
+    // so match on role + name rather than the exact filename text.
+    const row = await screen.findByRole("option", { name: /chart\.png/ });
+    expect(row).toHaveClass("is-image");
+    fireEvent.click(row);
+    // pathToDataUrl is awaited inside insertFile; let it resolve.
+    await waitFor(() => expect(pathToDataUrlMock).toHaveBeenCalledWith("chart.png"));
+    expect(addImagesMock).toHaveBeenCalledTimes(1);
+    const [items] = addImagesMock.mock.calls[0];
+    expect(items).toHaveLength(1);
+    expect(items[0].name).toBe("chart.png");
+    expect(items[0].mime).toBe("image/png");
+    expect(items[0].source).toBe("workspace");
+    expect(items[0].rel).toBe("chart.png");
+    expect(items[0].thumb.startsWith("data:image/png;base64,")).toBe(true);
+    // And the file must NOT have been pushed to the text-reference channel.
+    expect(addAttachmentsMock).not.toHaveBeenCalled();
+  });
+
+  it("insertFile routes image files to pending when model lacks vision", async () => {
+    // Task 10 fallback: with supportsVision=false the image can't be seen, so
+    // the @ selection degrades to a text reference the agent reads by name.
+    mockModel = { ...mockModel, supportsVision: false };
+    mockFiles = [{ name: "chart.png", type: "file", path: "chart.png" }];
+    render(<Composer />);
+    const textarea = screen.getByLabelText("任务输入") as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: "see @c" } });
+    // Even with vision off, the row marker is the same (ComposerFilePicker
+    // does not gate on supportsVision — only the routing does).
+    const row = await screen.findByRole("option", { name: /chart\.png/ });
+    expect(row).toHaveClass("is-image");
+    fireEvent.click(row);
+    // No vision → no thumbnail fetch, no visual channel push.
+    expect(pathToDataUrlMock).not.toHaveBeenCalled();
+    expect(addImagesMock).not.toHaveBeenCalled();
+    expect(addAttachmentsMock).toHaveBeenCalledWith(["chart.png"]);
+  });
+
+  it("insertFile keeps non-image files on the text-reference channel", async () => {
+    // Task 10 invariant: only image files bifurcate. A .md file still goes to
+    // pending exactly as before, regardless of vision support.
+    mockFiles = [{ name: "readme.md", type: "file", path: "readme.md" }];
+    render(<Composer />);
+    const textarea = screen.getByLabelText("任务输入") as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: "see @r" } });
+    const row = await screen.findByRole("option", { name: "readme.md" });
+    expect(row).not.toHaveClass("is-image");
+    fireEvent.click(row);
+    expect(addAttachmentsMock).toHaveBeenCalledWith(["readme.md"]);
+    expect(addImagesMock).not.toHaveBeenCalled();
+    expect(pathToDataUrlMock).not.toHaveBeenCalled();
   });
 });

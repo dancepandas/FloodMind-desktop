@@ -129,16 +129,40 @@ export default function Composer() {
     }
   }
 
-  function insertFile(name: string) {
+  async function insertFile(name: string) {
     const at = findTriggerIndex(text, "@");
     if (at < 0) return;
     const before = text.slice(0, at);
     const after = text.slice(at + 1 + pickerQuery.length);
     setText(before + after);
     setPickerOpen(false);
-    addAttachments([name]);
     resize();
     textareaRef.current?.focus();
+
+    // Task 10: bifurcate @ selections by file type and model vision support.
+    // Image-extension files on a vision model are routed into the visual channel
+    // (thumb fetched via the sidecar /api/attachment/thumb). Non-vision models
+    // can't see images, so image files fall back to a text reference the agent
+    // reads by name; non-image files always go through the text-reference path.
+    if (isImageName(name) && supportsVision) {
+      try {
+        const thumb = await pathToDataUrl(name);
+        addImages([
+          {
+            id: `ws-${Date.now()}-${name}`,
+            name: name.split(/[\\/]/).pop() || name,
+            mime: mimeForName(name),
+            thumb,
+            source: "workspace",
+            rel: name,
+          },
+        ]);
+      } catch {
+        /* skip unreadable — no chip, no pending entry */
+      }
+    } else {
+      addAttachments([name]);
+    }
   }
 
   function insertSlash(item: SlashItem) {
@@ -460,8 +484,34 @@ export default function Composer() {
       {filePickerOpen && (
         <FilePickerModal
           onClose={() => setFilePickerOpen(false)}
-          onConfirm={(paths) => {
-            addAttachments(paths);
+          onConfirm={async (paths) => {
+            // Task 10: the ＋ modal is only reachable when supportsVision is
+            // true (the affordance is disabled otherwise), so every image in
+            // the selection can be routed to the visual channel. Non-image
+            // files keep the text-reference semantics they always had. On
+            // thumb fetch failure we degrade the path to a text reference so
+            // the user's selection is never silently dropped.
+            for (const p of paths) {
+              if (isImageName(p) && supportsVision) {
+                try {
+                  const thumb = await pathToDataUrl(p);
+                  addImages([
+                    {
+                      id: `ws-${Date.now()}-${p}`,
+                      name: p.split(/[\\/]/).pop() || p,
+                      mime: mimeForName(p),
+                      thumb,
+                      source: "workspace",
+                      rel: p,
+                    },
+                  ]);
+                } catch {
+                  addAttachments([p]);
+                }
+              } else {
+                addAttachments([p]);
+              }
+            }
             setFilePickerOpen(false);
           }}
         />
