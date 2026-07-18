@@ -1,9 +1,11 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useChatStore } from "../state/chat-store";
 import { useWorkspaceStore } from "../state/workspace-store";
 import { useConfigStore, type PermissionMode } from "../state/config-store";
 import { useUiStore } from "../state/ui-store";
-import { useAttachmentStore } from "../state/attachment-store";
+import { useAttachmentStore, type ImageItem } from "../state/attachment-store";
+import { fileToDataUrl, isImageName, mimeForName, pathToDataUrl } from "../lib/image-thumb";
 import FilePickerModal from "./FilePickerModal";
 import ComposerFilePicker from "./ComposerFilePicker";
 import SlashPicker, { type SlashItem } from "./SlashPicker";
@@ -14,6 +16,40 @@ const PERMISSION_MODE_LABELS: Record<PermissionMode, string> = {
   "always-ask": "每次都问",
 };
 
+/** 10MB client-side cap for pasted images. The sidecar remains the authority. */
+const PASTE_MAX_BYTES = 10 * 1024 * 1024;
+
+/**
+ * Pure helper: given a `clipboardData.items`-like list, return the ImageItems
+ * to insert. Extracted from onPaste so it is unit-testable in jsdom (jsdom's
+ * DataTransfer/clipboard support is partial). Items that are not image files,
+ * lack a backing File, or exceed the 10MB cap are dropped.
+ */
+export async function collectPastedImages(
+  items: { kind: string; type: string; getAsFile: () => File | null }[],
+): Promise<ImageItem[]> {
+  const imageItems = items.filter(
+    (it) => it.kind === "file" && it.type.startsWith("image/"),
+  );
+  const next: ImageItem[] = [];
+  for (const it of imageItems) {
+    const file = it.getAsFile();
+    if (!file) continue;
+    if (file.size > PASTE_MAX_BYTES) continue;
+    const dataUrl = await fileToDataUrl(file);
+    const name = file.name || `pasted-${Date.now()}.png`;
+    next.push({
+      id: `paste-${Date.now()}-${name}`,
+      name,
+      mime: file.type || mimeForName(name),
+      thumb: dataUrl,
+      source: "clipboard",
+      data: dataUrl.slice(dataUrl.indexOf(",") + 1),
+    });
+  }
+  return next;
+}
+
 export default function Composer() {
   const [text, setText] = useState("");
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -22,6 +58,7 @@ export default function Composer() {
   const [slashQuery, setSlashQuery] = useState("");
   const [filePickerOpen, setFilePickerOpen] = useState(false);
   const [slashItem, setSlashItem] = useState<SlashItem | null>(null);
+  const [dragOver, setDragOver] = useState(false);
   const streaming = useChatStore((s) => s.streaming);
   const send = useChatStore((s) => s.send);
   const pause = useChatStore((s) => s.pause);
@@ -31,11 +68,15 @@ export default function Composer() {
   const pickAndOpen = useWorkspaceStore((s) => s.pickAndOpen);
   const permissionMode = useConfigStore((s) => s.permissionMode);
   const modelName = useConfigStore((s) => s.model?.model ?? null);
+  const supportsVision = useConfigStore((s) => !!s.model?.supportsVision);
   const setView = useUiStore((s) => s.setView);
   const attachments = useAttachmentStore((s) => s.pending);
   const addAttachments = useAttachmentStore((s) => s.add);
   const removeAttachment = useAttachmentStore((s) => s.remove);
   const clearAttachments = useAttachmentStore((s) => s.clear);
+  const images = useAttachmentStore((s) => s.images);
+  const addImages = useAttachmentStore((s) => s.addImages);
+  const removeImage = useAttachmentStore((s) => s.removeImage);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   function resize() {
@@ -139,7 +180,9 @@ export default function Composer() {
   function doSend() {
     const msg = buildMessage();
     if (!msg) return;
-    send(msg);
+    const wire = useAttachmentStore.getState().toWire();
+    const imageSnap = images.map((i) => ({ name: i.name, thumb: i.thumb }));
+    send(msg, wire.length ? wire : undefined, imageSnap.length ? imageSnap : undefined);
     setText("");
     setSlashItem(null);
     clearAttachments();
@@ -158,9 +201,65 @@ export default function Composer() {
     }
   }
 
+  async function onPaste(e: React.ClipboardEvent<HTMLTextAreaElement>) {
+    if (!supportsVision) return;
+    const items = Array.from(e.clipboardData?.items ?? []);
+    const hasImage = items.some((it) => it.kind === "file" && it.type.startsWith("image/"));
+    if (!hasImage) return;
+    e.preventDefault();
+    const next = await collectPastedImages(items as unknown as Parameters<typeof collectPastedImages>[0]);
+    if (next.length) addImages(next);
+  }
+
+  // Window-level drag-drop (Tauri 2 native event). Only the webview receives
+  // DOM drag events from outside; Tauri's onDragDropEvent covers OS-level drops
+  // uniformly. Drag-over highlight is only shown when the payload contains an
+  // image, and drops are ignored entirely when the active model lacks vision.
+  useEffect(() => {
+    const win = getCurrentWindow();
+    let unlisten: (() => void) | undefined;
+    let active = true;
+    (async () => {
+      unlisten = await win.onDragDropEvent(async (ev) => {
+        if (!supportsVision) return;
+        const payload = ev.payload as { type: string; paths?: string[] };
+        if (payload.type === "enter" || payload.type === "over") {
+          if ((payload.paths ?? []).some((p) => isImageName(p))) setDragOver(true);
+        } else {
+          setDragOver(false);
+          if (payload.type === "drop") {
+            const imgs = (payload.paths ?? []).filter((p) => isImageName(p));
+            const next: ImageItem[] = [];
+            for (const p of imgs) {
+              try {
+                const thumb = await pathToDataUrl(p);
+                next.push({
+                  id: `drop-${Date.now()}-${p}`,
+                  name: p.split(/[\\/]/).pop() || p,
+                  mime: mimeForName(p),
+                  thumb,
+                  source: "file",
+                  absPath: p,
+                });
+              } catch {
+                /* skip unreadable */
+              }
+            }
+            if (next.length) addImages(next);
+          }
+        }
+      });
+      if (!active && unlisten) unlisten();
+    })();
+    return () => {
+      active = false;
+      if (unlisten) unlisten();
+    };
+  }, [supportsVision, addImages]);
+
   return (
     <div className="composer-wrap">
-      <form className="composer" onSubmit={submit}>
+      <form className={dragOver ? "composer drag-over" : "composer"} onSubmit={submit}>
         {attachments.length > 0 && (
           <div className="composer-attachments">
             {attachments.map((p) => (
@@ -171,6 +270,24 @@ export default function Composer() {
                   className="attachment-remove"
                   onClick={() => removeAttachment(p)}
                   aria-label={`移除 ${p}`}
+                >
+                  ✕
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
+        {images.length > 0 && (
+          <div className="composer-attachments">
+            {images.map((im) => (
+              <span key={im.id} className="image-chip" title={im.name}>
+                <img className="image-thumb" src={im.thumb} alt={im.name} />
+                <span className="attachment-name">{im.name}</span>
+                <button
+                  type="button"
+                  className="attachment-remove"
+                  onClick={() => removeImage(im.id)}
+                  aria-label={`移除 ${im.name}`}
                 >
                   ✕
                 </button>
@@ -225,6 +342,7 @@ export default function Composer() {
           }
           onChange={handleChange}
           onKeyDown={onKeyDown}
+          onPaste={onPaste}
           autoFocus
           aria-label="任务输入"
         />
@@ -233,9 +351,15 @@ export default function Composer() {
             <button
               className="ctx-pill"
               type="button"
-              disabled={!current || streaming}
+              disabled={!current || streaming || !supportsVision}
               onClick={() => setFilePickerOpen(true)}
-              title={current ? "引用工作区文件" : "请先打开一个工作区"}
+              title={
+                !supportsVision
+                  ? "当前模型不支持图片输入，请在设置中切换视觉模型"
+                  : current
+                    ? "引用工作区文件"
+                    : "请先打开一个工作区"
+              }
               aria-label="引用工作区文件"
             >
               ＋

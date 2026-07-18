@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent, cleanup } from "@testing-library/react";
-import Composer from "./Composer";
+import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react";
+import Composer, { collectPastedImages } from "./Composer";
 import type { FileEntry } from "../state/workspace-store";
 
 const sendMock = vi.fn();
@@ -8,11 +8,15 @@ const pauseMock = vi.fn();
 const addAttachmentsMock = vi.fn();
 const removeAttachmentMock = vi.fn();
 const clearAttachmentsMock = vi.fn();
+const addImagesMock = vi.fn();
+const removeImageMock = vi.fn();
 
 let mockFiles: FileEntry[] = [];
 let mockCurrent: { path: string; name: string } | null = { path: "/ws", name: "ws" };
 let mockRecent: { path: string; name: string }[] = [{ path: "/ws2", name: "ws2" }];
 let mockPending: string[] = [];
+let mockImages: any[] = [];
+let mockModel: any = null;
 const listFilesMock = vi.fn(() => Promise.resolve(mockFiles));
 const openPathMock = vi.fn();
 const pickAndOpenMock = vi.fn();
@@ -31,6 +35,7 @@ vi.mock("../state/config-store", () => ({
   useConfigStore: (selector: (s: any) => any) =>
     selector({
       permissionMode: "trust-once",
+      model: mockModel,
     }),
 }));
 
@@ -52,15 +57,24 @@ vi.mock("../state/ui-store", () => ({
     }),
 }));
 
-vi.mock("../state/attachment-store", () => ({
-  useAttachmentStore: (selector: (s: any) => any) =>
+vi.mock("../state/attachment-store", () => {
+  const selectorFn = (selector: (s: any) => any) =>
     selector({
       pending: mockPending,
       add: addAttachmentsMock,
       remove: removeAttachmentMock,
       clear: clearAttachmentsMock,
-    }),
-}));
+      images: mockImages,
+      addImages: addImagesMock,
+      removeImage: removeImageMock,
+      clearImages: vi.fn(),
+      toWire: () => [],
+    });
+  // Composer calls useAttachmentStore.getState().toWire() at send time; mirror
+  // the zustand-shaped handle so the production code path works under mock.
+  (selectorFn as any).getState = () => ({ toWire: () => [] });
+  return { useAttachmentStore: selectorFn };
+});
 
 vi.mock("../state/catalog-store", () => ({
   useCatalogStore: (selector: (s: any) => any) =>
@@ -70,6 +84,14 @@ vi.mock("../state/catalog-store", () => ({
       loadSkills: vi.fn(),
       loadMcp: vi.fn(),
     }),
+}));
+
+// Tauri drag-drop is a native window event — jsdom cannot fire it, so stub the
+// listener registration. The wiring itself is verified in Task 12's manual pass.
+vi.mock("@tauri-apps/api/window", () => ({
+  getCurrentWindow: () => ({
+    onDragDropEvent: vi.fn(() => Promise.resolve(() => {})),
+  }),
 }));
 
 describe("Composer", () => {
@@ -82,6 +104,17 @@ describe("Composer", () => {
     mockFiles = [{ name: "readme.md", type: "file", path: "readme.md" }];
     mockCurrent = { path: "/ws", name: "ws" };
     mockPending = [];
+    mockImages = [];
+    // Default: vision-capable model so existing tests behave as before.
+    mockModel = {
+      provider: "deepseek",
+      model: "deepseek-v4-flash",
+      temperature: 0.3,
+      maxTokens: 8192,
+      enableReasoning: false,
+      enableSearch: false,
+      supportsVision: true,
+    };
   });
 
   it("opens the file picker when @ is typed", async () => {
@@ -168,7 +201,7 @@ describe("Composer", () => {
     const row = await screen.findByText("code-review");
     fireEvent.click(row);
     fireEvent.click(screen.getByLabelText("发送"));
-    expect(sendMock).toHaveBeenCalledWith("review\n\n请使用 code-review skill");
+    expect(sendMock).toHaveBeenCalledWith("review\n\n请使用 code-review skill", undefined, undefined);
   });
 
   it("sends message with mcp instruction when an mcp server is selected", async () => {
@@ -178,7 +211,7 @@ describe("Composer", () => {
     const row = await screen.findByText("filesystem");
     fireEvent.click(row);
     fireEvent.click(screen.getByLabelText("发送"));
-    expect(sendMock).toHaveBeenCalledWith("list files\n\n请使用 filesystem MCP工具");
+    expect(sendMock).toHaveBeenCalledWith("list files\n\n请使用 filesystem MCP工具", undefined, undefined);
   });
 
   it("clears slash item after sending", async () => {
@@ -224,5 +257,95 @@ describe("Composer", () => {
     fireEvent.change(textarea, { target: { value: "review @r" } });
     fireEvent.click(await screen.findByText("readme.md"));
     expect(document.activeElement).toBe(textarea);
+  });
+
+  it("disables the + affordance when the active model lacks vision", () => {
+    mockModel = { ...mockModel, supportsVision: false };
+    render(<Composer />);
+    const addBtn = screen.getByLabelText("引用工作区文件") as HTMLButtonElement;
+    expect(addBtn).toBeDisabled();
+  });
+
+  it("keeps the + affordance enabled for a vision-capable model", () => {
+    render(<Composer />);
+    const addBtn = screen.getByLabelText("引用工作区文件") as HTMLButtonElement;
+    expect(addBtn).not.toBeDisabled();
+  });
+
+  it("renders image chips from the store with a remove button", () => {
+    mockImages = [
+      {
+        id: "img-1",
+        name: "shot.png",
+        mime: "image/png",
+        thumb: "data:image/png;base64,AAAA",
+        source: "clipboard",
+      },
+    ];
+    render(<Composer />);
+    const thumb = screen.getByAltText("shot.png");
+    expect(thumb).toHaveAttribute("src", "data:image/png;base64,AAAA");
+    expect(screen.getByLabelText("移除 shot.png")).toBeInTheDocument();
+  });
+
+  it("removes an image chip via its remove button", () => {
+    mockImages = [
+      {
+        id: "img-1",
+        name: "shot.png",
+        mime: "image/png",
+        thumb: "data:image/png;base64,AAAA",
+        source: "clipboard",
+      },
+    ];
+    render(<Composer />);
+    fireEvent.click(screen.getByLabelText("移除 shot.png"));
+    expect(removeImageMock).toHaveBeenCalledWith("img-1");
+  });
+
+  it("collectPastedImages extracts image files and rejects oversized / non-image items", async () => {
+    const ok = new File([new Uint8Array([1, 2, 3])], "shot.png", { type: "image/png" });
+    const big = new File([new Uint8Array([4])], "huge.png", { type: "image/png" });
+    Object.defineProperty(big, "size", { value: 11 * 1024 * 1024 });
+    const txt = new File(["hi"], "note.txt", { type: "text/plain" });
+
+    const items = [
+      { kind: "file", type: "image/png", getAsFile: () => ok },
+      { kind: "file", type: "image/png", getAsFile: () => big },
+      { kind: "file", type: "text/plain", getAsFile: () => txt },
+      { kind: "string", type: "text/plain", getAsFile: () => null },
+    ] as any;
+
+    const out = await collectPastedImages(items);
+    expect(out).toHaveLength(1);
+    const first = out[0]!;
+    expect(first.name).toBe("shot.png");
+    expect(first.source).toBe("clipboard");
+    expect(first.mime).toBe("image/png");
+    expect(first.thumb.startsWith("data:image/png;base64,")).toBe(true);
+    expect(typeof first.data).toBe("string");
+    expect(first.data!.length).toBeGreaterThan(0);
+  });
+
+  it("forwards attachments + images snapshot when sending", () => {
+    mockImages = [
+      {
+        id: "img-1",
+        name: "shot.png",
+        mime: "image/png",
+        thumb: "data:image/png;base64,AAAA",
+        source: "clipboard",
+        data: "AAAA",
+      },
+    ];
+    render(<Composer />);
+    const ta = screen.getByLabelText("任务输入") as HTMLTextAreaElement;
+    fireEvent.change(ta, { target: { value: "hello" } });
+    fireEvent.click(screen.getByLabelText("发送"));
+    // The composer builds message text; the chat-store mock just records args.
+    expect(sendMock).toHaveBeenCalledTimes(1);
+    const args = sendMock.mock.calls[0];
+    // images snapshot must be { name, thumb } pairs
+    expect(args[2]).toEqual([{ name: "shot.png", thumb: "data:image/png;base64,AAAA" }]);
   });
 });
