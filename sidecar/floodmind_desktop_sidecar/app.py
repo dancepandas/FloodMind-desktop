@@ -18,10 +18,14 @@ from . import __version__
 
 
 def _first_user_text(turns: list) -> str:
-    """First user-message content in a turn pair (for title generation)."""
+    """First user-message content in a turn pair (for title generation).
+
+    Strips a leading ``[已附图片：…]`` marker the client prefixes onto stored
+    user turns that carried images, so it doesn't pollute the LLM title."""
     for t in turns or []:
         if isinstance(t, dict) and t.get("role") == "user":
-            return str(t.get("content", ""))
+            text = str(t.get("content", ""))
+            return re.sub(r"^\[已附图片：[^\]]*\]\s*\n?", "", text)
     return ""
 
 

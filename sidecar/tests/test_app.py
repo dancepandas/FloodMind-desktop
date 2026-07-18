@@ -6,7 +6,18 @@ import json
 from pathlib import Path
 
 from floodmind_desktop_sidecar.agent import StubAgent
-from floodmind_desktop_sidecar.app import create_app
+from floodmind_desktop_sidecar.app import _first_user_text, create_app
+
+
+def test_first_user_text_strips_image_marker():
+    assert _first_user_text([
+        {"role": "user", "content": "[已附图片：a.png, b.jpg]\n看这两张图"}
+    ]) == "看这两张图"
+
+
+def test_first_user_text_passes_through_plain_content():
+    assert _first_user_text([{"role": "user", "content": "分析降雨数据"}]) == "分析降雨数据"
+    assert _first_user_text([]) == ""
 
 
 def test_permission_respond_requires_ask_id(client):
