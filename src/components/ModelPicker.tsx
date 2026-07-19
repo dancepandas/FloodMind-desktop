@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useConfigStore, type EnabledModel } from "../state/config-store";
 import { useChatStore } from "../state/chat-store";
 import { useUiStore } from "../state/ui-store";
+import ProviderIcon from "./ProviderIcon";
 
 interface Row {
   providerId: string;
@@ -25,7 +26,6 @@ export default function ModelPicker({
   const switching = useConfigStore((s) => s.switching);
   const streaming = useChatStore((s) => s.streaming);
   const showToast = useUiStore((s) => s.showToast);
-  const [query, setQuery] = useState("");
   const [hi, setHi] = useState(0);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -48,19 +48,16 @@ export default function ModelPicker({
       .filter(Boolean) as Row[];
   }, [providers, enabled, active]);
 
-  const filtered = rows.filter((r) =>
-    !query.trim() ? true : (r.model + r.providerName).toLowerCase().includes(query.trim().toLowerCase()),
-  );
-
   const grouped = useMemo(() => {
-    const map = new Map<string, { name: string; rows: Row[] }>();
-    for (const r of filtered) {
-      if (!map.has(r.providerId)) map.set(r.providerId, { name: r.providerName, rows: [] });
+    const map = new Map<string, { providerId: string; name: string; rows: Row[] }>();
+    for (const r of rows) {
+      if (!map.has(r.providerId)) map.set(r.providerId, { providerId: r.providerId, name: r.providerName, rows: [] });
       map.get(r.providerId)!.rows.push(r);
     }
     return Array.from(map.values());
-  }, [filtered]);
+  }, [rows]);
 
+  // Close on outside click.
   useEffect(() => {
     const onDoc = (e: MouseEvent) => {
       if (containerRef.current && !containerRef.current.contains(e.target as Node)) onClose();
@@ -69,14 +66,20 @@ export default function ModelPicker({
     return () => document.removeEventListener("mousedown", onDoc);
   }, [onClose]);
 
+  // Focus the container on open so keyboard nav (↑/↓/Enter/Esc) works without
+  // a search input.
+  useEffect(() => {
+    containerRef.current?.focus();
+  }, []);
+
   function onKeyDown(e: React.KeyboardEvent) {
     if (e.key === "Escape") { onClose(); return; }
-    if (filtered.length === 0) return;
-    if (e.key === "ArrowDown") { e.preventDefault(); setHi((i) => (i + 1) % filtered.length); }
-    else if (e.key === "ArrowUp") { e.preventDefault(); setHi((i) => (i - 1 + filtered.length) % filtered.length); }
+    if (rows.length === 0) return;
+    if (e.key === "ArrowDown") { e.preventDefault(); setHi((i) => (i + 1) % rows.length); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); setHi((i) => (i - 1 + rows.length) % rows.length); }
     else if (e.key === "Enter") {
       e.preventDefault();
-      const r = filtered[hi];
+      const r = rows[hi];
       if (r && r.keyPresent) onPick(r.providerId, r.model);
     }
   }
@@ -84,23 +87,24 @@ export default function ModelPicker({
   const disabled = switching || streaming;
 
   return (
-    <div className="model-picker" ref={containerRef} role="listbox" aria-label="选择模型">
-      <input
-        className="model-picker-filter"
-        placeholder="🔍 过滤模型…"
-        value={query}
-        autoFocus
-        onChange={(e) => { setQuery(e.target.value); setHi(0); }}
-        onKeyDown={onKeyDown}
-        disabled={disabled}
-      />
+    <div
+      className="model-picker"
+      ref={containerRef}
+      role="listbox"
+      aria-label="选择模型"
+      tabIndex={0}
+      onKeyDown={onKeyDown}
+    >
       <div className="model-picker-list">
-        {grouped.length === 0 && <div className="model-picker-empty">无匹配模型</div>}
+        {grouped.length === 0 && <div className="model-picker-empty">暂无启用的模型，请在设置中勾选</div>}
         {grouped.map((g) => (
-          <div className="model-picker-group" key={g.name}>
-            <div className="model-picker-group-head">{g.name}</div>
+          <div className="model-picker-group" key={g.providerId}>
+            <div className="model-picker-group-head">
+              <ProviderIcon provider={g.providerId} className="model-picker-provider-icon" />
+              <span className="model-picker-group-name">{g.name}</span>
+            </div>
             {g.rows.map((r) => {
-              const idx = filtered.indexOf(r);
+              const idx = rows.indexOf(r);
               const blocked = !r.keyPresent || disabled;
               return (
                 <button

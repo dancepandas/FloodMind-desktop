@@ -2961,24 +2961,27 @@ button:focus-visible,
   z-index: 50;
   overflow: hidden;
 }
-.model-picker-filter {
-  margin: 8px 8px 4px;
-  padding: 6px 8px;
-  border: 1px solid var(--border, #e5e7eb);
-  border-radius: 6px;
-  background: var(--bg, #fff);
-  color: var(--fg, #111827);
-}
+.model-picker:focus { outline: none; }
 .model-picker-list {
   overflow-y: auto;             /* 仅列表区滚动 */
   flex: 1 1 auto;
   padding: 4px 0;
 }
 .model-picker-group-head {
-  padding: 6px 12px 2px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px 2px;
   font-size: 11px;
   color: var(--fg-secondary, #374151);
 }
+.model-picker-provider-icon {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  border-radius: 3px;
+}
+.model-picker-group-name { font-weight: 600; }
 .model-picker-row {
   display: flex;
   align-items: center;

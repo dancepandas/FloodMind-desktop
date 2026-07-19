@@ -60,11 +60,4 @@ describe("ModelPicker", () => {
     fireEvent.click(screen.getByText("qwen3.6-flash"));
     expect(onPick).toHaveBeenCalledWith("qwen", "qwen3.6-flash");
   });
-
-  it("filters by typed text", () => {
-    render(<ModelPicker onPick={() => {}} onClose={() => {}} />);
-    fireEvent.change(screen.getByPlaceholderText(/过滤/), { target: { value: "kimi" } });
-    expect(screen.getByText("kimi-2.6")).toBeInTheDocument();
-    expect(screen.queryByText("qwen3.7-plus")).not.toBeInTheDocument();
-  });
 });
