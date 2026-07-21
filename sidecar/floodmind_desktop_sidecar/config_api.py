@@ -103,14 +103,15 @@ def _model_to_gui(m: dict) -> dict:
     name = m.get("id", "")
     ctx = m.get("context_window", m.get("contextSize")) or 0
     tok = m.get("default_max_tokens", m.get("maxTokens"))
-    # If the stored context window is exactly the old SDK default, it was never
-    # explicitly set — let metadata correct it.
-    if ctx == 32768 or not ctx:
+    # If the stored values are the old SDK defaults (never explicitly set),
+    # metadata should correct them — both context_window and max_tokens.
+    if (ctx == 32768 or not ctx) or (not tok or tok == DEFAULT_MAX_TOKENS):
         try:
             from .model_metadata import lookup_model_metadata
             meta = lookup_model_metadata(name)
-            ctx = meta["context_window"]
-            if not tok:
+            if ctx == 32768 or not ctx:
+                ctx = meta["context_window"]
+            if not tok or tok == DEFAULT_MAX_TOKENS:
                 tok = meta["max_output_tokens"]
         except Exception:
             pass
@@ -253,10 +254,14 @@ def read_model_config() -> dict:
         temperature = m.get("default_temperature", DEFAULT_TEMPERATURE)
         max_tokens = m.get("default_max_tokens", DEFAULT_MAX_TOKENS)
         context_size = m.get("context_window", m.get("contextSize"))
-        # Correct stale SDK-default context windows from metadata.
-        if context_size == 32768 or not context_size:
+        # Correct stale SDK-default values from metadata (pre-model-metadata saves).
+        if context_size == 32768 or not context_size or max_tokens == DEFAULT_MAX_TOKENS:
             from .model_metadata import lookup_model_metadata
-            context_size = lookup_model_metadata(active_id)["context_window"]
+            meta = lookup_model_metadata(active_id)
+            if context_size == 32768 or not context_size:
+                context_size = meta["context_window"]
+            if max_tokens == DEFAULT_MAX_TOKENS:
+                max_tokens = meta["max_output_tokens"]
         supports_vision = bool(m.get("supports_vision", m.get("supportsVision", False)))
     else:
         active_provider = active_base = ""

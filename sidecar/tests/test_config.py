@@ -214,7 +214,8 @@ def test_read_disambiguates_via_active_provider(isolated_home):
     cfg = read_model_config()
     assert cfg["model"]["provider"] == "openai"
     assert cfg["baseURL"] == "http://192.168.30.112:3000/v1"
-    assert cfg["model"]["maxTokens"] == 65536  # the proxy model's tokens
+    # 65536 is the SDK default → metadata corrects it to the known value (384K).
+    assert cfg["model"]["maxTokens"] == 384000
 
 
 def test_write_drops_providers_not_in_payload(isolated_home):
