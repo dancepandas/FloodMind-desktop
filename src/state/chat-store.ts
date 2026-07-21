@@ -34,7 +34,7 @@ export type Block =
   | { id: string; kind: "error"; content: string };
 
 export type Msg =
-  | { id: string; role: "user"; content: string; images?: { name: string; thumb: string }[] }
+  | { id: string; role: "user"; content: string; images?: { name: string; thumb: string }[]; attachments?: { path: string; name: string }[] }
   | AssistantTurn;
 export interface AssistantTurn {
   id: string;
@@ -71,6 +71,7 @@ interface ChatState {
     text: string,
     attachments?: ImageAttachmentWire[],
     images?: { name: string; thumb: string }[],
+    fileRefs?: { path: string; name: string }[],
   ) => Promise<void>;
   appendInstruction: (text: string) => Promise<void>;
   pause: () => Promise<void>;
@@ -230,6 +231,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     text: string,
     attachments?: ImageAttachmentWire[],
     images?: { name: string; thumb: string }[],
+    fileRefs?: { path: string; name: string }[],
   ) {
     if (!text.trim()) return;
     // While a stream is active, route to the append path: the message is added
@@ -247,7 +249,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
         // Images are single-turn display only — stamped on the user bubble for
         // live thumbnail rendering, but NOT persisted (the finally block strips
         // them and writes a [已附图片：…] prefix into the stored content).
-        { id: nextTurnId(), role: "user", content: text, ...(images ? { images } : {}) },
+        // fileRefs (structured file attachments) ARE persisted on the turn; the
+        // [引用文件] markdown block is appended to the wire text below so the
+        // LLM still sees the same prompt, but turn.content stays clean so the
+        // bubble can render file chips without duplicating the path list.
+        {
+          id: nextTurnId(),
+          role: "user",
+          content: text,
+          ...(images ? { images } : {}),
+          ...(fileRefs ? { attachments: fileRefs } : {}),
+        },
         { id: nextTurnId(), role: "assistant", blocks: [], usage: null, done: false },
       ],
       streaming: true,
@@ -257,7 +269,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
     let errored = false;
     try {
       const baseUrl = await getBaseUrl();
-      for await (const ev of streamChat(baseUrl, [{ role: "user", content: text }], controller.signal, attachments)) {
+      // Append [引用文件] refs to the wire text so the LLM receives the same
+      // prompt as before the structured-attachments refactor. turn.content
+      // stays clean (no refs markdown); the file chips in the bubble read
+      // from turn.attachments instead.
+      const refsBlock = fileRefs && fileRefs.length > 0
+        ? (text.trim()
+            ? `\n\n[引用文件]\n${fileRefs.map((r) => `- ${r.path}`).join("\n")}`
+            : `请处理以下文件：\n${fileRefs.map((r) => `- ${r.path}`).join("\n")}`)
+        : "";
+      const wireText = text + refsBlock;
+      for await (const ev of streamChat(baseUrl, [{ role: "user", content: wireText }], controller.signal, attachments)) {
         if (ev.type === "done") continue;
         set((s) => {
           const turns = s.turns.slice();

@@ -121,18 +121,12 @@ describe("SettingsView model save preserves supportsVision", () => {
     // dropping supportsVision — so every save wrote supports_vision=false and
     // wiped the vision flag off every model (qwen3.7-plus, kimi, minimax3...).
     //
-    // Adapted for the T7 radio→checkbox rework: the model tab no longer picks
-    // an active model (that happens via the Composer dropdown). Instead the
-    // "enabled set" is edited with checkboxes, and the save payload carries
-    // `enabledModels`. The regression intent is unchanged: every saved model
-    // must still carry its curated supportsVision flag, and the enabled-set
-    // checkbox for qwen3.7-plus must land in the payload.
+    // Reworked for the master-detail + "配置即可用" redesign: the model tab no
+    // longer has an "enabled set" checkbox — every model in the form is
+    // automatically usable and lands in `enabledModels` on save. The regression
+    // intent is unchanged: every saved model must still carry its curated
+    // supportsVision flag, and the enabled set auto-includes all configured models.
     render(<SettingsView />);
-    // Toggle the qwen3.7-plus checkbox ON (its key is "qwen/qwen3.7-plus").
-    const plusRowCheckbox = screen.getAllByRole("checkbox").find((cb) =>
-      (cb.closest(".model-row") as HTMLElement | null)?.querySelector(".model-name")?.textContent === "qwen3.7-plus",
-    ) as HTMLInputElement;
-    fireEvent.click(plusRowCheckbox);
 
     const btn = screen.getByRole("button", { name: /保存并重载/ });
     fireEvent.click(btn);
@@ -143,7 +137,7 @@ describe("SettingsView model save preserves supportsVision", () => {
     const flash = qwen.models.find((m: any) => m.name === "qwen3.7-flash");
     expect(plus.supportsVision).toBe(true);
     expect(flash.supportsVision).toBe(false);
-    // T7: payload must now also include the enabled set.
+    // 配置即可用：payload 的 enabledModels 自动包含所有已配置模型（无需勾选）。
     expect(Array.isArray(arg.enabledModels)).toBe(true);
     expect(arg.enabledModels).toEqual(
       expect.arrayContaining([{ provider: "qwen", model: "qwen3.7-plus" }]),
@@ -184,11 +178,14 @@ describe("SettingsView model tab — enabled set + add/delete all providers", ()
 
   it("delete button removes a curated model from the form", () => {
     render(<SettingsView />);
+    // master-detail: qwen is auto-selected (it has a key), so switch to the
+    // deepseek panel first to bring the deepseek-v4-pro remove button into view.
+    fireEvent.click(screen.getByRole("button", { name: /DeepSeek/ }));
     fireEvent.click(screen.getAllByRole("button", { name: /移除 deepseek-v4-pro/ })[0]);
     expect(screen.queryByText("deepseek-v4-pro")).toBeNull();
   });
 
-  it("save payload includes enabledModels from checkboxes", async () => {
+  it("save payload includes enabledModels (auto, config-as-usable)", async () => {
     render(<SettingsView />);
     fireEvent.click(screen.getByRole("button", { name: /保存并重载/ }));
     await waitFor(() => expect(useConfigStore.getState().save).toHaveBeenCalled());

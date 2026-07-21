@@ -21,6 +21,11 @@ interface UiState {
   togglePlanPanel: () => void;
   setPreviewPath: (p: string | null) => void;
   closePreview: () => void;
+  /** Lightbox image preview, independent of the file PreviewPanel. null when
+   *  closed. Open via openLightbox({src, name}) from a message-bubble thumb. */
+  lightboxImage: { src: string; name: string } | null;
+  openLightbox: (image: { src: string; name: string }) => void;
+  closeLightbox: () => void;
   showToast: (message: string) => void;
   clearToast: () => void;
 }
@@ -42,6 +47,9 @@ export const useUiStore = create<UiState>((set) => ({
   togglePlanPanel: () => set((s) => ({ planPanelOpen: !s.planPanelOpen })),
   setPreviewPath: (previewPath) => set({ previewPath }),
   closePreview: () => set({ previewPath: null }),
+  lightboxImage: null,
+  openLightbox: (lightboxImage) => set({ lightboxImage }),
+  closeLightbox: () => set({ lightboxImage: null }),
   showToast: (message) => {
     set({ toast: { id: Date.now(), message } });
     if (_toastTimer) clearTimeout(_toastTimer);

@@ -3,6 +3,7 @@ import Logo from "./Logo";
 import BlockView from "./BlockView";
 import WelcomeView from "./WelcomeView";
 import { useChatStore, deriveStatusText, type Block, type Msg } from "../state/chat-store";
+import { useUiStore } from "../state/ui-store";
 
 export default function Conversation() {
   const turns = useChatStore((s) => s.turns);
@@ -38,6 +39,7 @@ function TurnView({ turn, isLast, streaming }: { turn: Msg; isLast: boolean; str
   // user-turn early return below happens AFTER this useState. The state is only
   // read on the assistant branch.
   const [showProcess, setShowProcess] = useState(false);
+  const openLightbox = useUiStore((s) => s.openLightbox);
 
   if (turn.role === "user") {
     const imgs = turn.images;
@@ -53,6 +55,7 @@ function TurnView({ turn, isLast, streaming }: { turn: Msg; isLast: boolean; str
                 src={im.thumb}
                 alt={im.name}
                 title={im.name}
+                onClick={() => openLightbox({ src: im.thumb, name: im.name })}
               />
             ))}
           </div>

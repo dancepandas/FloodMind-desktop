@@ -23,6 +23,8 @@ from __future__ import annotations
 
 import json
 import os
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -487,3 +489,101 @@ def write_permissions_config(body: dict[str, Any]) -> dict:
     raw.setdefault("permissions", {})["mode"] = mode
     save_config(raw)
     return read_permissions_config()
+
+
+# ── Connection probe & remote model listing ─────────────────
+# Two helpers for the Settings GUI's "检测连接" / "拉取模型" affordances.
+# Both hit the provider's OpenAI-compatible ``/models`` endpoint with the
+# standard library (no httpx dependency). baseURL/apiKey come from the request
+# body when the GUI is mid-edit, falling back to the on-disk saved values when
+# omitted (the password field is blank on load, so an empty apiKey means "use
+# the saved one").
+
+def _resolve_probe_target(body: dict[str, Any]) -> tuple[str, str]:
+    """Return (base_url, api_key) for a probe.
+
+    body keys: provider (id), baseURL?, apiKey?. Saved on-disk values fill in
+    blanks so the GUI can test before saving a freshly typed key.
+    """
+    raw = _load_raw_settings()
+    providers = raw.get("providers") or {}
+    pid = str((body or {}).get("provider", "")).strip()
+    saved = providers.get(pid, {}) if isinstance(providers, dict) else {}
+    if not isinstance(saved, dict):
+        saved = {}
+    base = str((body or {}).get("baseURL") or saved.get("base_url", "") or "").strip()
+    key = str((body or {}).get("apiKey") or saved.get("api_key", "") or "")
+    return base, key
+
+
+def _fetch_remote_model_ids(base_url: str, api_key: str, *, timeout: float = 8.0) -> list[str]:
+    """GET {base_url}/models (OpenAI-compatible) → list of model ids.
+
+    Raises urllib.error.HTTPError/URLError on failure so callers can map to a
+    user-facing message. Handles both the OpenAI shape ``{data:[{id}]}`` and
+    Ollama's ``{models:[{model}]}`` shape (its /v1/models endpoint returns the
+    OpenAI shape, but /api/tags returns the latter — we tolerate either).
+    """
+    url = base_url.rstrip("/") + "/models"
+    headers = {"Accept": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    req = urllib.request.Request(url, headers=headers, method="GET")
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        raw_bytes = resp.read()
+    try:
+        payload = json.loads(raw_bytes.decode("utf-8", "replace"))
+    except Exception:
+        return []
+    ids: list[str] = []
+    if isinstance(payload, dict):
+        data = payload.get("data")
+        if isinstance(data, list):
+            for m in data:
+                if isinstance(m, dict) and m.get("id"):
+                    ids.append(str(m["id"]))
+        models_field = payload.get("models")
+        if isinstance(models_field, list):
+            for m in models_field:
+                if isinstance(m, dict) and (m.get("model") or m.get("id")):
+                    ids.append(str(m.get("model") or m.get("id")))
+    # De-dup, preserve order.
+    seen: set[str] = set()
+    out: list[str] = []
+    for i in ids:
+        if i and i not in seen:
+            seen.add(i)
+            out.append(i)
+    return out
+
+
+def test_model_connection(body: dict[str, Any]) -> dict[str, Any]:
+    """Verify baseURL+apiKey by hitting /models. Returns {ok, error}."""
+    try:
+        base, key = _resolve_probe_target(body)
+        if not base:
+            return {"ok": False, "error": "未配置 Base URL"}
+        _fetch_remote_model_ids(base, key)
+        return {"ok": True, "error": None}
+    except urllib.error.HTTPError as e:
+        return {"ok": False, "error": f"HTTP {e.code}：{e.reason}"}
+    except urllib.error.URLError as e:
+        return {"ok": False, "error": f"连接失败：{e.reason}"}
+    except Exception as e:  # pragma: no cover - defensive
+        return {"ok": False, "error": str(e)}
+
+
+def list_remote_models(body: dict[str, Any]) -> dict[str, Any]:
+    """Fetch available model ids from a provider. Returns {ok, models, error}."""
+    try:
+        base, key = _resolve_probe_target(body)
+        if not base:
+            return {"ok": False, "models": [], "error": "未配置 Base URL"}
+        ids = _fetch_remote_model_ids(base, key)
+        return {"ok": True, "models": ids, "error": None}
+    except urllib.error.HTTPError as e:
+        return {"ok": False, "models": [], "error": f"HTTP {e.code}：{e.reason}"}
+    except urllib.error.URLError as e:
+        return {"ok": False, "models": [], "error": f"连接失败：{e.reason}"}
+    except Exception as e:  # pragma: no cover - defensive
+        return {"ok": False, "models": [], "error": str(e)}

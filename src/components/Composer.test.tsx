@@ -24,6 +24,8 @@ const openPathMock = vi.fn();
 const pickAndOpenMock = vi.fn();
 const setViewMock = vi.fn();
 const showToastMock = vi.fn();
+const setPreviewPathMock = vi.fn();
+const openLightboxMock = vi.fn();
 
 vi.mock("../state/chat-store", () => ({
   useChatStore: (selector: (s: any) => any) =>
@@ -67,6 +69,8 @@ vi.mock("../state/ui-store", () => ({
     selector({
       setView: setViewMock,
       showToast: showToastMock,
+      setPreviewPath: setPreviewPathMock,
+      openLightbox: openLightboxMock,
     }),
 }));
 
@@ -83,9 +87,16 @@ vi.mock("../state/attachment-store", () => {
       clearImages: vi.fn(),
       toWire: () => [],
     });
-  // Composer calls useAttachmentStore.getState().toWire() at send time; mirror
-  // the zustand-shaped handle so the production code path works under mock.
-  (selectorFn as any).getState = () => ({ toWire: () => [] });
+  // Composer calls useAttachmentStore.getState() at send time for `.toWire()`,
+  // `.pending`, and `.images`; mirror the zustand-shaped handle (including the
+  // same mutable slices the selector exposes) so the production doSend path
+  // works under mock. Omitting pending/images made every send-flow test crash
+  // with "Cannot read properties of undefined (reading 'map')".
+  (selectorFn as any).getState = () => ({
+    toWire: () => [],
+    pending: mockPending,
+    images: mockImages,
+  });
   return { useAttachmentStore: selectorFn };
 });
 
@@ -238,7 +249,9 @@ describe("Composer", () => {
     const row = await screen.findByText("code-review");
     fireEvent.click(row);
     fireEvent.click(screen.getByLabelText("发送"));
-    expect(sendMock).toHaveBeenCalledWith("review\n\n请使用 code-review skill", undefined, undefined);
+    // send(msg, wire, images, fileRefs) — no attachments here, so the last three
+    // are all undefined.
+    expect(sendMock).toHaveBeenCalledWith("review\n\n请使用 code-review skill", undefined, undefined, undefined);
   });
 
   it("sends message with mcp instruction when an mcp server is selected", async () => {
@@ -248,7 +261,7 @@ describe("Composer", () => {
     const row = await screen.findByText("filesystem");
     fireEvent.click(row);
     fireEvent.click(screen.getByLabelText("发送"));
-    expect(sendMock).toHaveBeenCalledWith("list files\n\n请使用 filesystem MCP工具", undefined, undefined);
+    expect(sendMock).toHaveBeenCalledWith("list files\n\n请使用 filesystem MCP工具", undefined, undefined, undefined);
   });
 
   it("clears slash item after sending", async () => {
@@ -496,5 +509,33 @@ describe("Composer", () => {
     const pill = screen.getByRole("button", { name: /qwen3\.7-plus/ });
     fireEvent.click(pill);
     expect(await screen.findByRole("listbox", { name: "选择模型" })).toBeInTheDocument();
+  });
+
+  it("renders pending file chips below the input; clicking one opens the preview panel", () => {
+    mockPending = ["notes/report.txt"];
+    render(<Composer />);
+    // The chip shows the basename; the full path is the preview target.
+    expect(screen.getByText("report.txt")).toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText("预览 notes/report.txt"));
+    expect(setPreviewPathMock).toHaveBeenCalledWith("notes/report.txt");
+  });
+
+  it("clicking an image thumb opens the lightbox with its data URL", () => {
+    mockImages = [
+      {
+        id: "img-1",
+        name: "shot.png",
+        mime: "image/png",
+        thumb: "data:image/png;base64,AAAA",
+        source: "clipboard",
+        data: "AAAA",
+      },
+    ];
+    render(<Composer />);
+    fireEvent.click(screen.getByLabelText("预览 shot.png"));
+    expect(openLightboxMock).toHaveBeenCalledWith({
+      src: "data:image/png;base64,AAAA",
+      name: "shot.png",
+    });
   });
 });

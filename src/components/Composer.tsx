@@ -74,6 +74,8 @@ export default function Composer() {
   const switchActive = useConfigStore((s) => s.switchActive);
   const setView = useUiStore((s) => s.setView);
   const showToast = useUiStore((s) => s.showToast);
+  const setPreviewPath = useUiStore((s) => s.setPreviewPath);
+  const openLightbox = useUiStore((s) => s.openLightbox);
   const attachments = useAttachmentStore((s) => s.pending);
   const addAttachments = useAttachmentStore((s) => s.add);
   const removeAttachment = useAttachmentStore((s) => s.remove);
@@ -191,12 +193,11 @@ export default function Composer() {
     const trimmed = text.trim();
     const parts: string[] = [];
 
-    if (attachments.length > 0) {
-      const refs = attachments.map((p) => `- ${p}`).join("\n");
-      if (!trimmed && !slashItem) return `请处理以下文件：\n${refs}`;
-      parts.push(`[引用文件]\n${refs}`);
-    }
-
+    // File refs are now passed as structured `attachments` on the user turn
+    // (see doSend below → chat-store.send's fileRefs param). chat-store
+    // appends the [引用文件] block to the wire text so the LLM still sees the
+    // same prompt. We only need a placeholder here so doSend doesn't bail
+    // when the user attaches files/images without typing any text.
     if (slashItem) {
       const instruction =
         slashItem.kind === "skill"
@@ -205,7 +206,11 @@ export default function Composer() {
       parts.push(instruction);
     }
 
-    if (!trimmed && parts.length === 0) return "";
+    if (!trimmed && parts.length === 0) {
+      if (attachments.length > 0) return "请处理以下文件：";
+      if (images.length > 0) return "请看附图：";
+      return "";
+    }
     if (!trimmed) return parts.join("\n\n");
     if (parts.length === 0) return trimmed;
     return `${trimmed}\n\n${parts.join("\n\n")}`;
@@ -215,8 +220,21 @@ export default function Composer() {
     const msg = buildMessage();
     if (!msg) return;
     const wire = useAttachmentStore.getState().toWire();
+    // File refs go in as structured `attachments` on the user turn (rendered
+    // as clickable chips in the bubble) AND are appended to the wire text by
+    // chat-store so the LLM still sees the [引用文件] prompt.
+    const pendingPaths = useAttachmentStore.getState().pending;
+    const fileRefs = pendingPaths.map((p) => ({
+      path: p,
+      name: p.split(/[\\/]/).pop() || p,
+    }));
     const imageSnap = images.map((i) => ({ name: i.name, thumb: i.thumb }));
-    send(msg, wire.length ? wire : undefined, imageSnap.length ? imageSnap : undefined);
+    send(
+      msg,
+      wire.length ? wire : undefined,
+      imageSnap.length ? imageSnap : undefined,
+      fileRefs.length ? fileRefs : undefined,
+    );
     setText("");
     setSlashItem(null);
     clearAttachments();
@@ -312,41 +330,6 @@ export default function Composer() {
   return (
     <div className="composer-wrap">
       <form className={dragOver ? "composer drag-over" : "composer"} onSubmit={submit}>
-        {attachments.length > 0 && (
-          <div className="composer-attachments">
-            {attachments.map((p) => (
-              <span key={p} className="attachment-pill" title={p}>
-                <span className="attachment-name">{p}</span>
-                <button
-                  type="button"
-                  className="attachment-remove"
-                  onClick={() => removeAttachment(p)}
-                  aria-label={`移除 ${p}`}
-                >
-                  ✕
-                </button>
-              </span>
-            ))}
-          </div>
-        )}
-        {images.length > 0 && (
-          <div className="composer-attachments">
-            {images.map((im) => (
-              <span key={im.id} className="image-chip" title={im.name}>
-                <img className="image-thumb" src={im.thumb} alt={im.name} />
-                <span className="attachment-name">{im.name}</span>
-                <button
-                  type="button"
-                  className="attachment-remove"
-                  onClick={() => removeImage(im.id)}
-                  aria-label={`移除 ${im.name}`}
-                >
-                  ✕
-                </button>
-              </span>
-            ))}
-          </div>
-        )}
         {slashItem && (
           <div className="composer-slash-item">
             <span className="slash-pill" data-kind={slashItem.kind}>
@@ -398,6 +381,51 @@ export default function Composer() {
           autoFocus
           aria-label="任务输入"
         />
+        {(attachments.length > 0 || images.length > 0) && (
+          <div className="composer-attach-row">
+            {attachments.map((p) => (
+              <span key={p} className="attachment-pill" title={p}>
+                <button
+                  type="button"
+                  className="attachment-preview"
+                  onClick={() => setPreviewPath(p)}
+                  aria-label={`预览 ${p}`}
+                >
+                  <span className="attachment-icon" aria-hidden="true">📄</span>
+                  <span className="attachment-name">{p.split(/[\\/]/).pop() || p}</span>
+                </button>
+                <button
+                  type="button"
+                  className="attachment-remove"
+                  onClick={() => removeAttachment(p)}
+                  aria-label={`移除 ${p}`}
+                >
+                  ✕
+                </button>
+              </span>
+            ))}
+            {images.map((im) => (
+              <span key={im.id} className="image-chip" title={im.name}>
+                <button
+                  type="button"
+                  className="image-thumb-btn"
+                  onClick={() => openLightbox({ src: im.thumb, name: im.name })}
+                  aria-label={`预览 ${im.name}`}
+                >
+                  <img className="image-thumb" src={im.thumb} alt={im.name} />
+                </button>
+                <button
+                  type="button"
+                  className="attachment-remove image-remove"
+                  onClick={() => removeImage(im.id)}
+                  aria-label={`移除 ${im.name}`}
+                >
+                  ✕
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
         <div className="composer-bottom">
           <div className="composer-context">
             <button

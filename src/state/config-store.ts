@@ -127,6 +127,8 @@ interface ConfigState {
   resetSoul: () => Promise<void>;
   loadPermissions: () => Promise<void>;
   savePermissions: (mode: PermissionMode) => Promise<boolean>;
+  testConnection: (provider: string, opts?: { baseURL?: string; apiKey?: string }) => Promise<{ ok: boolean; error: string | null }>;
+  fetchRemoteModels: (provider: string, opts?: { baseURL?: string; apiKey?: string }) => Promise<{ ok: boolean; models: string[]; error: string | null }>;
 }
 
 export const useConfigStore = create<ConfigState>((set) => ({
@@ -432,6 +434,36 @@ export const useConfigStore = create<ConfigState>((set) => ({
     } catch {
       set({ permissionSaving: false, permissionError: "无法连接到 sidecar" });
       return false;
+    }
+  },
+
+  async testConnection(provider, opts) {
+    try {
+      const b = await getBaseUrl();
+      const r = await fetch(`${b}/api/config/model/test`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider, baseURL: opts?.baseURL, apiKey: opts?.apiKey }),
+      });
+      if (!r.ok) return { ok: false, error: "检测失败" };
+      return await r.json();
+    } catch {
+      return { ok: false, error: "无法连接到 sidecar" };
+    }
+  },
+
+  async fetchRemoteModels(provider, opts) {
+    try {
+      const b = await getBaseUrl();
+      const r = await fetch(`${b}/api/config/model/list`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider, baseURL: opts?.baseURL, apiKey: opts?.apiKey }),
+      });
+      if (!r.ok) return { ok: false, models: [], error: "拉取失败" };
+      return await r.json();
+    } catch {
+      return { ok: false, models: [], error: "无法连接到 sidecar" };
     }
   },
 }));

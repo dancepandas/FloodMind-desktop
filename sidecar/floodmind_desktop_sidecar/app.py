@@ -708,6 +708,27 @@ def create_app(agent: Agent, workspace_manager=None, conversation_store=None,
             app.logger.warning("agent.reload_model failed: %s", e)
         return jsonify({"ok": True, "reloaded": reloaded, "model": snapshot})
 
+    @app.post("/api/config/model/test")
+    def config_model_test():
+        """Verify a provider's baseURL+apiKey by probing its /models endpoint.
+
+        Body: {provider, baseURL?, apiKey?}. Blanks fall back to saved values so
+        the GUI can test a freshly typed key before saving.
+        """
+        from .config_api import test_model_connection
+        body = request.get_json(silent=True) or {}
+        return jsonify(test_model_connection(body))
+
+    @app.post("/api/config/model/list")
+    def config_model_list():
+        """Fetch the available model id list from a provider's /models endpoint.
+
+        Same body shape as /test; returns {ok, models, error}.
+        """
+        from .config_api import list_remote_models
+        body = request.get_json(silent=True) or {}
+        return jsonify(list_remote_models(body))
+
     @app.get("/api/config/soul")
     def config_soul_get():
         from .config_api import read_soul

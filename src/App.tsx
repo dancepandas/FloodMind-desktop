@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import Composer from "./components/Composer";
 import Conversation from "./components/Conversation";
 import DropZone from "./components/DropZone";
+import Lightbox from "./components/Lightbox";
 import McpView from "./components/McpView";
 import PlanPanel from "./components/PlanPanel";
 import PreviewPanel from "./components/PreviewPanel";
@@ -100,6 +101,7 @@ export default function App() {
           {toast.message}
         </div>
       )}
+      <Lightbox />
       <div className="sidebar-wrap" style={{ width: sidebarResize.width }} data-resizable="right">
         <Sidebar />
         <div className="resize-handle resize-handle-right" onMouseDown={sidebarResize.startResize} />

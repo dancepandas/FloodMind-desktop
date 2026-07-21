@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import PageHeader from "./PageHeader";
 import { useConfigStore, type ModelForm, type ProviderFormEntry, type ModelEntry } from "../state/config-store";
 import { useChatStore } from "../state/chat-store";
 import { useFeedbackStore, buildFeedbackMailto, type FeedbackForm } from "../state/feedback-store";
+import { useUiStore } from "../state/ui-store";
 import { openUrl } from "../lib/open-file";
 import SettingsNav, { type Tab } from "./SettingsNav";
 import { CURATED_PROVIDERS, getCuratedModels, getProviderDef } from "../lib/providers";
@@ -27,11 +28,10 @@ export default function SettingsView() {
   );
 }
 
-/* ── 模型 tab：编辑启用集 + 全员增删 + 每行元数据 + 恢复推荐 ──────── */
+/* ── 模型 tab：左 provider 列表 + 右详情（master-detail，配置即可用） ── */
 function ModelTab() {
   const model = useConfigStore((s) => s.model);
   const providers = useConfigStore((s) => s.providers);
-  const enabledModels = useConfigStore((s) => s.enabledModels);
   const envOverrides = useConfigStore((s) => s.envOverrides);
   const loading = useConfigStore((s) => s.loading);
   const saving = useConfigStore((s) => s.saving);
@@ -40,19 +40,25 @@ function ModelTab() {
   const error = useConfigStore((s) => s.error);
   const load = useConfigStore((s) => s.load);
   const save = useConfigStore((s) => s.save);
+  const switchActive = useConfigStore((s) => s.switchActive);
+  const testConnection = useConfigStore((s) => s.testConnection);
+  const fetchRemoteModels = useConfigStore((s) => s.fetchRemoteModels);
   const clearSaved = useConfigStore((s) => s.clearSaved);
+  const showToast = useUiStore((s) => s.showToast);
 
-  // form: editable catalog (id/name/baseURL/apiKey/models). Built directly from
-  // the authoritative store.providers (T4's mergeWithCurated seeds curated
-  // defaults and makes the saved list authoritative — so the form must NOT
-  // re-inject CURATED_PROVIDERS' def.models here).
+  // form: editable catalog (id/name/baseURL/apiKey/models). Built from the
+  // authoritative store.providers. The "启用集" checkbox is GONE — every model
+  // in the form is automatically usable in the Composer (配置即可用).
   const [form, setForm] = useState<Record<string, ProviderFormEntry>>({});
-  // Display order: curated first (canonical order), then any non-curated.
   const [order, setOrder] = useState<string[]>([]);
-  // Enabled set: the set of {provider}/{model} keys that feed the Composer
-  // dropdown. The active model is NOT chosen here — it's set via the Composer.
-  const [enabled, setEnabled] = useState<Set<string>>(new Set());
+  // Selected provider in the left list (master-detail).
+  const [selectedId, setSelectedId] = useState<string>("");
   const [newModelName, setNewModelName] = useState<Record<string, string>>({});
+  // Per-provider UI state: advanced toggle, connection test, model fetch.
+  const [advancedOpen, setAdvancedOpen] = useState<Record<string, boolean>>({});
+  const [testing, setTesting] = useState<Record<string, boolean>>({});
+  const [testResult, setTestResult] = useState<Record<string, { ok: boolean; error: string | null } | null>>({});
+  const [fetching, setFetching] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     load();
@@ -102,44 +108,44 @@ function ModelTab() {
     }
     setForm(next);
     setOrder(nextOrder);
-    setEnabled(new Set((enabledModels || []).map((e) => `${e.provider}/${e.model}`)));
     setNewModelName({});
-  }, [model, providers, enabledModels, clearSaved]);
+  }, [model, providers, clearSaved]);
+
+  // Auto-select a provider: prefer one with a configured key, else the first.
+  useEffect(() => {
+    if (selectedId && form[selectedId]) return;
+    const firstReady = order.find((id) => providers.find((p) => p.id === id)?.apiKeyPresent);
+    setSelectedId(firstReady ?? order[0] ?? "");
+  }, [order, form, selectedId, providers]);
 
   if (loading || !model) {
     return <div className="cat-empty">{error || "加载中…"}</div>;
   }
 
+  const selected = selectedId ? form[selectedId] : null;
+  const selectedDef = selectedId ? getProviderDef(selectedId) : undefined;
+  const selectedSaved = providers.find((x) => x.id === selectedId);
+  const selectedKeyPresent = selectedSaved?.apiKeyPresent ?? false;
+
   function patchProvider(id: string, patch: Partial<ProviderFormEntry>) {
     clearSaved();
     setForm((f) => ({ ...f, [id]: { ...f[id], ...patch } }));
   }
-  function toggleEnabled(id: string, name: string) {
-    clearSaved();
-    const key = `${id}/${name}`;
-    setEnabled((s) => {
-      const next = new Set(s);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
-  }
-  function addModel(id: string) {
-    const name = (newModelName[id] || "").trim();
-    if (!name) return;
+  function addModel(id: string, name: string) {
+    const trimmed = name.trim();
+    if (!trimmed) return;
     clearSaved();
     setForm((f) => {
       const p = f[id];
-      if (!p || p.models.some((m) => m.name === name)) return f;
+      if (!p || p.models.some((m) => m.name === trimmed)) return f;
       return {
         ...f,
         [id]: {
           ...p,
-          models: [...p.models, { name, maxTokens: null, contextSize: null, temperature: null, supportsVision: false }],
+          models: [...p.models, { name: trimmed, maxTokens: null, contextSize: null, temperature: null, supportsVision: false }],
         },
       };
     });
-    setNewModelName((s) => ({ ...s, [id]: "" }));
   }
   function removeModel(id: string, name: string) {
     clearSaved();
@@ -147,12 +153,6 @@ function ModelTab() {
       const p = f[id];
       if (!p) return f;
       return { ...f, [id]: { ...p, models: p.models.filter((m) => m.name !== name) } };
-    });
-    setEnabled((s) => {
-      if (!s.has(`${id}/${name}`)) return s;
-      const next = new Set(s);
-      next.delete(`${id}/${name}`);
-      return next;
     });
   }
   function setModelField<K extends keyof ModelEntry>(id: string, name: string, field: K, value: ModelEntry[K]) {
@@ -169,46 +169,82 @@ function ModelTab() {
       };
     });
   }
-  /** 恢复官方推荐：把缺失的 curated 模型补回 form（默认勾选启用）。 */
+  /** 恢复官方推荐：把缺失的 curated 模型补回 form。 */
   function restoreDefaults(id: string) {
     clearSaved();
     const curated = getCuratedModels(id);
     if (curated.length === 0) return;
-    // Compute the missing curated models ONCE from the current form so both the
-    // form append and the enable-set use the SAME additions list. Restoring must
-    // NOT re-check curated models the user deliberately unchecked — only the
-    // missing ones get added (and default-enabled).
-    const present = new Set((form[id]?.models ?? []).map((m) => m.name));
-    const additions: ModelEntry[] = curated
-      .filter((c) => !present.has(c.name))
-      .map((c) => ({
-        name: c.name,
-        maxTokens: c.maxTokens ?? null,
-        supportsVision: c.supportsVision ?? false,
-      }));
-    if (additions.length === 0) return;
     setForm((f) => {
       const p = f[id];
       if (!p) return f;
       const existing = new Set(p.models.map((m) => m.name));
-      const fresh = additions.filter((a) => !existing.has(a.name));
+      const fresh = curated
+        .filter((c) => !existing.has(c.name))
+        .map((c) => ({
+          name: c.name,
+          maxTokens: c.maxTokens ?? null,
+          supportsVision: c.supportsVision ?? false,
+        }));
       if (fresh.length === 0) return f;
       return { ...f, [id]: { ...p, models: [...p.models, ...fresh] } };
     });
-    // Only the newly-restored models default to enabled.
-    setEnabled((s) => {
-      const next = new Set(s);
-      for (const c of additions) next.add(`${id}/${c.name}`);
-      return next;
+  }
+
+  async function onTest(id: string) {
+    const p = form[id];
+    if (!p) return;
+    setTesting((s) => ({ ...s, [id]: true }));
+    setTestResult((s) => ({ ...s, [id]: null }));
+    const res = await testConnection(id, { baseURL: p.baseURL, apiKey: p.apiKey });
+    setTestResult((s) => ({ ...s, [id]: res }));
+    setTesting((s) => ({ ...s, [id]: false }));
+  }
+
+  async function onFetch(id: string) {
+    const p = form[id];
+    if (!p) return;
+    setFetching((s) => ({ ...s, [id]: true }));
+    const res = await fetchRemoteModels(id, { baseURL: p.baseURL, apiKey: p.apiKey });
+    setFetching((s) => ({ ...s, [id]: false }));
+    if (!res.ok) {
+      showToast(res.error || "拉取失败");
+      return;
+    }
+    const have = new Set(p.models.map((m) => m.name));
+    const fresh = (res.models || []).filter((m) => !have.has(m));
+    if (fresh.length === 0) {
+      showToast("未发现新模型");
+      return;
+    }
+    clearSaved();
+    setForm((f) => {
+      const pp = f[id];
+      if (!pp) return f;
+      return {
+        ...f,
+        [id]: {
+          ...pp,
+          models: [...pp.models, ...fresh.map((m) => ({ name: m, maxTokens: null, contextSize: null, temperature: null, supportsVision: false }))],
+        },
+      };
     });
+    showToast(`已添加 ${fresh.length} 个模型`);
+  }
+
+  async function onSetDefault(id: string, name: string) {
+    const ok = await switchActive(id, name);
+    if (!ok) showToast("设置默认模型失败");
   }
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
-    const enabledList = Array.from(enabled).map((k) => {
-      const [provider, modelName] = k.split("/");
-      return { provider, model: modelName };
-    });
+    // 配置即可用：所有 form 中的模型都自动进入启用集，无需二次勾选。
+    const enabledList: { provider: string; model: string }[] = [];
+    for (const id of order) {
+      const p = form[id];
+      if (!p) continue;
+      for (const m of p.models) enabledList.push({ provider: id, model: m.name });
+    }
     const resolved = useConfigStore.getState().resolveActiveModel(null);
     const providerList = order.map((id) => form[id]).filter((p): p is ProviderFormEntry => !!p && !!p.id);
     await save({
@@ -236,33 +272,59 @@ function ModelTab() {
         <div className="model-providers-hint">
           <span className="hint-icon">💡</span>
           <span>
-            勾选模型加入「启用集」（决定聊天框可切换的模型）；每位服务商都可添加 / 删除模型，并编辑最大输出与图片支持。当前默认模型在聊天框中切换。
+            左侧选择服务商配置 API Key 与模型，配置好的模型会直接出现在聊天框下拉。点模型行的「设为默认」可指定默认模型。
           </span>
         </div>
 
-        <div className="provider-grid">
-          {order.map((id) => {
-            const def = getProviderDef(id);
-            const p = form[id];
-            if (!p) return null;
-            // Non-curated (user-added) providers default to fully editable.
-            const editableBaseURL = def?.editableBaseURL ?? true;
-            const displayName = def?.name ?? p.name ?? id;
-            const docsURL = def?.docsURL;
-            const keyPresent = providers.find((x) => x.id === id)?.apiKeyPresent ?? false;
-            return (
-              <div className="provider-card" key={id}>
+        <div className="provider-master-detail">
+          {/* 左：provider 列表 */}
+          <div className="provider-list">
+            {order.map((id) => {
+              const def = getProviderDef(id);
+              const p = form[id];
+              if (!p) return null;
+              const saved = providers.find((x) => x.id === id);
+              const keyPresent = saved?.apiKeyPresent ?? false;
+              const isLocal = id === "ollama";
+              const ready = keyPresent || isLocal;
+              return (
+                <button
+                  type="button"
+                  key={id}
+                  className={`provider-list-item${selectedId === id ? " active" : ""}`}
+                  onClick={() => setSelectedId(id)}
+                >
+                  <span className="provider-list-icon">
+                    <ProviderIcon provider={id} />
+                  </span>
+                  <span className="provider-list-name">{def?.name ?? p.name ?? id}</span>
+                  <span
+                    className={`provider-list-status${ready ? " ready" : ""}`}
+                    title={ready ? "已配置" : "未配置 API Key"}
+                  />
+                  {p.models.length > 0 && <span className="provider-list-count">{p.models.length}</span>}
+                </button>
+              );
+            })}
+          </div>
+
+          {/* 右：详情 */}
+          <div className="provider-detail">
+            {!selected ? (
+              <div className="cat-empty">请在左侧选择一个服务商</div>
+            ) : (
+              <>
                 <div className="provider-card-head">
                   <div className="provider-title">
                     <span className="provider-icon">
-                      <ProviderIcon provider={id} />
+                      <ProviderIcon provider={selectedId} />
                     </span>
-                    <span className="provider-name-static">{displayName}</span>
+                    <span className="provider-name-static">{selectedDef?.name ?? selected.name ?? selectedId}</span>
                   </div>
-                  {docsURL && (
+                  {selectedDef?.docsURL && (
                     <button
                       className="provider-docs"
-                      onClick={(e) => { e.stopPropagation(); openUrl(docsURL); }}
+                      onClick={(e) => { e.stopPropagation(); openUrl(selectedDef.docsURL); }}
                       title="打开官方文档"
                       type="button"
                     >
@@ -272,91 +334,145 @@ function ModelTab() {
                 </div>
 
                 <div className="provider-fields">
-                  {editableBaseURL && (
+                  {(selectedDef?.editableBaseURL ?? true) && (
                     <label className="field">
                       <span className="field-label">Base URL</span>
                       <input
-                        value={p.baseURL}
-                        onChange={(e) => patchProvider(id, { baseURL: e.target.value })}
+                        value={selected.baseURL}
+                        onChange={(e) => patchProvider(selectedId, { baseURL: e.target.value })}
                         placeholder="https://api.example.com/v1"
                       />
                     </label>
                   )}
-                  <label className="field">
+                  <label className="field api-key-field">
                     <span className="field-label">
-                      API Key {keyPresent && !p.apiKey && <em>（已设置）</em>}
+                      API Key {selectedKeyPresent && !selected.apiKey && <em>（已设置）</em>}
                     </span>
-                    <input
-                      type="password"
-                      value={p.apiKey}
-                      onChange={(e) => patchProvider(id, { apiKey: e.target.value })}
-                      placeholder={keyPresent ? "••••••（留空保持原值）" : "输入 API Key"}
-                      autoComplete="off"
-                    />
+                    <div className="api-key-row">
+                      <input
+                        type="password"
+                        value={selected.apiKey}
+                        onChange={(e) => patchProvider(selectedId, { apiKey: e.target.value })}
+                        placeholder={selectedKeyPresent ? "••••••（留空保持原值）" : "输入 API Key"}
+                        autoComplete="off"
+                      />
+                      <button
+                        type="button"
+                        className="btn-secondary test-btn"
+                        onClick={() => onTest(selectedId)}
+                        disabled={testing[selectedId]}
+                      >
+                        {testing[selectedId] ? "检测中…" : "检测连接"}
+                      </button>
+                    </div>
+                    {testResult[selectedId] && (
+                      <div className={testResult[selectedId]!.ok ? "save-ok inline" : "env-warn inline"}>
+                        {testResult[selectedId]!.ok ? "✓ 连接成功" : `✕ ${testResult[selectedId]!.error}`}
+                      </div>
+                    )}
                   </label>
                 </div>
 
                 <div className="model-section">
                   <div className="model-section-head">
                     <span className="model-section-title">模型</span>
-                    <span className="model-section-hint">勾选启用</span>
+                    <div className="model-section-actions">
+                      <button
+                        type="button"
+                        className="btn-secondary fetch-btn"
+                        onClick={() => onFetch(selectedId)}
+                        disabled={fetching[selectedId]}
+                        title="从服务商自动拉取可用模型列表"
+                      >
+                        {fetching[selectedId] ? "拉取中…" : "↻ 拉取模型"}
+                      </button>
+                      {selectedDef && getCuratedModels(selectedId).length > 0 && (
+                        <button
+                          type="button"
+                          className="restore-defaults-btn"
+                          onClick={() => restoreDefaults(selectedId)}
+                          title="补回缺失的官方推荐模型"
+                        >
+                          ↻ 恢复官方推荐
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        className="btn-secondary advanced-toggle"
+                        onClick={() => setAdvancedOpen((s) => ({ ...s, [selectedId]: !s[selectedId] }))}
+                        title="展开编辑最大输出 / 视觉等高级参数"
+                      >
+                        {advancedOpen[selectedId] ? "收起高级" : "高级"}
+                      </button>
+                    </div>
                   </div>
 
-                  {p.models.length === 0 ? (
-                    <div className="model-empty">暂无模型，请在下方添加。</div>
+                  {selected.models.length === 0 ? (
+                    <div className="model-empty">暂无模型，点「拉取模型」自动获取，或在下方手动添加。</div>
                   ) : (
                     <div className="model-rows">
-                      {p.models.map((m) => {
-                        const key = `${id}/${m.name}`;
-                        const checked = enabled.has(key);
-                        const isDefault = model?.provider === id && model?.model === m.name;
+                      {selected.models.map((m) => {
+                        const isDefault = model?.provider === selectedId && model?.model === m.name;
+                        const isLocal = selectedId === "ollama";
+                        const canDefault = selectedKeyPresent || isLocal;
                         return (
-                          <label key={m.name} className={`model-row${checked ? " enabled" : ""}`}>
-                            <input
-                              type="checkbox"
-                              checked={checked}
-                              onChange={() => toggleEnabled(id, m.name)}
-                            />
+                          <div key={m.name} className={`model-row${isDefault ? " default" : ""}`}>
                             <span className="model-name">{m.name}</span>
-                            {isDefault && <span className="model-default-tag">默认</span>}
-                            {m.supportsVision && <span className="model-vision-tag" title="支持图片">👁</span>}
-                            <select
-                              className="model-maxtokens"
-                              value={m.maxTokens ?? ""}
-                              onClick={(e) => e.stopPropagation()}
-                              onChange={(e) => setModelField(id, m.name, "maxTokens", e.target.value === "" ? null : Number(e.target.value))}
-                              title="最大输出 Token"
-                            >
-                              <option value="">默认</option>
-                              <option value="4096">4k</option>
-                              <option value="8192">8k</option>
-                              <option value="16384">16k</option>
-                              <option value="32768">32k</option>
-                              <option value="65536">64k</option>
-                              <option value="131072">128k</option>
-                            </select>
-                            <label
-                              className="model-vision-toggle"
-                              onClick={(e) => e.stopPropagation()}
-                              title="支持图片输入"
-                            >
-                              <input
-                                type="checkbox"
-                                checked={!!m.supportsVision}
-                                onChange={(e) => setModelField(id, m.name, "supportsVision", e.target.checked)}
-                              />
-                              👁
-                            </label>
+                            {m.supportsVision && <span className="model-vision-tag" title="支持图片">👁 视觉</span>}
+                            {isDefault ? (
+                              <span className="model-default-tag">默认</span>
+                            ) : (
+                              <button
+                                type="button"
+                                className="model-set-default"
+                                onClick={() => onSetDefault(selectedId, m.name)}
+                                disabled={!canDefault}
+                                title={canDefault ? "设为默认模型" : "需先配置 API Key"}
+                              >
+                                设为默认
+                              </button>
+                            )}
+                            {advancedOpen[selectedId] && (
+                              <>
+                                <select
+                                  className="model-maxtokens"
+                                  value={m.maxTokens ?? ""}
+                                  onClick={(e) => e.stopPropagation()}
+                                  onChange={(e) => setModelField(selectedId, m.name, "maxTokens", e.target.value === "" ? null : Number(e.target.value))}
+                                  title="最大输出 Token"
+                                >
+                                  <option value="">默认</option>
+                                  <option value="4096">4k</option>
+                                  <option value="8192">8k</option>
+                                  <option value="16384">16k</option>
+                                  <option value="32768">32k</option>
+                                  <option value="65536">64k</option>
+                                  <option value="131072">128k</option>
+                                </select>
+                                <label
+                                  className="model-vision-toggle"
+                                  onClick={(e) => e.stopPropagation()}
+                                  title="支持图片输入"
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={!!m.supportsVision}
+                                    onChange={(e) => setModelField(selectedId, m.name, "supportsVision", e.target.checked)}
+                                  />
+                                  视觉
+                                </label>
+                              </>
+                            )}
                             <button
                               type="button"
                               className="model-remove"
                               aria-label={`移除 ${m.name}`}
                               title="移除模型"
-                              onClick={(e) => { e.stopPropagation(); removeModel(id, m.name); }}
+                              onClick={(e) => { e.stopPropagation(); removeModel(selectedId, m.name); }}
                             >
                               ✕
                             </button>
-                          </label>
+                          </div>
                         );
                       })}
                     </div>
@@ -364,34 +480,32 @@ function ModelTab() {
 
                   <div className="model-add">
                     <input
-                      value={newModelName[id] || ""}
-                      onChange={(e) => setNewModelName((s) => ({ ...s, [id]: e.target.value }))}
-                      placeholder="添加模型，如 llama3.1:8b"
+                      value={newModelName[selectedId] || ""}
+                      onChange={(e) => setNewModelName((s) => ({ ...s, [selectedId]: e.target.value }))}
+                      placeholder="手动添加模型，如 llama3.1:8b"
                       onKeyDown={(e) => {
                         if (e.key === "Enter") {
                           e.preventDefault();
-                          addModel(id);
+                          addModel(selectedId, newModelName[selectedId] || "");
+                          setNewModelName((s) => ({ ...s, [selectedId]: "" }));
                         }
                       }}
                     />
-                    <button type="button" className="btn-secondary" onClick={() => addModel(id)}>
-                      ＋ 添加模型
+                    <button
+                      type="button"
+                      className="btn-secondary"
+                      onClick={() => {
+                        addModel(selectedId, newModelName[selectedId] || "");
+                        setNewModelName((s) => ({ ...s, [selectedId]: "" }));
+                      }}
+                    >
+                      ＋ 添加
                     </button>
-                    {def && getCuratedModels(id).length > 0 && (
-                      <button
-                        type="button"
-                        className="restore-defaults-btn"
-                        onClick={() => restoreDefaults(id)}
-                        title="补回缺失的官方推荐模型"
-                      >
-                        ↻ 恢复官方推荐
-                      </button>
-                    )}
                   </div>
                 </div>
-              </div>
-            );
-          })}
+              </>
+            )}
+          </div>
         </div>
 
         <button className="save-btn" type="submit" disabled={saving}>
