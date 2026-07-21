@@ -534,9 +534,13 @@ button:focus-visible,
   margin: 0 auto 1.25rem;
 }
 
+/* The user's turn stacks vertically (text bubble, then a row of compact
+   attachment chips/thumbs beneath it) instead of laying the huge thumbs
+   side-by-side with the bubble. Everything hugs the right edge. */
 .user-turn {
   display: flex;
-  justify-content: flex-end;
+  flex-direction: column;
+  align-items: flex-end;
 }
 
 .msg-user {
@@ -550,20 +554,61 @@ button:focus-visible,
   word-break: break-word;
 }
 
-.user-images {
+.user-attach {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.4rem;
-  margin-top: 0.4rem;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 0.35rem;
+  margin-top: 0.35rem;
+  max-width: 82%;
 }
 
+/* A referenced file renders as a small clickable chip → opens the PreviewPanel. */
+.user-file-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  max-width: 200px;
+  padding: 0.18rem 0.5rem;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 12px;
+  color: var(--fg-secondary);
+  cursor: pointer;
+  transition: border-color 0.15s ease;
+}
+.user-file-chip:hover {
+  border-color: var(--accent);
+}
+.user-file-chip:hover .user-file-name {
+  color: var(--accent);
+}
+.user-file-icon {
+  font-size: 13px;
+  line-height: 1;
+}
+.user-file-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: color 0.15s ease;
+}
+
+/* Attached images are compact thumbs (click → full-size lightbox). */
 .user-image-thumb {
-  width: 120px;
-  height: 120px;
+  width: 56px;
+  height: 56px;
   object-fit: cover;
   border-radius: 8px;
   border: 1px solid var(--border);
   cursor: zoom-in;
+  transition: border-color 0.15s ease, transform 0.12s ease;
+}
+.user-image-thumb:hover {
+  border-color: var(--accent);
+  transform: translateY(-1px);
 }
 
 .assistant-turn {

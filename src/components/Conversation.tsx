@@ -40,24 +40,41 @@ function TurnView({ turn, isLast, streaming }: { turn: Msg; isLast: boolean; str
   // read on the assistant branch.
   const [showProcess, setShowProcess] = useState(false);
   const openLightbox = useUiStore((s) => s.openLightbox);
+  const setPreviewPath = useUiStore((s) => s.setPreviewPath);
 
   if (turn.role === "user") {
     const imgs = turn.images;
+    const files = turn.attachments;
+    const hasAttach = (imgs && imgs.length > 0) || (files && files.length > 0);
     return (
       <div className="turn user-turn">
         <div className="msg-user">{turn.content}</div>
-        {imgs && imgs.length > 0 && (
-          <div className="user-images">
-            {imgs.map((im, idx) => (
-              <img
-                key={idx}
-                className="user-image-thumb"
-                src={im.thumb}
-                alt={im.name}
-                title={im.name}
-                onClick={() => openLightbox({ src: im.thumb, name: im.name })}
-              />
-            ))}
+        {hasAttach && (
+          <div className="user-attach">
+            {files &&
+              files.map((f, idx) => (
+                <button
+                  key={`f-${idx}`}
+                  type="button"
+                  className="user-file-chip"
+                  title={f.path}
+                  onClick={() => setPreviewPath(f.path)}
+                >
+                  <span className="user-file-icon" aria-hidden="true">📄</span>
+                  <span className="user-file-name">{f.name}</span>
+                </button>
+              ))}
+            {imgs &&
+              imgs.map((im, idx) => (
+                <img
+                  key={idx}
+                  className="user-image-thumb"
+                  src={im.thumb}
+                  alt={im.name}
+                  title={im.name}
+                  onClick={() => openLightbox({ src: im.thumb, name: im.name })}
+                />
+              ))}
           </div>
         )}
       </div>

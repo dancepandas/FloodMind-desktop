@@ -1,7 +1,8 @@
 import { describe, it, expect, afterEach, beforeAll } from "vitest";
-import { render, screen, cleanup } from "@testing-library/react";
+import { render, screen, cleanup, fireEvent } from "@testing-library/react";
 import Conversation from "./Conversation";
 import { useChatStore, _resetBlockIdsForTest } from "../state/chat-store";
+import { useUiStore } from "../state/ui-store";
 
 // jsdom doesn't implement Element.scrollIntoView; the Conversation mounts and
 // runs its auto-scroll effect on every test, so stub it before any render.
@@ -15,6 +16,7 @@ afterEach(() => {
   cleanup();
   // Reset the store + id counter between tests so seeding is order-independent.
   useChatStore.setState({ turns: [], streaming: false });
+  useUiStore.setState({ previewPath: null, lightboxImage: null });
   _resetBlockIdsForTest();
 });
 
@@ -42,5 +44,24 @@ describe("Conversation", () => {
     render(<Conversation />);
     // No image thumbnails should be present on an image-less user bubble.
     expect(screen.queryAllByRole("img")).toHaveLength(0);
+  });
+
+  it("renders a referenced file as a chip that opens the preview panel", () => {
+    useChatStore.setState({
+      turns: [
+        {
+          id: "u3",
+          role: "user",
+          content: "看下这个",
+          attachments: [{ path: "notes/report.txt", name: "report.txt" }],
+        },
+      ] as any,
+    });
+    render(<Conversation />);
+    const chip = screen.getByText("report.txt").closest("button")!;
+    expect(chip).toBeInTheDocument();
+    fireEvent.click(chip);
+    // Clicking the file chip routes to the right-side PreviewPanel.
+    expect(useUiStore.getState().previewPath).toBe("notes/report.txt");
   });
 });
