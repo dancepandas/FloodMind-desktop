@@ -33,6 +33,7 @@ vi.mock("../state/chat-store", () => ({
       streaming: mockStreaming,
       send: sendMock,
       pause: pauseMock,
+      turns: [],
     }),
 }));
 

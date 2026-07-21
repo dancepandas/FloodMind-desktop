@@ -7,6 +7,8 @@ export interface ModelConfig {
   model: string;
   temperature: number;
   maxTokens: number;
+  /** Per-model context-window size (tokens). Used by the context-usage ring. */
+  contextSize?: number | null;
   enableReasoning: boolean;
   enableSearch: boolean;
   supportsVision: boolean;

@@ -10,6 +10,7 @@ import FilePickerModal from "./FilePickerModal";
 import ComposerFilePicker from "./ComposerFilePicker";
 import SlashPicker, { type SlashItem } from "./SlashPicker";
 import ModelPicker from "./ModelPicker";
+import ContextRing from "./ContextRing";
 
 const PERMISSION_MODE_LABELS: Record<PermissionMode, string> = {
   "always-trust": "完全信任",
@@ -480,6 +481,7 @@ export default function Composer() {
             </div>
           </div>
           <div className="composer-actions">
+            <ContextRing />
             <button
               className="send"
               type="submit"

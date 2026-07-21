@@ -232,12 +232,14 @@ def read_model_config() -> dict:
         api_key_present = bool(pdata.get("api_key"))
         temperature = m.get("default_temperature", DEFAULT_TEMPERATURE)
         max_tokens = m.get("default_max_tokens", DEFAULT_MAX_TOKENS)
+        context_size = m.get("context_window", m.get("contextSize"))
         supports_vision = bool(m.get("supports_vision", m.get("supportsVision", False)))
     else:
         active_provider = active_base = ""
         api_key_present = False
         temperature = DEFAULT_TEMPERATURE
         max_tokens = DEFAULT_MAX_TOKENS
+        context_size = None
         supports_vision = False
 
     desktop = raw.get("desktop")
@@ -249,6 +251,7 @@ def read_model_config() -> dict:
             "model": active_id,
             "temperature": temperature,
             "maxTokens": max_tokens,
+            "contextSize": context_size,
             "enableReasoning": bool(desktop_cfg.get("enableReasoning", False)),
             "enableSearch": bool(desktop_cfg.get("enableSearch", False)),
             "supportsVision": supports_vision,

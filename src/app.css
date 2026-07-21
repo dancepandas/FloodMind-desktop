@@ -1327,6 +1327,18 @@ button:focus-visible,
   gap: 0.4rem;
 }
 
+/* Context-usage progress ring — sits to the left of the send button. */
+.context-ring-wrap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: help;
+}
+.context-ring {
+  display: block;
+  flex-shrink: 0;
+}
+
 .composer-context {
   display: flex;
   align-items: center;
