@@ -178,7 +178,7 @@ describe("SettingsView model tab — enabled set + add/delete all providers", ()
     expect(screen.queryByPlaceholderText(/添加模型/)).toBeNull();
   });
 
-  it("shows manual add-model for ollama / custom providers", () => {
+  it("shows only the fetch button for ollama providers too (no more manual add)", () => {
     useConfigStore.setState({
       providers: [
         ...(useConfigStore.getState().providers as any[]),
@@ -187,9 +187,10 @@ describe("SettingsView model tab — enabled set + add/delete all providers", ()
       ],
     } as any);
     render(<SettingsView />);
-    // Switch to the ollama panel (local provider → manual add stays available).
     fireEvent.click(screen.getByRole("button", { name: /Ollama 本地/ }));
-    expect(screen.getByPlaceholderText(/添加模型/)).toBeInTheDocument();
+    // The only add affordance is now the "拉取模型" fetch button — no manual input.
+    expect(screen.getByText("↻ 拉取模型")).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText(/添加模型/)).toBeNull();
   });
 
   it("delete button removes a curated model from the form", () => {
