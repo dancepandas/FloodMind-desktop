@@ -82,6 +82,42 @@ def _patch_mcp_tool_names():
 _patch_mcp_tool_names()
 
 
+# The SDK's model_presets.get_default_model_key() returns the catalog's FIRST
+# model and deliberately ignores any persisted model selection. NativeFloodAgent
+# injects that value into the system prompt before EVERY LLM call ("当前模型: X"),
+# so after the user switches models in the GUI the model misreports itself as the
+# catalog-first entry (e.g. deepseek-v4-pro) even though the desktop's ModelClient
+# is already routing the request to the selected model (routing goes through
+# FloodMindAgent._resolve_llm, which DOES honor desktop.activeModel). Patch the
+# default-key resolver to prefer desktop.activeModel so the prompt — and thus the
+# model's self-report — matches the model that actually answers. Idempotent.
+def _patch_default_model_resolution():
+    try:
+        from floodmind.config import model_presets
+    except Exception:
+        return
+    if getattr(model_presets.get_default_model_key, "_desktop_patched", False):
+        return
+    _orig = model_presets.get_default_model_key
+
+    def _patched():
+        try:
+            from .config_api import _load_raw_settings
+
+            desktop = _load_raw_settings().get("desktop")
+            if isinstance(desktop, dict) and desktop.get("activeModel"):
+                return str(desktop["activeModel"])
+        except Exception:
+            pass
+        return _orig()
+
+    _patched._desktop_patched = True
+    model_presets.get_default_model_key = _patched
+
+
+_patch_default_model_resolution()
+
+
 def _patch_mcp_liveness():
     """Make MCP 'connected' status truthful.
 
