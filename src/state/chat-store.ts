@@ -206,8 +206,13 @@ export function reduceEvent(turn: AssistantTurn, ev: ChatEvent): AssistantTurn {
       break;
     case "usage": {
       const prev = usage ?? { prompt: 0, completion: 0, total: 0 };
+      // Each LLM request's usage.prompt_tokens already counts the FULL
+      // conversation context (history + new user message).  Accumulating
+      // across calls would double/triple-count history — the context ring
+      // needs the latest value.  completion & total accumulate per-call
+      // so the usage badge shows a rough "total tokens this turn" metric.
       usage = {
-        prompt: prev.prompt + ev.prompt,
+        prompt: ev.prompt,
         completion: prev.completion + ev.completion,
         total: prev.total + ev.total,
       };

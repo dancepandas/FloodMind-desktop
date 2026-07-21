@@ -99,10 +99,12 @@ describe("reduceEvent (block model)", () => {
     expect(tools[0]).toMatchObject({ call_id: "c1", status: "ok", output: "r" });
   });
 
-  it("accumulates usage across calls", () => {
+  it("tracks latest prompt token count and accumulates completion/total", () => {
     let t = emptyTurn();
     t = reduceEvent(t, { type: "usage", prompt: 10, completion: 5, total: 15 });
-    t = reduceEvent(t, { type: "usage", prompt: 3, completion: 2, total: 5 });
+    t = reduceEvent(t, { type: "usage", prompt: 13, completion: 2, total: 5 });
+    // prompt: latest value only (each request's prompt_tokens = full context)
+    // completion & total: accumulate across calls
     expect(t.usage).toEqual({ prompt: 13, completion: 7, total: 20 });
   });
 });
