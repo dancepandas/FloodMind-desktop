@@ -126,6 +126,10 @@ function ModelTab() {
   const selectedDef = selectedId ? getProviderDef(selectedId) : undefined;
   const selectedSaved = providers.find((x) => x.id === selectedId);
   const selectedKeyPresent = selectedSaved?.apiKeyPresent ?? false;
+  // 手动添加模型只保留给本地/自定义供应商（Ollama、自定义 OpenAI 兼容、以及用户
+  // 自添加的非 curated 供应商）。官方 curated 供应商的模型靠「拉取模型」（服务商
+  // 官方 /models 端点）或「恢复官方推荐」获得，不暴露手敲模型名的输入栏。
+  const canAddManually = !selectedDef || selectedDef.editableModels;
 
   function patchProvider(id: string, patch: Partial<ProviderFormEntry>) {
     clearSaved();
@@ -408,7 +412,11 @@ function ModelTab() {
                   </div>
 
                   {selected.models.length === 0 ? (
-                    <div className="model-empty">暂无模型，点「拉取模型」自动获取，或在下方手动添加。</div>
+                    <div className="model-empty">
+                      {canAddManually
+                        ? "暂无模型，点「拉取模型」自动获取，或在下方手动添加。"
+                        : "暂无模型，点「拉取模型」从官网自动获取。"}
+                    </div>
                   ) : (
                     <div className="model-rows">
                       {selected.models.map((m) => {
@@ -478,30 +486,32 @@ function ModelTab() {
                     </div>
                   )}
 
-                  <div className="model-add">
-                    <input
-                      value={newModelName[selectedId] || ""}
-                      onChange={(e) => setNewModelName((s) => ({ ...s, [selectedId]: e.target.value }))}
-                      placeholder="手动添加模型，如 llama3.1:8b"
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") {
-                          e.preventDefault();
+                  {canAddManually && (
+                    <div className="model-add">
+                      <input
+                        value={newModelName[selectedId] || ""}
+                        onChange={(e) => setNewModelName((s) => ({ ...s, [selectedId]: e.target.value }))}
+                        placeholder="手动添加模型，如 llama3.1:8b"
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            addModel(selectedId, newModelName[selectedId] || "");
+                            setNewModelName((s) => ({ ...s, [selectedId]: "" }));
+                          }
+                        }}
+                      />
+                      <button
+                        type="button"
+                        className="btn-secondary"
+                        onClick={() => {
                           addModel(selectedId, newModelName[selectedId] || "");
                           setNewModelName((s) => ({ ...s, [selectedId]: "" }));
-                        }
-                      }}
-                    />
-                    <button
-                      type="button"
-                      className="btn-secondary"
-                      onClick={() => {
-                        addModel(selectedId, newModelName[selectedId] || "");
-                        setNewModelName((s) => ({ ...s, [selectedId]: "" }));
-                      }}
-                    >
-                      ＋ 添加
-                    </button>
-                  </div>
+                        }}
+                      >
+                        ＋ 添加
+                      </button>
+                    </div>
+                  )}
                 </div>
               </>
             )}

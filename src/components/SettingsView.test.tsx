@@ -171,9 +171,25 @@ describe("SettingsView model tab — enabled set + add/delete all providers", ()
   });
   afterEach(() => cleanup());
 
-  it("shows add-model UI for a curated (non-openai) provider too", () => {
+  it("hides manual add-model for curated official providers (fetch from official site)", () => {
     render(<SettingsView />);
-    expect(screen.getAllByPlaceholderText(/添加模型/).length).toBeGreaterThan(0);
+    // The auto-selected provider (qwen, has a key) is a curated official
+    // provider → no manual add-model input. Models come from "拉取模型".
+    expect(screen.queryByPlaceholderText(/添加模型/)).toBeNull();
+  });
+
+  it("shows manual add-model for ollama / custom providers", () => {
+    useConfigStore.setState({
+      providers: [
+        ...(useConfigStore.getState().providers as any[]),
+        { id: "ollama", name: "Ollama 本地", baseURL: "http://localhost:11434/v1",
+          apiKeyPresent: false, models: [] },
+      ],
+    } as any);
+    render(<SettingsView />);
+    // Switch to the ollama panel (local provider → manual add stays available).
+    fireEvent.click(screen.getByRole("button", { name: /Ollama 本地/ }));
+    expect(screen.getByPlaceholderText(/添加模型/)).toBeInTheDocument();
   });
 
   it("delete button removes a curated model from the form", () => {
