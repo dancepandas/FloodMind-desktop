@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useConfigStore, type EnabledModel } from "../state/config-store";
 import { useChatStore } from "../state/chat-store";
-import { useUiStore } from "../state/ui-store";
 import ProviderIcon from "./ProviderIcon";
 
 interface Row {
@@ -9,7 +8,6 @@ interface Row {
   providerName: string;
   model: string;
   supportsVision: boolean;
-  keyPresent: boolean;
   active: boolean;
 }
 
@@ -25,7 +23,6 @@ export default function ModelPicker({
   const active = useConfigStore((s) => s.model);
   const switching = useConfigStore((s) => s.switching);
   const streaming = useChatStore((s) => s.streaming);
-  const showToast = useUiStore((s) => s.showToast);
   const [hi, setHi] = useState(0);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -36,12 +33,13 @@ export default function ModelPicker({
         const p = provById.get(e.provider);
         const m = p?.models.find((mm) => mm.name === e.model);
         if (!p || !m) return null;
+        const usable = !!p.apiKeyPresent || e.provider === "ollama";
+        if (!usable) return null;
         return {
           providerId: p.id,
           providerName: p.name,
           model: m.name,
           supportsVision: !!m.supportsVision,
-          keyPresent: !!p.apiKeyPresent,
           active: active?.provider === p.id && active?.model === m.name,
         };
       })
@@ -80,7 +78,7 @@ export default function ModelPicker({
     else if (e.key === "Enter") {
       e.preventDefault();
       const r = rows[hi];
-      if (r && r.keyPresent) onPick(r.providerId, r.model);
+      if (r) onPick(r.providerId, r.model);
     }
   }
 
@@ -105,17 +103,14 @@ export default function ModelPicker({
             </div>
             {g.rows.map((r) => {
               const idx = rows.indexOf(r);
-              const blocked = !r.keyPresent || disabled;
               return (
                 <button
                   type="button"
                   key={`${r.providerId}/${r.model}`}
                   className={`model-picker-row${r.active ? " active" : ""}${idx === hi ? " hi" : ""}`}
                   data-vision={r.supportsVision ? "true" : "false"}
-                  disabled={blocked}
-                  title={!r.keyPresent ? "需配置 API Key" : undefined}
+                  disabled={disabled}
                   onClick={() => {
-                    if (!r.keyPresent) { showToast("该模型所在供应商未配置 API Key，请先在设置中填写"); return; }
                     if (disabled) return;
                     onPick(r.providerId, r.model);
                   }}
@@ -123,7 +118,6 @@ export default function ModelPicker({
                   <span className="model-picker-check">{r.active ? "●" : ""}</span>
                   <span className="model-picker-name">{r.model}</span>
                   {r.supportsVision && <span className="model-picker-vision" title="支持图片">👁</span>}
-                  {!r.keyPresent && <span className="model-picker-locked">🔒 需配置Key</span>}
                 </button>
               );
             })}

@@ -6,9 +6,6 @@ import { useConfigStore } from "../state/config-store";
 vi.mock("../state/chat-store", () => ({
   useChatStore: (sel: (s: any) => any) => sel({ streaming: false }),
 }));
-vi.mock("../state/ui-store", () => ({
-  useUiStore: (sel: (s: any) => any) => sel({ showToast: vi.fn() }),
-}));
 
 describe("ModelPicker", () => {
   afterEach(() => cleanup());
@@ -32,26 +29,28 @@ describe("ModelPicker", () => {
     } as any);
   });
 
-  it("groups enabled models by provider", () => {
+  it("shows only usable models grouped by provider", () => {
     render(<ModelPicker onPick={() => {}} onClose={() => {}} />);
+    // qwen has apiKey → shown
     expect(screen.getByText("通义千问")).toBeInTheDocument();
-    expect(screen.getByText("月之暗面")).toBeInTheDocument();
     expect(screen.getByText("qwen3.7-plus")).toBeInTheDocument();
-    expect(screen.getByText("kimi-2.6")).toBeInTheDocument();
+    expect(screen.getByText("qwen3.6-flash")).toBeInTheDocument();
+    // moonshot has no apiKey → hidden entirely (no group header, no model)
+    expect(screen.queryByText("月之暗面")).not.toBeInTheDocument();
+    expect(screen.queryByText("kimi-2.6")).not.toBeInTheDocument();
   });
 
   it("shows vision badge only for vision models", () => {
     render(<ModelPicker onPick={() => {}} onClose={() => {}} />);
-    expect(document.querySelectorAll('[data-vision="true"]').length).toBeGreaterThanOrEqual(2);
+    // only qwen3.7-plus has supportsVision in the visible set
+    expect(document.querySelectorAll('[data-vision="true"]').length).toBe(1);
   });
 
-  it("greys out models whose provider has no api key and blocks pick", () => {
+  it("hides models whose provider has no api key", () => {
     const onPick = vi.fn();
     render(<ModelPicker onPick={onPick} onClose={() => {}} />);
-    const kimiBtn = screen.getByText("kimi-2.6").closest("button")!;
-    expect(kimiBtn).toHaveAttribute("disabled");
-    fireEvent.click(kimiBtn);
-    expect(onPick).not.toHaveBeenCalled();
+    // kimi-2.6 is not rendered at all because moonshot has no key
+    expect(screen.queryByText("kimi-2.6")).toBeNull();
   });
 
   it("picks a usable model", () => {
@@ -59,5 +58,23 @@ describe("ModelPicker", () => {
     render(<ModelPicker onPick={onPick} onClose={() => {}} />);
     fireEvent.click(screen.getByText("qwen3.6-flash"));
     expect(onPick).toHaveBeenCalledWith("qwen", "qwen3.6-flash");
+  });
+
+  it("allows picking local provider (ollama) models without an api key", () => {
+    useConfigStore.setState({
+      model: { provider: "ollama", model: "llama3" } as any,
+      enabledModels: [{ provider: "ollama", model: "llama3" }],
+      providers: [
+        { id: "ollama", name: "Ollama 本地", baseURL: "http://localhost:11434/v1", apiKeyPresent: false,
+          models: [{ name: "llama3", maxTokens: 4096, supportsVision: false }] },
+      ],
+      switching: false,
+    } as any);
+    const onPick = vi.fn();
+    render(<ModelPicker onPick={onPick} onClose={() => {}} />);
+    const btn = screen.getByText("llama3").closest("button")!;
+    expect(btn).not.toHaveAttribute("disabled");
+    fireEvent.click(btn);
+    expect(onPick).toHaveBeenCalledWith("ollama", "llama3");
   });
 });
