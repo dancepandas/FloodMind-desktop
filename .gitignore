@@ -61,3 +61,6 @@ sidecar/build-nuitka/
 sidecar/dist/
 sidecar/build/
 sidecar/*.spec
+.ds-research/
+.tmp-research/
+.workbuddy/

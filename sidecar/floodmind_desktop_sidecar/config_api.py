@@ -264,25 +264,38 @@ def read_model_config() -> dict:
 # ── Write ────────────────────────────────────────────────────
 
 def _gui_model_to_sdk(mi: dict, prev_model: dict | None) -> dict:
-    """GUI model entry → SDK model dict (id + context_window + defaults)."""
+    """GUI model entry → SDK model dict (id + context_window + defaults).
+
+    Context window and max output tokens are auto-filled from the model-metadata
+    table (name-based lookup) when the GUI does not supply explicit values, so
+    the user never has to type context sizes manually.
+    """
+    from .model_metadata import lookup_model_metadata
+
     prev_model = prev_model or {}
     mtok = mi.get("maxTokens")
     mctx = mi.get("contextSize")
     mtemp = mi.get("temperature")
+    model_name = mi.get("name", "")
+
+    # Context window: explicit GUI value > previous stored value > metadata
+    # lookup > sensible fallback.
+    ctx = int(mctx) if mctx else int(prev_model.get("context_window") or 0)
+    if not ctx:
+        ctx = lookup_model_metadata(model_name)["context_window"]
+
+    # Max output tokens: same priority chain.
+    tok = int(mtok) if mtok else int(prev_model.get("default_max_tokens") or 0)
+    if not tok:
+        tok = lookup_model_metadata(model_name)["max_output_tokens"]
 
     # Preserve supports_* / description seeded earlier, then apply GUI values.
     sdk = dict(prev_model)
-    sdk["id"] = mi.get("name", "")
+    sdk["id"] = model_name
     sdk["name"] = mi.get("name", sdk.get("name", sdk["id"]))
 
-    ctx = int(mctx) if mctx else int(prev_model.get("context_window") or 0)
-    if not ctx:
-        ctx = int(mtok) if mtok else DEFAULT_CONTEXT_WINDOW
     sdk["context_window"] = ctx
-
-    sdk["default_max_tokens"] = int(mtok) if mtok else int(
-        prev_model.get("default_max_tokens") or DEFAULT_MAX_TOKENS
-    )
+    sdk["default_max_tokens"] = tok
     sdk["default_temperature"] = (
         float(mtemp) if mtemp is not None
         else float(prev_model.get("default_temperature") or DEFAULT_TEMPERATURE)

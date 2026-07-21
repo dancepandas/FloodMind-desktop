@@ -329,6 +329,7 @@ class FloodMindAgent:
         # The desktop can start before the user has configured an API key.
         # Degrade gracefully: the agent stays unbuilt until reload_model() succeeds
         # (e.g. after the user fills in the Settings GUI and saves).
+        self._resolved_context_window = 32768  # safe fallback, updated by _resolve_llm
         try:
             self._llm = self._resolve_llm()
         except Exception as e:
@@ -428,18 +429,19 @@ class FloodMindAgent:
         api_key/base_url are used (cross-provider switching would otherwise pick
         up the wrong credentials). Generation params come from the model's own
         definition (single source of truth).
+
+        Also stores the resolved context_window on ``self._resolved_context_window``
+        so ``_build_agent`` can pass the per-model value to DualMemory instead of a
+        blanket hardcoded default.
         """
         from floodmind.agent.native.model_client import ModelClient
         from floodmind.config.model_resolver import resolve_model
 
         desktop = self._desktop_block()
         active = desktop.get("activeModel") or None
-        # provider_id disambiguates when two providers expose the same model id
-        # (official deepseek vs a LAN OpenAI-compatible proxy both serving
-        # deepseek-v4-flash); without it resolve_model picks the catalog-first
-        # match, silently routing to the wrong provider.
         provider = desktop.get("activeProvider") or None
         rm = resolve_model(model_key=active, provider_id=provider)
+        self._resolved_context_window = rm.context_window
         return ModelClient(
             api_key=rm.api_key,
             base_url=rm.base_url,
@@ -464,6 +466,7 @@ class FloodMindAgent:
             rm = resolve_model()  # catalog-first, ignores desktop.activeModel
             if not rm.api_key:
                 return None
+            self._resolved_context_window = rm.context_window
             print(f"[sidecar] falling back to first configured model: {rm.provider}/{rm.id}", file=sys.stderr)
             return ModelClient(
                 api_key=rm.api_key,
@@ -512,7 +515,7 @@ class FloodMindAgent:
             session_id=session_id,
             persist_dir=persist_dir,
             llm=self._llm,
-            context_window=32768,
+            context_window=self._resolved_context_window,
         )
 
         # Desktop has an explicit workspace; tell the agent to search the whole
