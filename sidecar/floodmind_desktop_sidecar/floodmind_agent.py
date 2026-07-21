@@ -843,7 +843,12 @@ class FloodMindAgent:
             from floodmind.config.settings import reload_config
 
             reload_config()  # pick up the just-saved settings.json
-            sid = self._agent.session_id
+            # When the agent was never built (first launch, no API key yet), use a
+            # fresh default session so the first config save can bring it up.
+            if self._agent is not None:
+                sid = self._agent.session_id
+            else:
+                sid = "desktop-default"
             _, persist_dir = self._memory_target(sid)
 
             self._llm = self._resolve_llm()
@@ -865,7 +870,10 @@ class FloodMindAgent:
         holds the old agent; self._agent swaps on the next stream.
         """
         try:
-            sid = self._agent.session_id
+            if self._agent is not None:
+                sid = self._agent.session_id
+            else:
+                sid = "desktop-default"
             _, persist_dir = self._memory_target(sid)
             with self._fg():
                 self._agent = self._build_agent(sid, persist_dir)
