@@ -93,11 +93,31 @@ def _neutralize_legacy_config() -> None:
 # ── Model ↔ GUI field translation ────────────────────────────
 
 def _model_to_gui(m: dict) -> dict:
-    """SDK model dict → GUI {name, maxTokens, contextSize, temperature, supportsVision}."""
+    """SDK model dict → GUI {name, maxTokens, contextSize, temperature, supportsVision}.
+
+    Context window is filled from the stored value, but if the stored value is
+    the SDK's hardcoded fallback (32768) and the metadata table has a better
+    match for this model, the metadata wins.  This corrects stale records that
+    were saved before the model-metadata feature existed.
+    """
+    name = m.get("id", "")
+    ctx = m.get("context_window", m.get("contextSize")) or 0
+    tok = m.get("default_max_tokens", m.get("maxTokens"))
+    # If the stored context window is exactly the old SDK default, it was never
+    # explicitly set — let metadata correct it.
+    if ctx == 32768 or not ctx:
+        try:
+            from .model_metadata import lookup_model_metadata
+            meta = lookup_model_metadata(name)
+            ctx = meta["context_window"]
+            if not tok:
+                tok = meta["max_output_tokens"]
+        except Exception:
+            pass
     return {
-        "name": m.get("id", ""),
-        "maxTokens": m.get("default_max_tokens", m.get("maxTokens")),
-        "contextSize": m.get("context_window", m.get("contextSize")),
+        "name": name,
+        "maxTokens": tok,
+        "contextSize": ctx,
         "temperature": m.get("default_temperature", m.get("temperature")),
         "supportsVision": bool(m.get("supports_vision", m.get("supportsVision", False))),
     }
@@ -233,6 +253,10 @@ def read_model_config() -> dict:
         temperature = m.get("default_temperature", DEFAULT_TEMPERATURE)
         max_tokens = m.get("default_max_tokens", DEFAULT_MAX_TOKENS)
         context_size = m.get("context_window", m.get("contextSize"))
+        # Correct stale SDK-default context windows from metadata.
+        if context_size == 32768 or not context_size:
+            from .model_metadata import lookup_model_metadata
+            context_size = lookup_model_metadata(active_id)["context_window"]
         supports_vision = bool(m.get("supports_vision", m.get("supportsVision", False)))
     else:
         active_provider = active_base = ""
