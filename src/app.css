@@ -990,14 +990,6 @@ button:focus-visible,
 }
 
 /* 执行中的动态状态行（主流风格：简洁动画文本，最多两条，竖排分行） */
-.live-status-area {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 0.2rem;
-  margin: 0.1rem 0 0.15rem;
-}
-
 .live-status-item {
   font-size: 13px;
   color: var(--accent);

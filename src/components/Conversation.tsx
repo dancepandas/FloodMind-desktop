@@ -175,11 +175,21 @@ function TurnView({ turn, isLast, streaming }: { turn: Msg; isLast: boolean; str
     );
   }
 
-  // 执行中：最多两条动态状态行（思考中/调用工具），默认无过程详情；点击某行
-  // 展开当前最新一项（工具行 = 工具名 + 定长参数），新项到来自动替换。
-  const processBlocks = doneProcessBlocks;
-  const lastThinking = processBlocks.filter((b) => b.kind === "thinking").pop();
-  const lastTool = processBlocks.filter((b) => b.kind === "tool").pop();
+  // 执行中：一条随当前步骤变化的动态指示（主流），默认无过程详情；点击展开当前项。
+  const lastBlock = turn.blocks[turn.blocks.length - 1];
+  const status: "thinking" | "tool" | "writing" | null = lastBlock
+    ? lastBlock.kind === "thinking"
+      ? "thinking"
+      : lastBlock.kind === "tool"
+        ? "tool"
+        : lastBlock.kind === "text"
+          ? "writing"
+          : null
+    : null;
+  const statusBlock =
+    status === "thinking" || status === "tool" ? lastBlock : null;
+  const statusLabel =
+    status === "thinking" ? "思考中" : status === "tool" ? "调用工具" : status === "writing" ? "正在生成回答" : "";
   const answerTexts = turn.blocks.filter((b) => b.kind === "text");
   const stopped = !streaming && turn.blocks.length > 0;
 
@@ -195,48 +205,38 @@ function TurnView({ turn, isLast, streaming }: { turn: Msg; isLast: boolean; str
         <div className="blk blk-error">已停止</div>
       ) : (
         <>
-          {/* 动态状态行（主流风格：简洁动画文本，最多两条；点击可展开当前项） */}
-          <div className="live-status-area">
-            {lastThinking && (
-              <span
-                className="live-status-item"
-                role="button"
-                tabIndex={0}
-                onClick={() => setExpandedKind(expandedKind === "thinking" ? null : "thinking")}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" || e.key === " ") {
-                    e.preventDefault();
-                    setExpandedKind(expandedKind === "thinking" ? null : "thinking");
-                  }
-                }}
-              >
-                <span className="live-label">思考中<span className="live-dots"><span className="live-dot" /><span className="live-dot" /><span className="live-dot" /></span></span>
+          {/* 当前步骤动态指示（思考中 → 调用工具 → 正在生成回答），随步骤变化 */}
+          {status && (
+            <span
+              className="live-status-item"
+              role={statusBlock ? "button" : undefined}
+              tabIndex={statusBlock ? 0 : undefined}
+              onClick={() => {
+                if (!statusBlock) return;
+                const k = statusBlock.kind === "thinking" ? "thinking" : "tool";
+                setExpandedKind(expandedKind === k ? null : k);
+              }}
+              onKeyDown={(e) => {
+                if (statusBlock && (e.key === "Enter" || e.key === " ")) {
+                  e.preventDefault();
+                  const k = statusBlock.kind === "thinking" ? "thinking" : "tool";
+                  setExpandedKind(expandedKind === k ? null : k);
+                }
+              }}
+            >
+              <span className="live-label">
+                {statusLabel}
+                <span className="live-dots"><span className="live-dot" /><span className="live-dot" /><span className="live-dot" /></span>
               </span>
-            )}
-            {lastTool && (
-              <span
-                className="live-status-item"
-                role="button"
-                tabIndex={0}
-                onClick={() => setExpandedKind(expandedKind === "tool" ? null : "tool")}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" || e.key === " ") {
-                    e.preventDefault();
-                    setExpandedKind(expandedKind === "tool" ? null : "tool");
-                  }
-                }}
-              >
-                <span className="live-label">调用工具<span className="live-dots"><span className="live-dot" /><span className="live-dot" /><span className="live-dot" /></span></span>
-              </span>
-            )}
-          </div>
-          {expandedKind === "thinking" && lastThinking && (
-            <div className="thinking-body">{lastThinking.content}</div>
+            </span>
           )}
-          {expandedKind === "tool" && lastTool && (
+          {expandedKind === "thinking" && statusBlock?.kind === "thinking" && (
+            <div className="thinking-body">{statusBlock.content}</div>
+          )}
+          {expandedKind === "tool" && statusBlock?.kind === "tool" && (
             <div className="tool-detail live-tool-detail">
-              <strong>{lastTool.tool_name}</strong>
-              {lastTool.input ? `：${truncateParam(lastTool.input)}` : ""}
+              <strong>{statusBlock.tool_name}</strong>
+              {statusBlock.input ? `：${truncateParam(statusBlock.input)}` : ""}
             </div>
           )}
           {/* 流式回答输出（执行中持续显示） */}

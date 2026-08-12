@@ -171,12 +171,12 @@ describe("Conversation", () => {
 
   it("shows 思考中 status while reasoning and expands the current thinking on click", () => {
     seedAssistant(
-      [{ id: "t", kind: "thinking", content: "先算一下" }, { id: "a", kind: "text", content: "答案" }],
+      [{ id: "t", kind: "thinking", content: "先算一下" }],
       false,
       true,
     );
     render(<Conversation />);
-    // 执行中：思考中状态行可见，默认不显示思考内容
+    // 执行中：当前步骤动态指示 = 思考中，默认不显示思考内容
     expect(screen.getByText(/思考中/)).toBeInTheDocument();
     expect(screen.queryByText("先算一下")).not.toBeInTheDocument();
     // 点击展开当前思考内容
@@ -197,6 +197,13 @@ describe("Conversation", () => {
     // 点击展开工具名 + 参数
     fireEvent.click(screen.getByText(/调用工具/));
     expect(screen.getByText("Read")).toBeInTheDocument();
+  });
+
+  it("shows 正在生成回答 status while the model writes", () => {
+    seedAssistant([{ id: "a", kind: "text", content: "答案" }], false, true);
+    render(<Conversation />);
+    expect(screen.getByText(/正在生成回答/)).toBeInTheDocument();
+    expect(screen.getByText("答案")).toBeInTheDocument();
   });
 
   it("shows 已停止 for an aborted (stopped) turn", () => {
