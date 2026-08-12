@@ -61,19 +61,17 @@ def test_background_tasks_stubagent_fallback(tmp_path, monkeypatch):
 
 
 def test_bg_shell_reads_agent_bound_service(tmp_path):
-    """v2.0.0 壳：list/kill 读 agent 绑定的 BackgroundTaskService，不再用全局单例。"""
-    from floodmind.agent.runtime.services.background_task_service import BackgroundTaskService
+    """v2.0.1：list/kill 走 SDK 公共 Agent 方法，不再碰私有服务。"""
     from floodmind_desktop_sidecar.floodmind_agent import FloodMindAgent
 
     agent = FloodMindAgent.__new__(FloodMindAgent)
-    svc = BackgroundTaskService(base_dir=str(tmp_path))
-
-    class Raw:
-        _background_task_service = svc
 
     class FakeAgent:
-        session_id = "s1"
-        raw = Raw()
+        def list_background_tasks(self):
+            return []
+
+        def kill_background_task(self, task_id):
+            return False
 
     agent._agent = FakeAgent()
     # 空服务 → list 返回 []（访问器路径打通、无崩溃）
@@ -83,46 +81,29 @@ def test_bg_shell_reads_agent_bound_service(tmp_path):
 
 
 def test_retired_agent_tasks_survive_replacement(tmp_path):
-    """v2.0.0 壳：agent 重建后，旧 agent 绑定的运行中后台任务仍可见（防 GC 误杀）。"""
+    """v2.0.1 壳：agent 重建后，旧 agent 的公共 list_background_tasks 仍被聚合（防误杀）。"""
     from floodmind_desktop_sidecar.floodmind_agent import FloodMindAgent
 
     agent = FloodMindAgent.__new__(FloodMindAgent)
     agent._retired_agents = []
 
-    class FakeTask:
-        task_id = "t-retired"
-        command = "ping -n 100"
-        status = "running"
-        exit_code = None
-        started_at = 1.0
-        finished_at = None
-        tail = ""
-        stdout_path = str(tmp_path / "out.log")
-
-    class FakeSvc:
-        def list(self, sid):
-            return [FakeTask()]
-
-        def kill(self, sid, tid):
-            return False
-
-    class Raw:
-        _background_task_service = FakeSvc()
-
     class RetiredAgent:
-        session_id = "s-retired"
-        raw = Raw()
+        def list_background_tasks(self):
+            return [{
+                "task_id": "t-retired", "command": "ping -n 100", "status": "running",
+                "exit_code": None, "started_at": 1.0, "finished_at": None,
+                "tail": "", "stdout_path": str(tmp_path / "out.log"),
+            }]
 
-    class ActiveSvc:
-        def list(self, sid):
-            return []
-
-        def kill(self, sid, tid):
+        def kill_background_task(self, task_id):
             return False
 
     class ActiveAgent:
-        session_id = "s-active"
-        raw = type("R", (), {"_background_task_service": ActiveSvc()})()
+        def list_background_tasks(self):
+            return []
+
+        def kill_background_task(self, task_id):
+            return False
 
     agent._agent = ActiveAgent()
     agent._retired_agents = [RetiredAgent()]

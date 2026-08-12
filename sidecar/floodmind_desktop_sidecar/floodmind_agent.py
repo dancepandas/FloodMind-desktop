@@ -562,12 +562,6 @@ class FloodMindAgent:
             retired.append(old)
             self._prune_retired_agents()
 
-    def _retired_service(self, agent):
-        """Desktop outer shell: v2.0.0 BackgroundTaskService is bound per agent
-        (no global singleton); SDK exposes no public accessor yet."""
-        raw = getattr(agent, "raw", None)
-        return getattr(raw, "_background_task_service", None)
-
     def _bg_agents(self):
         """The active agent + retired wrappers still owning background tasks."""
         out = []
@@ -582,75 +576,65 @@ class FloodMindAgent:
         and lets the SDK release the processes)."""
         keep = []
         for agent in self._retired_agents:
-            svc = self._retired_service(agent)
-            sid = getattr(agent, "session_id", None)
+            fn = getattr(agent, "list_background_tasks", None)
             has_active = False
-            if svc is not None and sid:
+            if callable(fn):
                 try:
-                    tasks = svc.list(sid)
-                    has_active = any(t.status not in _BG_TERMINAL_STATUSES for t in tasks)
+                    tasks = fn() or []
+                    has_active = any(
+                        isinstance(t, dict)
+                        and t.get("status") not in _BG_TERMINAL_STATUSES
+                        for t in tasks
+                    )
                 except Exception:
                     has_active = True  # 无法确认终态 → 保留，防误杀
             if has_active:
                 keep.append(agent)
         self._retired_agents = keep
 
-    def _bg_service(self):
-        """Active agent's background task service (outer shell)."""
-        return self._retired_service(self._agent) if self._agent is not None else None
-
     def list_background_tasks(self) -> list[dict]:
         """Serialize background tasks across the active + retired agents.
 
-        ``tail`` is refreshed live from the task's stdout file so a running task
-        shows its current output tail, not only the completion notification.
+        Uses the SDK v2.0.1 public ``Agent.list_background_tasks()`` (no private
+        access). ``tail`` is refreshed live from the task's stdout file so a
+        running task shows its current output tail, not only the completion
+        snapshot.
         """
         out: list[dict] = []
         seen: set[str] = set()
         for agent in self._bg_agents():
-            svc = self._retired_service(agent)
-            sid = getattr(agent, "session_id", None)
-            if svc is None or not sid:
+            fn = getattr(agent, "list_background_tasks", None)
+            if not callable(fn):
                 continue
             try:
-                tasks = svc.list(sid)
+                tasks = fn() or []
             except Exception as e:
-                print(f"[sidecar] bg list failed (agent={sid}): {e}", file=sys.stderr)
+                print(f"[sidecar] bg list failed: {e}", file=sys.stderr)
                 continue  # 单个 agent 失败不拖垮整体
             for t in tasks:
-                if t.task_id in seen:
+                if not isinstance(t, dict) or t.get("task_id") in seen:
                     continue
-                seen.add(t.task_id)
-                tail = t.tail
-                if not tail:
+                seen.add(t.get("task_id"))
+                if not t.get("tail"):
                     try:
-                        tail = _tail_file(t.stdout_path, 200)
+                        t = {**t, "tail": _tail_file(t.get("stdout_path", ""), 200)}
                     except Exception:
-                        tail = ""
-                out.append({
-                    "task_id": t.task_id,
-                    "command": t.command,
-                    "status": t.status,
-                    "exit_code": t.exit_code,
-                    "started_at": t.started_at,
-                    "finished_at": t.finished_at,
-                    "tail": tail,
-                    "stdout_path": t.stdout_path,
-                })
+                        pass
+                out.append(t)
         return out
 
     def kill_background_task(self, task_id: str) -> bool:
-        """Terminate a running background task across active/retired agents."""
+        """Terminate a running background task across active/retired agents
+        (SDK v2.0.1 public ``Agent.kill_background_task``)."""
         for agent in self._bg_agents():
-            svc = self._retired_service(agent)
-            sid = getattr(agent, "session_id", None)
-            if svc is None or not sid:
+            fn = getattr(agent, "kill_background_task", None)
+            if not callable(fn):
                 continue
             try:
-                if svc.kill(sid, task_id):
+                if fn(task_id):
                     return True
             except Exception as e:
-                print(f"[sidecar] bg kill failed (agent={sid} task={task_id}): {e}", file=sys.stderr)
+                print(f"[sidecar] bg kill failed (task={task_id}): {e}", file=sys.stderr)
                 continue
         return False
 
