@@ -472,7 +472,7 @@ class FloodMindAgent:
         #（否则 MiniMax-M3 等模型不发 thinking 增量 → 「模型思考中」指示不显示）。
         self._model_supports_reasoning = bool(getattr(rm, "supports_reasoning", False))
         enable_reasoning = bool(desktop.get("enableReasoning", self._model_supports_reasoning))
-        return ModelClient(
+        mc = ModelClient(
             api_key=rm.api_key,
             base_url=rm.base_url,
             model_name=rm.id,
@@ -481,6 +481,11 @@ class FloodMindAgent:
             enable_thinking=enable_reasoning,
             provider=rm.provider,
         )
+        # 桌面端外层壳（SDK v2.0.1）：_init_model_client 读 llm_service.enable_reasoning
+        # 而非 enable_thinking，会把传入的 ModelClient 重建为 enable_thinking=False。
+        # 设实例属性让 SDK 正确读到思考开关；SDK 修后去掉。
+        mc.enable_reasoning = enable_reasoning
+        return mc
 
     def _load_llm_fallback(self):
         """Last-resort: ignore desktop.activeModel and use the first configured model.

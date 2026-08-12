@@ -308,10 +308,12 @@ def test_resolve_llm_defaults_reasoning_to_model_capability(monkeypatch):
     from floodmind_desktop_sidecar.floodmind_agent import FloodMindAgent
 
     captured: dict = {}
+    instances: list = []
 
     class FakeMC:
         def __init__(self, **kw):
             captured.update(kw)
+            instances.append(self)
 
     # 推理模型，desktop 块无 enableReasoning → 默认开
     rm = ResolvedModel(
@@ -343,6 +345,8 @@ def test_resolve_llm_defaults_reasoning_to_model_capability(monkeypatch):
     assert a.reload_model() is True
     assert captured["enable_thinking"] is True
     assert a._model_supports_reasoning is True
+    # 壳：enable_reasoning 实例属性让 SDK _init_model_client 读到 thinking 开关。
+    assert instances and getattr(instances[-1], "enable_reasoning", False) is True
 
     # 非推理模型 → 默认关
     rm2 = ResolvedModel(
