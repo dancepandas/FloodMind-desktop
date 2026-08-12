@@ -140,6 +140,12 @@ function TurnView({ turn, isLast, streaming }: { turn: Msg; isLast: boolean; str
   );
   const lastThinking = processBlocks.filter((b) => b.kind === "thinking").pop();
   const lastTool = processBlocks.filter((b) => b.kind === "tool").pop();
+  const lastBlock = turn.blocks[turn.blocks.length - 1];
+  const isThinkingActive = lastBlock?.kind === "thinking";
+  const isToolActive =
+    lastBlock?.kind === "tool" &&
+    ["running", "pending", "awaiting_permission"].includes(lastBlock.status);
+  const answerTexts = turn.blocks.filter((b) => b.kind === "text");
   const stopped = !streaming && turn.blocks.length > 0;
 
   return (
@@ -162,7 +168,7 @@ function TurnView({ turn, isLast, streaming }: { turn: Msg; isLast: boolean; str
               aria-expanded={expandedKind === "thinking"}
             >
               <span className="caret">{expandedKind === "thinking" ? "▾" : "▸"}</span>
-              <span className="live-label">思考中<span className="live-dots" /></span>
+              <span className="live-label">思考中{isThinkingActive && <span className="live-dots" />}</span>
             </button>
           )}
           {lastTool && (
@@ -173,7 +179,7 @@ function TurnView({ turn, isLast, streaming }: { turn: Msg; isLast: boolean; str
               aria-expanded={expandedKind === "tool"}
             >
               <span className="caret">{expandedKind === "tool" ? "▾" : "▸"}</span>
-              <span className="live-label">调用工具<span className="live-dots" /></span>
+              <span className="live-label">调用工具{isToolActive && <span className="live-dots" />}</span>
             </button>
           )}
           {expandedKind === "thinking" && lastThinking && (
@@ -185,6 +191,12 @@ function TurnView({ turn, isLast, streaming }: { turn: Msg; isLast: boolean; str
               {lastTool.input ? `：${truncateParam(lastTool.input)}` : ""}
             </div>
           )}
+          {/* 流式回答输出（执行中持续显示） */}
+          {answerTexts.map((b) => (
+            <div key={b.id} data-block-id={b.id}>
+              <BlockView block={b} isLive={false} />
+            </div>
+          ))}
         </>
       )}
       {errors.map((b) => <BlockView key={b.id} block={b} isLive={false} />)}
