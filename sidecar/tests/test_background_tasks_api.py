@@ -80,3 +80,53 @@ def test_bg_shell_reads_agent_bound_service(tmp_path):
     assert agent.list_background_tasks() == []
     # 不存在的任务 kill → False
     assert agent.kill_background_task("nope") is False
+
+
+def test_retired_agent_tasks_survive_replacement(tmp_path):
+    """v2.0.0 壳：agent 重建后，旧 agent 绑定的运行中后台任务仍可见（防 GC 误杀）。"""
+    from floodmind_desktop_sidecar.floodmind_agent import FloodMindAgent
+
+    agent = FloodMindAgent.__new__(FloodMindAgent)
+    agent._retired_agents = []
+
+    class FakeTask:
+        task_id = "t-retired"
+        command = "ping -n 100"
+        status = "running"
+        exit_code = None
+        started_at = 1.0
+        finished_at = None
+        tail = ""
+        stdout_path = str(tmp_path / "out.log")
+
+    class FakeSvc:
+        def list(self, sid):
+            return [FakeTask()]
+
+        def kill(self, sid, tid):
+            return False
+
+    class Raw:
+        _background_task_service = FakeSvc()
+
+    class RetiredAgent:
+        session_id = "s-retired"
+        raw = Raw()
+
+    class ActiveSvc:
+        def list(self, sid):
+            return []
+
+        def kill(self, sid, tid):
+            return False
+
+    class ActiveAgent:
+        session_id = "s-active"
+        raw = type("R", (), {"_background_task_service": ActiveSvc()})()
+
+    agent._agent = ActiveAgent()
+    agent._retired_agents = [RetiredAgent()]
+
+    tasks = agent.list_background_tasks()
+    assert [t["task_id"] for t in tasks] == ["t-retired"]
+    assert tasks[0]["status"] == "running"

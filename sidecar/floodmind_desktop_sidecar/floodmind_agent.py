@@ -187,18 +187,37 @@ _MODE_SYSTEM_PROMPTS = {
 
 _IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp")
 
+# v2.0.0 BackgroundTask.status：终态集合（非终态 = starting/running/
+# kill_requested/terminating）。用于判定旧 agent 是否还能释放。
+_BG_TERMINAL_STATUSES = frozenset({
+    "completed", "failed", "killed", "kill_failed", "orphaned",
+})
+
 
 def _tail_file(path, n: int = 200) -> str:
-    """Read the last ``n`` lines of a file (UTF-8, errors replaced). Returns "" on any issue."""
+    """Read the last ``n`` lines of a file (UTF-8, errors replaced). Returns "" on any issue.
+
+    Reads backward in bounded chunks until ``n + 1`` newline boundaries are found,
+    so very long lines don't truncate the window (a fixed 64KB tail block could).
+    """
     try:
         with open(path, "rb") as f:
             f.seek(0, os.SEEK_END)
             size = f.tell()
-            # Read the tail block (up to ~64KB) so we can split on newlines.
-            block = 64 * 1024
-            f.seek(max(0, size - block))
-            data = f.read().decode("utf-8", "replace")
-        lines = data.splitlines()
+            chunk = 64 * 1024
+            start = size
+            newlines = 0
+            need = n + 1
+            while start > 0 and newlines < need:
+                read_start = max(0, start - chunk)
+                f.seek(read_start)
+                data = f.read(start - read_start)
+                start = read_start
+                newlines += data.count(b"\n")
+            f.seek(start)
+            raw = f.read()
+        # Drop the partial leading line (only counts newlines fully seen).
+        lines = raw.decode("utf-8", "replace").splitlines()
         return "\n".join(lines[-n:])
     except Exception:
         return ""
@@ -350,6 +369,12 @@ class FloodMindAgent:
         # partial round (not written to memory), and the next stream() resumes
         # from memory. Cleared at the start of each stream().
         self._abort = threading.Event()
+        # Retired agent wrappers still owning non-terminal background tasks.
+        # The SDK's BackgroundTaskService is bound PER AGENT; when we rebuild the
+        # agent (model/persona/conversation/workspace/mode switch), the old
+        # wrapper's cleanup would kill its running tasks. Keep a reference so GC
+        # can't collect them; prune once their tasks all become terminal.
+        self._retired_agents: list = []
         # Concurrency: Flask runs threaded=True, so a /api/chat stream can race a
         # concurrent workspace-open/model-reload/second-chat on another worker
         # thread. _stream_lock is held for an entire run and serializes chats
@@ -380,7 +405,7 @@ class FloodMindAgent:
 
         if self._llm is not None:
             try:
-                self._agent = self._build_agent(*self._memory_target(initial_sid), mode=getattr(self, "_agent_mode", "craft"))
+                self._replace_agent(self._build_agent(*self._memory_target(initial_sid), mode=getattr(self, "_agent_mode", "craft")))
             except Exception as e:
                 print(f"[sidecar] initial agent build failed: {e}", file=sys.stderr)
                 self._agent = None
@@ -527,29 +552,75 @@ class FloodMindAgent:
         return user_dir
 
     # ── background tasks (exec_bash run_in_background) ─────────
-    def _bg_service(self):
-        """桌面端外层壳：v2.0.0 起 BackgroundTaskService 绑定到 agent（无全局单例）。
+    def _replace_agent(self, new_agent):
+        """Swap the active agent, retaining the old wrapper while its background
+        tasks are non-terminal (SDK cleanup would otherwise kill them)."""
+        old = getattr(self, "_agent", None)
+        self._agent = new_agent
+        retired = getattr(self, "_retired_agents", None)
+        if retired is not None and old is not None and old is not new_agent:
+            retired.append(old)
+            self._prune_retired_agents()
 
-        SDK 后续暴露公共访问后，去掉 getattr 直接取。
-        """
-        raw = getattr(self._agent, "raw", None)
+    def _retired_service(self, agent):
+        """Desktop outer shell: v2.0.0 BackgroundTaskService is bound per agent
+        (no global singleton); SDK exposes no public accessor yet."""
+        raw = getattr(agent, "raw", None)
         return getattr(raw, "_background_task_service", None)
 
+    def _bg_agents(self):
+        """The active agent + retired wrappers still owning background tasks."""
+        out = []
+        active = getattr(self, "_agent", None)
+        if active is not None:
+            out.append(active)
+        out.extend(getattr(self, "_retired_agents", []))
+        return out
+
+    def _prune_retired_agents(self):
+        """Drop retired agents once all their tasks are terminal (frees memory,
+        and lets the SDK release the processes)."""
+        keep = []
+        for agent in self._retired_agents:
+            svc = self._retired_service(agent)
+            sid = getattr(agent, "session_id", None)
+            has_active = False
+            if svc is not None and sid:
+                try:
+                    tasks = svc.list(sid)
+                    has_active = any(t.status not in _BG_TERMINAL_STATUSES for t in tasks)
+                except Exception:
+                    has_active = True  # 无法确认终态 → 保留，防误杀
+            if has_active:
+                keep.append(agent)
+        self._retired_agents = keep
+
+    def _bg_service(self):
+        """Active agent's background task service (outer shell)."""
+        return self._retired_service(self._agent) if self._agent is not None else None
+
     def list_background_tasks(self) -> list[dict]:
-        """Serialize the SDK BackgroundTaskService's tasks for the agent's session.
+        """Serialize background tasks across the active + retired agents.
 
         ``tail`` is refreshed live from the task's stdout file so a running task
         shows its current output tail, not only the completion notification.
         """
-        svc = self._bg_service()
-        if svc is None:
-            return []
-        sid = getattr(self._agent, "session_id", None)
-        if not sid:
-            return []
-        try:
-            out = []
-            for t in svc.list(sid):
+        out: list[dict] = []
+        seen: set[str] = set()
+        for agent in self._bg_agents():
+            svc = self._retired_service(agent)
+            sid = getattr(agent, "session_id", None)
+            if svc is None or not sid:
+                continue
+            try:
+                tasks = svc.list(sid)
+            except Exception as e:
+                print(f"[sidecar] bg list failed (agent={sid}): {e}", file=sys.stderr)
+                continue  # 单个 agent 失败不拖垮整体
+            for t in tasks:
+                if t.task_id in seen:
+                    continue
+                seen.add(t.task_id)
                 tail = t.tail
                 if not tail:
                     try:
@@ -566,22 +637,22 @@ class FloodMindAgent:
                     "tail": tail,
                     "stdout_path": t.stdout_path,
                 })
-            return out
-        except Exception:
-            return []
+        return out
 
     def kill_background_task(self, task_id: str) -> bool:
-        """Terminate a running background task (returns False if not found/failed)."""
-        svc = self._bg_service()
-        if svc is None:
-            return False
-        sid = getattr(self._agent, "session_id", None)
-        if not sid or not task_id:
-            return False
-        try:
-            return bool(svc.kill(sid, task_id))
-        except Exception:
-            return False
+        """Terminate a running background task across active/retired agents."""
+        for agent in self._bg_agents():
+            svc = self._retired_service(agent)
+            sid = getattr(agent, "session_id", None)
+            if svc is None or not sid:
+                continue
+            try:
+                if svc.kill(sid, task_id):
+                    return True
+            except Exception as e:
+                print(f"[sidecar] bg kill failed (agent={sid} task={task_id}): {e}", file=sys.stderr)
+                continue
+        return False
 
     def _current_workspace_target(self) -> tuple[str, str]:
         """Return (user_dir, sid) for the current desktop workspace or fallback."""
@@ -982,7 +1053,7 @@ class FloodMindAgent:
         session_id, persist_dir = self._memory_target(session_id_for(path))
         try:
             with self._fg():
-                self._agent = self._build_agent(session_id, persist_dir, mode=getattr(self, "_agent_mode", "craft"))
+                self._replace_agent(self._build_agent(session_id, persist_dir, mode=getattr(self, "_agent_mode", "craft")))
         except Exception as e:
             print(f"[sidecar] workspace memory rebind failed for {path}: {e}", file=sys.stderr)
 
@@ -1021,7 +1092,7 @@ class FloodMindAgent:
 
             self._llm = self._resolve_llm()
             with self._fg():
-                self._agent = self._build_agent(sid, persist_dir, mode=getattr(self, "_agent_mode", "craft"))
+                self._replace_agent(self._build_agent(sid, persist_dir, mode=getattr(self, "_agent_mode", "craft")))
             return True
         except Exception as e:
             print(f"[sidecar] reload_model failed: {e}", file=sys.stderr)
@@ -1044,7 +1115,7 @@ class FloodMindAgent:
                 sid = "desktop-default"
             _, persist_dir = self._memory_target(sid)
             with self._fg():
-                self._agent = self._build_agent(sid, persist_dir, mode=getattr(self, "_agent_mode", "craft"))
+                self._replace_agent(self._build_agent(sid, persist_dir, mode=getattr(self, "_agent_mode", "craft")))
                 self._set_workspace()  # rebind workspace + refresh cached prompt
             return True
         except Exception as e:
@@ -1062,7 +1133,7 @@ class FloodMindAgent:
         try:
             sid, persist_dir = self._memory_target(session_id)
             with self._fg():
-                self._agent = self._build_agent(sid, persist_dir, mode=getattr(self, "_agent_mode", "craft"))
+                self._replace_agent(self._build_agent(sid, persist_dir, mode=getattr(self, "_agent_mode", "craft")))
         except Exception as e:
             print(f"[sidecar] activate_conversation failed for {session_id}: {e}", file=sys.stderr)
 
@@ -1235,7 +1306,7 @@ class FloodMindAgent:
             return
         sid = self._agent.session_id
         _, persist_dir = self._memory_target(sid)
-        self._agent = self._build_agent(sid, persist_dir, mode=mode)
+        self._replace_agent(self._build_agent(sid, persist_dir, mode=mode))
         self._agent_mode = mode
 
     # ── main entry ─────────────────────────────────────────────
