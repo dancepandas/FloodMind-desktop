@@ -25,6 +25,7 @@ import contextlib
 import os
 import sys
 import threading
+import time
 from typing import Iterator
 
 from .agent import Message
@@ -35,160 +36,10 @@ from .permissions import (
     permission_fingerprint,
 )
 
-# The SDK's ToolExecutionService runs tool functions in a ThreadPoolExecutor but
-# does not copy contextvars into the worker thread. On the desktop we rely on
-# SESSION_CONTEXT (output_dir/session_id) and the workspace contextvar being
-# visible inside tools; without this patch the agent falls back to
-# data/sessions/<id>/outputs instead of the user's workspace. Monkey-patch the
-# executor class so every submit carries the caller's contextvars into the worker.
-import concurrent.futures
-import contextvars
-
-
-class _ContextAwareThreadPoolExecutor(concurrent.futures.ThreadPoolExecutor):
-    def submit(self, fn, /, *args, **kwargs):
-        ctx = contextvars.copy_context()
-        return super().submit(ctx.run, fn, *args, **kwargs)
-
-
-concurrent.futures.ThreadPoolExecutor = _ContextAwareThreadPoolExecutor
-
-
-# OpenAI-compatible endpoints (and several vLLM/one-api deployments) require tool
-# names to match ^[a-zA-Z0-9_-]+$. The SDK namespaces MCP tools as
-# "mcp:server_name:tool_name", which contains colons. We keep the internal
-# "mcp:server:tool" call signature unchanged (the bound function still calls the
-# pool with the original full name) but sanitize the model-visible ToolSpec.name.
-def _patch_mcp_tool_names():
-    import re
-    try:
-        from floodmind.agent import mcp_client
-    except Exception:
-        return
-
-    _orig_build = mcp_client.build_mcp_tool_specs
-    _valid_name = re.compile(r"^[a-zA-Z0-9_-]+$")
-
-    def _build(conn, server_name, call_tool_fn):
-        specs = _orig_build(conn, server_name, call_tool_fn)
-        for spec in specs:
-            if not _valid_name.match(spec.name):
-                spec.name = re.sub(r"[^a-zA-Z0-9_-]+", "_", spec.name)
-        return specs
-
-    mcp_client.build_mcp_tool_specs = _build
-
-
-_patch_mcp_tool_names()
-
-
-# The SDK's model_presets.get_default_model_key() returns the catalog's FIRST
-# model and deliberately ignores any persisted model selection. NativeFloodAgent
-# injects that value into the system prompt before EVERY LLM call ("当前模型: X"),
-# so after the user switches models in the GUI the model misreports itself as the
-# catalog-first entry (e.g. deepseek-v4-pro) even though the desktop's ModelClient
-# is already routing the request to the selected model (routing goes through
-# FloodMindAgent._resolve_llm, which DOES honor desktop.activeModel). Patch the
-# default-key resolver to prefer desktop.activeModel so the prompt — and thus the
-# model's self-report — matches the model that actually answers. Idempotent.
-def _patch_default_model_resolution():
-    try:
-        from floodmind.config import model_presets
-    except Exception:
-        return
-    if getattr(model_presets.get_default_model_key, "_desktop_patched", False):
-        return
-    _orig = model_presets.get_default_model_key
-
-    def _patched():
-        try:
-            from .config_api import _load_raw_settings
-
-            desktop = _load_raw_settings().get("desktop")
-            if isinstance(desktop, dict) and desktop.get("activeModel"):
-                return str(desktop["activeModel"])
-        except Exception:
-            pass
-        return _orig()
-
-    _patched._desktop_patched = True
-    model_presets.get_default_model_key = _patched
-
-
-_patch_default_model_resolution()
-
-
-def _patch_mcp_liveness():
-    """Make MCP 'connected' status truthful.
-
-    The SDK's ``McpClientConnection.is_connected`` is a static ``_initialized``
-    flag — it stays True forever after a successful connect, even after a stdio
-    subprocess has died (``process.poll()`` non-None) or the server is gone. So
-    the desktop showed a green "已连接" dot for servers that were actually down.
-    For stdio we check the subprocess is still alive; SSE has no cheap probe so
-    we keep ``_initialized`` (best-effort).
-    """
-    try:
-        from floodmind.agent.mcp_client import McpClientConnection
-    except Exception:
-        return
-
-    @property
-    def is_connected(self):  # type: ignore[override]
-        if not getattr(self, "_initialized", False):
-            return False
-        proc = getattr(self, "_process", None)
-        if proc is not None:
-            return proc.poll() is None
-        return True
-
-    McpClientConnection.is_connected = is_connected
-
-
-_patch_mcp_liveness()
-
-
-# Per-server MCP tool-call health, updated by wrapping McpClientPool.call_tool.
-# Connection-level "connected" is True the moment a stdio subprocess handshakes,
-# but a tool can still fail at call time — e.g. hydro-rag's wrapper connects fine
-# while the knowledge-base backend it talks to is down, surfacing only when a
-# tool is actually invoked. This records the most recent call outcome so the UI
-# can show "调用异常" instead of a misleading "已连接".
-_MCP_CALL_HEALTH: dict[str, dict] = {}
-# Result strings that indicate a tool call failed (the SDK wraps MCP errors as
-# "MCP 工具 … 调用失败"; servers often surface backend-down as "无法连接").
-_MCP_FAIL_MARKERS = (
-    "调用失败", "无法连接", "连接失败", "ConnectionError",
-    "ECONNREFUSED", "connection refused",
-)
-
-
-def _patch_mcp_call_health():
-    try:
-        from floodmind.agent.mcp_client import McpClientPool
-    except Exception:
-        return
-
-    _orig_call_tool = McpClientPool.call_tool
-
-    def _call_tool(self, full_name: str, arguments: dict):
-        parts = full_name.split(":", 2)
-        server = parts[1] if len(parts) >= 3 else full_name
-        try:
-            result = _orig_call_tool(self, full_name, arguments)
-        except Exception as e:
-            _MCP_CALL_HEALTH[server] = {"ok": False, "error": str(e)[:200]}
-            raise
-        if isinstance(result, str) and any(m in result for m in _MCP_FAIL_MARKERS):
-            _MCP_CALL_HEALTH[server] = {"ok": False, "error": result[:200]}
-        else:
-            _MCP_CALL_HEALTH[server] = {"ok": True, "error": None}
-        return result
-
-    McpClientPool.call_tool = _call_tool
-
-
-_patch_mcp_call_health()
+# SDK v1.0.1's ToolExecutionService copies contextvars inside the SDK-owned
+# executor path, so the desktop no longer replaces ThreadPoolExecutor globally.
+# Keep workspace/session binding explicit in _set_workspace() instead of applying
+# a process-wide monkey patch that would affect Flask and third-party libraries.
 
 
 def _persist_runtime_mcp(server_config: dict) -> None:
@@ -226,32 +77,170 @@ def _persist_runtime_mcp(server_config: dict) -> None:
         print(f"[sidecar] persist runtime MCP failed: {e}", file=sys.stderr)
 
 
-def _patch_mcp_persist_runtime():
-    """Wrap McpClientPool.connect_server so any newly-connected server that
-    isn't already in mcp.json gets persisted. This makes agent-created MCPs
-    (LoadMcpServer) durable + visible in the MCP menu across restarts."""
+def _register_mcp_persist_listener():
+    """Persist runtime-loaded MCPs via the SDK pool lifecycle hook.
+
+    This keeps durability + desktop menu visibility in the product layer without
+    monkey-patching ``McpClientPool.connect_server``.
+    """
     try:
-        from floodmind.agent.mcp_client import McpClientPool
+        from floodmind.agent.mcp_client import get_mcp_client_pool
     except Exception:
         return
 
-    _orig_connect = McpClientPool.connect_server
-
-    def _connect_server(self, server_config: dict):
-        conn = _orig_connect(self, server_config)
+    def _on_server_connected(server_config: dict, _conn) -> None:
         try:
             _persist_runtime_mcp(server_config)
         except Exception as e:
             print(f"[sidecar] runtime MCP persist hook error: {e}", file=sys.stderr)
-        return conn
 
-    McpClientPool.connect_server = _connect_server
+    try:
+        get_mcp_client_pool().add_server_connected_listener(_on_server_connected)
+    except Exception:
+        return
 
 
-_patch_mcp_persist_runtime()
+_register_mcp_persist_listener()
+
+
+# Module-level holder for the work mode of the currently-running foreground
+# stream. The SDK runs the agent loop in a child thread, so a plain mutable
+# holder (not a contextvar, which is unreliable across the SDK thread) is read
+# by the permission hook at tool-call time. Streams are serialized by
+# _stream_lock, so a single holder is safe.
+_CURRENT_MODE: dict[str, str] = {"mode": "craft"}
+
+# After a pause, the SDK run can only abort at its next LLM/tool boundary — if
+# that LLM call is slow, the stream lock stays held. A new request waits up to
+# this long for the lock to free instead of failing the post-pause resume.
+_LOCK_WAIT_AFTER_PAUSE_MS = 15000
+
+
+def _permission_decision_hook(tool_name, tool_input, sdk_decision, permission_policy):
+    """Desktop permission policy as an SDK host-level hook (v1.1.0).
+
+    Replaces the old ``_patch_tool_policies_for_desktop_permission`` monkey patch
+    of ``check_permissions_fn``. The SDK runs its base permission decision
+    (path/danger/planning hard gates) first, then calls us. We upgrade
+    ALLOW → ASK so every non-readonly tool hits the desktop's three-tier
+    authorization (always-trust / trust-once / always-ask). DENY and
+    readonly/internal/ask policies pass through unchanged; the SDK's monotonic
+    guard independently prevents any loosening, so returning ASK is always safe.
+
+    In Ask mode every tool call is DENYed (the SDK's bare agent still exposes
+    the catalog-browser SearchTools/GetTool, so even with ``tools=[]`` the model
+    can see them — this backstop guarantees nothing executes). In Plan mode the
+    agent runs the full runtime so the model can call the plan tools
+    (``create_plan``/``update_plan`` are ``readonly`` policy) and read files to
+    inform the plan, while every execution tool stays DENYed.
+    """
+    from floodmind.agent.runtime.contracts.permissions import (
+        PermissionBehavior,
+        PermissionDecision,
+    )
+
+    mode = _CURRENT_MODE.get("mode", "craft")
+    if mode != "craft":
+        policy_type = getattr(permission_policy, "policy_type", None) if permission_policy else None
+        if mode == "ask":
+            return PermissionDecision(
+                behavior=PermissionBehavior.DENY,
+                reason="当前「问答」模式不允许调用工具",
+            )
+        # plan：只放行只读/内部（create_plan、update_plan、文件读取），
+        # 一切写/执行/网络/审批类工具全部 DENY。
+        if policy_type in ("readonly", "internal"):
+            return sdk_decision
+        return PermissionDecision(
+            behavior=PermissionBehavior.DENY,
+            reason="当前「计划」模式只允许制定计划，不允许执行",
+        )
+
+    policy_type = getattr(permission_policy, "policy_type", None) if permission_policy else None
+    if policy_type in ("readonly", "internal", "ask"):
+        return sdk_decision
+    if getattr(sdk_decision, "behavior", None) == PermissionBehavior.DENY:
+        return sdk_decision
+    return PermissionDecision(
+        behavior=PermissionBehavior.ASK,
+        reason=f"需要用户确认此操作（{tool_name}）",
+    )
+
+
+# Per-mode system-prompt appendices. Craft (default) keeps the plain workspace
+# prompt; Ask/Plan run on a bare no-tools agent whose prompt tells the model not
+# to call tools, so the semantics hold even though the SDK still registers the
+# read-only SearchTools/GetTool catalog helpers in bare mode.
+_MODE_SYSTEM_PROMPTS = {
+    "ask": (
+        "\n\n当前处于「问答」模式：只回答用户的问题，不要调用任何工具，"
+        "不要执行任何操作，直接给出回答。"
+    ),
+    "plan": (
+        "\n\n当前处于「计划」模式：请先调用 create_plan 工具制定一份详细的执行计划"
+        "（明确用户意图、预期交付物与执行步骤）。创建计划后立即以一句话结束本轮"
+        "（例如『计划已创建，等待您的确认』），不要调用 exit_plan_mode，不要调用任何"
+        "其他工具，不要执行或生成任何文件。执行将在用户确认后另行进行。"
+    ),
+}
 
 
 _IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp")
+
+
+def _tail_file(path, n: int = 200) -> str:
+    """Read the last ``n`` lines of a file (UTF-8, errors replaced). Returns "" on any issue."""
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            # Read the tail block (up to ~64KB) so we can split on newlines.
+            block = 64 * 1024
+            f.seek(max(0, size - block))
+            data = f.read().decode("utf-8", "replace")
+        lines = data.splitlines()
+        return "\n".join(lines[-n:])
+    except Exception:
+        return ""
+
+
+def _build_artifact_event(
+    path,
+    *,
+    output_dir=None,
+    name=None,
+    kind=None,
+    final=True,
+    source="fallback",
+) -> dict:
+    """Build a normalized artifact event without dropping missing paths."""
+    raw_path = os.fspath(path)
+    if output_dir and not os.path.isabs(raw_path):
+        raw_path = os.path.join(os.fspath(output_dir), raw_path)
+    normalized = os.path.abspath(os.path.normpath(raw_path))
+    artifact_name = name if name is not None else os.path.basename(normalized)
+    if kind is None:
+        ext = os.path.splitext(artifact_name)[1].lower()
+        kind = "image" if ext in _IMAGE_EXTS else "file"
+    exists = os.path.isfile(normalized)
+    event = {
+        "type": "artifact",
+        "kind": kind,
+        "name": artifact_name,
+        "path": normalized,
+        "final": final,
+        "exists": exists,
+        "source": source,
+    }
+    if exists:
+        try:
+            event["size"] = os.path.getsize(normalized)
+        except OSError:
+            pass
+    return event
+
+
+_ARTIFACT_OPTIONAL_FIELDS = ("final", "exists", "size", "source")
 
 
 def translate_event(raw: dict) -> list[dict]:
@@ -285,10 +274,14 @@ def translate_event(raw: dict) -> list[dict]:
         # NOTE: in practice the SDK does not yield these to stream consumers
         # (emitted post-loop); FloodMindAgent.stream surfaces artifacts via an
         # output-dir diff instead. Kept for completeness/test fidelity.
-        return [{"type": "artifact",
+        event = {"type": "artifact",
                  "kind": "image" if t == "image_generated" else "file",
                  "name": raw.get("filename", raw.get("file_name", "")),
-                 "path": raw.get("image_url", raw.get("download_url", ""))}]
+                 "path": raw.get("image_url", raw.get("download_url", ""))}
+        for field in _ARTIFACT_OPTIONAL_FIELDS:
+            if field in raw:
+                event[field] = raw[field]
+        return [event]
     if t == "permission_ask":
         return [{"type": "permission", "ask_id": raw.get("ask_id", ""),
                  "call_id": raw.get("call_id", ""), "tool_name": raw.get("tool_name", ""),
@@ -378,9 +371,16 @@ class FloodMindAgent:
         persisted = workspace_manager.current_path() if workspace_manager else None
         initial_sid = session_id_for(persisted) if persisted else "desktop-default"
 
+        # The mode the current _agent was built with. The persisted desktop
+        # workMode seeds the first build; per-request modes in stream() override
+        # it and rebuild when they differ.
+        self._agent_mode = self._desktop_block().get("workMode", "craft")
+        if self._agent_mode not in _MODE_SYSTEM_PROMPTS and self._agent_mode != "craft":
+            self._agent_mode = "craft"
+
         if self._llm is not None:
             try:
-                self._agent = self._build_agent(*self._memory_target(initial_sid))
+                self._agent = self._build_agent(*self._memory_target(initial_sid), mode=getattr(self, "_agent_mode", "craft"))
             except Exception as e:
                 print(f"[sidecar] initial agent build failed: {e}", file=sys.stderr)
                 self._agent = None
@@ -414,11 +414,12 @@ class FloodMindAgent:
 
     def mcp_call_health(self) -> dict:
         """Per-server MCP tool-call health: {server: {ok, error}}.
-        Populated by the McpClientPool.call_tool wrapper. Reflects whether the
-        most recent tool call actually succeeded — a stronger signal than
-        connection-level "connected" (a connected wrapper can still fail when
-        the backend service it proxies is down)."""
-        return dict(_MCP_CALL_HEALTH)
+        Provided by the SDK MCP pool; desktop only surfaces it in the MCP UI."""
+        try:
+            from floodmind.agent.mcp_client import get_mcp_client_pool
+            return get_mcp_client_pool().call_health()
+        except Exception:
+            return {}
 
     def _resolve_llm(self):
         """Build a ModelClient for the desktop's active model via resolve_model().
@@ -449,6 +450,7 @@ class FloodMindAgent:
             temperature=rm.temperature,
             max_tokens=rm.max_tokens,
             enable_thinking=bool(desktop.get("enableReasoning", False)),
+            provider=rm.provider,
         )
 
     def _load_llm_fallback(self):
@@ -474,6 +476,7 @@ class FloodMindAgent:
                 model_name=rm.id,
                 temperature=rm.temperature,
                 max_tokens=rm.max_tokens,
+                provider=rm.provider,
             )
         except Exception as e:
             print(f"[sidecar] ModelClient fallback also failed: {e}", file=sys.stderr)
@@ -499,9 +502,109 @@ class FloodMindAgent:
         except Exception:
             return False
 
-    def _build_agent(self, session_id: str, persist_dir: str):
-        """Construct a fresh SDK agent bound to a per-session DualMemory."""
-        from floodmind.agent import create_flood_agent
+    def _build_workspace_for_path(self, session_id: str, path: str):
+        """Build the SDK v1.0.1 folder-first workspace for a desktop path.
+
+        User-authorized external readable paths (registered via /api/external-paths
+        when a file outside the workspace is dropped/pasted) are injected as
+        ``readable_roots`` — an exact file path allows reading only that file.
+        ``_set_workspace`` re-runs this on every stream, so a registration made
+        before the next send takes effect automatically (no live rebind).
+        """
+        from floodmind.agent.runtime.services.workspace_service import build_folder_workspace
+
+        from .external_paths import read_external_paths
+
+        return build_folder_workspace(
+            session_id,
+            primary_dir=path,
+            readable_roots=tuple(read_external_paths(path)),
+        ).ensure()
+
+    def current_workspace_root(self) -> str:
+        """Public accessor: the current workspace root (default-workspace when none open)."""
+        user_dir, _sid = self._current_workspace_target()
+        return user_dir
+
+    # ── background tasks (exec_bash run_in_background) ─────────
+    def _bg_service(self):
+        """桌面端外层壳：v2.0.0 起 BackgroundTaskService 绑定到 agent（无全局单例）。
+
+        SDK 后续暴露公共访问后，去掉 getattr 直接取。
+        """
+        raw = getattr(self._agent, "raw", None)
+        return getattr(raw, "_background_task_service", None)
+
+    def list_background_tasks(self) -> list[dict]:
+        """Serialize the SDK BackgroundTaskService's tasks for the agent's session.
+
+        ``tail`` is refreshed live from the task's stdout file so a running task
+        shows its current output tail, not only the completion notification.
+        """
+        svc = self._bg_service()
+        if svc is None:
+            return []
+        sid = getattr(self._agent, "session_id", None)
+        if not sid:
+            return []
+        try:
+            out = []
+            for t in svc.list(sid):
+                tail = t.tail
+                if not tail:
+                    try:
+                        tail = _tail_file(t.stdout_path, 200)
+                    except Exception:
+                        tail = ""
+                out.append({
+                    "task_id": t.task_id,
+                    "command": t.command,
+                    "status": t.status,
+                    "exit_code": t.exit_code,
+                    "started_at": t.started_at,
+                    "finished_at": t.finished_at,
+                    "tail": tail,
+                    "stdout_path": t.stdout_path,
+                })
+            return out
+        except Exception:
+            return []
+
+    def kill_background_task(self, task_id: str) -> bool:
+        """Terminate a running background task (returns False if not found/failed)."""
+        svc = self._bg_service()
+        if svc is None:
+            return False
+        sid = getattr(self._agent, "session_id", None)
+        if not sid or not task_id:
+            return False
+        try:
+            return bool(svc.kill(sid, task_id))
+        except Exception:
+            return False
+
+    def _current_workspace_target(self) -> tuple[str, str]:
+        """Return (user_dir, sid) for the current desktop workspace or fallback."""
+        from .workspace import _app_data_dir, session_id_for
+
+        opened = self._workspace_manager.current_path() if self._workspace_manager else None
+        if opened:
+            return opened, session_id_for(opened)
+        return str(_app_data_dir() / "default-workspace"), "desktop-default"
+
+    @staticmethod
+    def _agent_raw(agent):
+        """Return the native SDK agent behind public Agent wrappers."""
+        return getattr(agent, "raw", agent)
+
+    def _build_agent(self, session_id: str, persist_dir: str, workspace=None, mode="craft"):
+        """Construct a fresh SDK agent bound to a per-session DualMemory.
+
+        ``mode`` selects the work mode: ``craft`` (default) uses the full runtime
+        with all tools; ``ask``/``plan`` build a bare no-tools agent whose
+        system prompt forbids tool use, so Ask answers directly and Plan (stage
+        one) only proposes a plan.
+        """
         from floodmind.memory.dual_memory import DualMemory
 
         # enable_reasoning / enable_search are desktop session-level toggles
@@ -511,6 +614,9 @@ class FloodMindAgent:
         enable_reasoning = bool(desktop.get("enableReasoning", False))
         enable_search = bool(desktop.get("enableSearch", False))
 
+        if mode not in _MODE_SYSTEM_PROMPTS and mode != "craft":
+            mode = "craft"
+
         memory = DualMemory(
             session_id=session_id,
             persist_dir=persist_dir,
@@ -518,10 +624,14 @@ class FloodMindAgent:
             context_window=self._resolved_context_window,
         )
 
+        if workspace is None:
+            user_dir, _fallback_sid = self._current_workspace_target()
+            workspace = self._build_workspace_for_path(session_id, user_dir)
+
         # Desktop has an explicit workspace; tell the agent to search the whole
         # tree, not just the output/upload directory roots highlighted by the SDK
         # default system prompt.
-        workspace_path = (
+        workspace_path = str(workspace.workspace_dir) if workspace is not None else (
             self._workspace_manager.current_path()
             if self._workspace_manager else None
         )
@@ -531,22 +641,47 @@ class FloodMindAgent:
                 f"当前工作区是：{workspace_path}\n"
                 "用户提到的文件、数据或附件可能位于工作区的任何子目录中。"
                 "搜索文件时，请以该工作区根目录为 path 参数进行递归搜索（例如 Glob 的 "
-                f"path='{workspace_path}', pattern='**/*.xlsx'），不要只搜索输出目录或上传目录的根。"
+                f"path='{workspace_path}', pattern='**/*.xlsx'），不要只搜索输出目录或上传目录的根。\n"
+                # 附件引用引导：用户以附件引用的工作区外路径已按精确路径授权读取，
+                # 直接读引用路径本身；不要推测其他位置（v1.1.5 起已装 skill 源可读）。
+                "用户在 [引用文件] 中列出的路径若位于工作区外（绝对路径），已授权读取该路径（文件本身或目录整棵子树）。"
+                "请只读取引用中给出的精确路径，不要推测其他位置。"
+                "已安装的 skill 源文件（site-packages/skills 下）可直接读取（只读授权），"
+                "也可用 GetSkill/GetTool 查看说明；不要读取 SDK 包内部源码（site-packages/floodmind 下）。\n"
+                "读取文件请使用 Read/Glob 工具，不要使用 Bash（exec_bash）去查看文件内容。\n"
+                "不要向引用目录（工作区外的只读授权路径）写入任何文件；需要中转/临时文件时请写入工作区。"
             )
         else:
             system_prompt = "你是一个智能助手，使用可用工具帮助用户完成任务。"
+        if mode != "craft":
+            system_prompt = system_prompt + _MODE_SYSTEM_PROMPTS[mode]
 
-        agent = create_flood_agent(
-            llm_service=self._llm,
+        from floodmind.agent import Agent
+
+        # Public Agent full-runtime is the only construction path since SDK
+        # v1.1.0; the temporary create_flood_agent() fallback was removed.
+        # Ask 用 bare 无工具嵌入（只答不动手）；Plan 用完整 runtime 以便模型调用
+        # create_plan/update_plan 等计划工具（执行类工具由权限 hook 拦掉）。
+        bare = mode == "ask"
+        agent = Agent(
+            llm=self._llm,
             memory=memory,
             session_id=session_id,
             permission_handler=self._permission_handler,
+            permission_decision_hook=_permission_decision_hook,
             max_iterations=50,
             enable_reasoning=enable_reasoning,
             enable_search=enable_search,
             system_prompt=system_prompt,
+            workspace=workspace,
+            bare=bare,
+            tools=[] if bare else None,
         )
-        self._patch_tool_policies_for_desktop_permission(agent)
+        raw_agent = self._agent_raw(agent)
+        if getattr(raw_agent, "memory", None) is not memory:
+            raise RuntimeError("public Agent did not preserve desktop memory")
+        if getattr(raw_agent, "session_id", None) != session_id:
+            raise RuntimeError("public Agent did not preserve desktop session_id")
         return agent
 
     @staticmethod
@@ -565,49 +700,33 @@ class FloodMindAgent:
         folder if one is open, else a default under app-data. Errors are logged
         and swallowed so a workspace hiccup never kills chat.
         """
-        from .workspace import _app_data_dir, session_id_for
+        from .workspace import _app_data_dir
 
         self._output_dir = None
-        opened = self._workspace_manager.current_path() if self._workspace_manager else None
-        if opened:
-            user_dir, sid = opened, session_id_for(opened)
-        else:
-            # Default workspace so the agent always has somewhere writable.
-            user_dir = str(_app_data_dir() / "default-workspace")
-            sid = "desktop-default"
+        user_dir, sid = self._current_workspace_target()
 
         try:
-            from floodmind.agent.runtime.services.workspace_service import (
-                build_workspace,
-            )
             from floodmind.tools import set_session_context
 
-            ws = build_workspace(
-                sid,
-                session_root=_app_data_dir(),
-                user_dir=user_dir,
-                sandbox_strategy="user_dir",
-            ).ensure()
-            # Bind the workspace as an INSTANCE attribute on the agent (not the
-            # contextvar). The SDK's agent loop runs in a child thread that does
-            # not inherit the floodmind_workspace contextvar; the SDK now reads
-            # self._workspace (_effective_workspace) and re-binds the contextvar
-            # inside _run_loop, so output_dir / upload_dir / PathService write &
-            # read roots all resolve to the real workspace (fixes the C-drive bug).
+            ws = self._build_workspace_for_path(sid, user_dir)
+            # Bind defensively too: agents built before this migration path (or test
+            # doubles) still need an explicit workspace update. New agents should be
+            # constructed with workspace=ws so their cached prompt/executors are
+            # correct from the start.
             self._agent.bind_workspace(ws)
-            set_session_context(sid, output_dir=str(ws.user_dir))
+            set_session_context(
+                sid,
+                output_dir=str(ws.user_dir),  # legacy/default user-visible write root
+                cwd=str(ws.default_cwd),
+                workspace_dir=str(ws.workspace_dir),
+                state_dir=str(ws.state_dir) if ws.state_dir else None,
+                artifact_dir=str(ws.artifact_dir) if ws.artifact_dir else None,
+                tmp_dir=str(ws.tmp_dir) if ws.tmp_dir else None,
+                scripts_dir=str(ws.scripts_dir) if ws.scripts_dir else None,
+            )
+            # Keep the desktop fallback diff on the user-visible workspace root for
+            # now; SDK artifacts are read separately from Agent.artifacts.
             self._output_dir = str(ws.user_dir)
-            # The SDK bakes `会话输出目录: <output_dir>` into the cached prompt at
-            # __init__ (_init_executors), BEFORE bind_workspace sets _workspace —
-            # so at that moment _get_output_dir() returns the AppData fallback and
-            # the LLM is permanently told to write under C:\...\data\sessions\<sid>
-            # \outputs. Re-run _init_executors() now that _workspace is bound so the
-            # prompt reflects the real workspace. (SDK-side fix pending: refresh the
-            # cached prompt/session_env inside bind_workspace itself.)
-            try:
-                self._agent._init_executors()
-            except Exception as e:
-                print(f"[sidecar] _init_executors refresh failed: {e}", file=sys.stderr)
             print(
                 f"[sidecar] workspace bound: user_dir={ws.user_dir} sid={sid} | "
                 f"agent={type(self._agent).__name__} id={id(self._agent)} "
@@ -623,37 +742,68 @@ class FloodMindAgent:
         output_dir = output_dir or getattr(self, "_output_dir", None)
         if not output_dir:
             return {}
+        snapshot: dict[str, float] = {}
         try:
-            return {
-                f: os.path.getmtime(os.path.join(output_dir, f))
-                for f in os.listdir(output_dir)
-            }
+            for root, dirs, files in os.walk(output_dir):
+                # Prune hidden / SDK-managed dirs (`.floodmind`, `.git`, …). They
+                # hold internal state — sessions, checkpoints, memory, sandboxes —
+                # which churns on every run and must never surface as "artifacts".
+                dirs[:] = [d for d in dirs if not d.startswith(".")]
+                for filename in files:
+                    path = os.path.join(root, filename)
+                    relative_path = os.path.relpath(path, output_dir)
+                    try:
+                        snapshot[relative_path] = os.path.getmtime(path)
+                    except OSError:
+                        continue
         except OSError:
             return {}
+        return snapshot
+
+    def _artifact_events_from_agent(self, agent=None) -> Iterator[dict]:
+        """Yield normalized artifact events from the SDK Agent.artifacts cache.
+
+        SDK v1.0.1 exposes post-loop artifacts via Agent.artifacts. Prefer that
+        public cache over filesystem diffing, but keep diff as a fallback until the
+        SDK stream/artifact contract is proven stable in all desktop scenarios.
+        """
+        agent = agent or getattr(self, "_agent", None)
+        if agent is None:
+            return
+        artifacts = getattr(agent, "artifacts", None) or []
+        seen: set[tuple[str, str]] = set()
+        for art in artifacts:
+            if not isinstance(art, dict):
+                continue
+            path = art.get("path") or art.get("download_url") or art.get("image_url")
+            name = art.get("name") or art.get("filename") or art.get("file_name")
+            if not path and not name:
+                continue
+            event = _build_artifact_event(
+                path or name,
+                name=name,
+                kind=art.get("kind"),
+                final=art.get("final", True),
+                source=art.get("source", "sdk"),
+            )
+            for field in ("exists", "size"):
+                if field in art:
+                    event[field] = art[field]
+            key = (event.get("kind", ""), event.get("path") or event.get("name", ""))
+            if key in seen:
+                continue
+            seen.add(key)
+            yield event
 
     def _diff_outputs(self, before: dict[str, float],
                       output_dir: str | None = None) -> Iterator[dict]:
-        """Yield one artifact event per file added to the output dir since `before`."""
+        """Yield one artifact event per file added recursively since `before`."""
         output_dir = output_dir or getattr(self, "_output_dir", None)
         if not output_dir:
             return
-        try:
-            now = {
-                f: os.path.getmtime(os.path.join(output_dir, f))
-                for f in os.listdir(output_dir)
-            }
-        except OSError:
-            return
-        for name in sorted(set(now) - set(before)):
-            ext = os.path.splitext(name)[1].lower()
-            kind = "image" if ext in _IMAGE_EXTS else "file"
-            yield {
-                "type": "artifact",
-                "kind": kind,
-                "name": name,
-                # Absolute path — desktop can later "open in system app".
-                "path": os.path.join(output_dir, name),
-            }
+        now = self._snapshot_outputs(output_dir)
+        for relative_path in sorted(set(now) - set(before)):
+            yield _build_artifact_event(relative_path, output_dir=output_dir)
 
     # ── permission: three-tier authorization ──────────────────
     def set_permission_mode(self, mode: str) -> None:
@@ -671,56 +821,6 @@ class FloodMindAgent:
         if self._permission_cache is None or self._permission_cache.workspace != ws:
             self._permission_cache = PermissionCache(ws)
         return self._permission_cache
-
-    def _patch_tool_policies_for_desktop_permission(self, agent) -> None:
-        """Force desktop-level ASK for all non-readonly tools.
-
-        The SDK's PermissionService only emits `permission_ask` events for tools
-        whose native `permission_policy.policy_type` is ``ask``. Built-in tools
-        like Bash/Write/ReadFile/WebSearch use ``exec``/``write``/``read_path``/
-        ``network`` and are auto-approved after path/danger checks. To implement
-        the desktop's three-tier authorization (always-trust / trust-once /
-        always-ask), we attach a ``check_permissions_fn`` that upgrades the
-        decision to ASK after the SDK's own policy checks have run. If the SDK
-        check returned DENY (e.g. dangerous command or path outside workspace),
-        that DENY is preserved.
-        """
-        from floodmind.agent.runtime.contracts.permissions import (
-            PermissionBehavior,
-            PermissionDecision,
-        )
-
-        keep_as_is = {"readonly", "internal", "ask"}
-
-        def _make_check_fn(existing_fn, tool_name):
-            def _check(tool_input):
-                if existing_fn is not None:
-                    try:
-                        result = existing_fn(tool_input)
-                        if hasattr(result, "behavior") and result.behavior == PermissionBehavior.DENY:
-                            return result
-                    except Exception:
-                        pass
-                return PermissionDecision(
-                    behavior=PermissionBehavior.ASK,
-                    reason=f"需要用户确认此操作（{tool_name}）",
-                )
-
-            return _check
-
-        for registry in (
-            getattr(agent, "_orchestrator_registry", None),
-            getattr(agent, "_specialist_registry", None),
-        ):
-            if registry is None:
-                continue
-            for tool in registry.all():
-                policy = getattr(tool, "permission_policy", None)
-                policy_type = getattr(policy, "policy_type", None) if policy else None
-                if policy_type in keep_as_is:
-                    continue
-                existing_fn = getattr(tool, "check_permissions_fn", None)
-                tool.check_permissions_fn = _make_check_fn(existing_fn, tool.name)
 
     def _respond_to_ask(self, raw: dict, approved: bool) -> None:
         ask_id = raw.get("ask_id")
@@ -817,8 +917,37 @@ class FloodMindAgent:
         the current (partial) round is discarded — NOT written to memory — and
         the run ends (terminal failed). The next stream() resumes from memory,
         so the user pauses, appends an instruction, and sends to resume.
+
+        Also resolves any permission ask the executor is blocked on: the abort
+        check only runs at the top of the executor's state loop, so a pending
+        ``awaiting_permission`` would otherwise stall the run (and hold the
+        stream lock) for the ask timeout. Denying the pending asks unblocks the
+        executor so the abort fires at the next boundary.
         """
         self._abort.set()
+        try:
+            from .permissions import PENDING_ASKS
+            from floodmind.agent.runtime.services.ask_service import get_ask_service
+            from floodmind.agent.runtime.contracts.permissions import PermissionAskResponse
+
+            svc = get_ask_service()
+            for entry in PENDING_ASKS.all_pending():
+                PENDING_ASKS.pop(entry["ask_id"])
+                try:
+                    svc.respond(PermissionAskResponse(
+                        session_id=entry.get("session_id", ""),
+                        ask_id=entry["ask_id"],
+                        approved=False,
+                    ))
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        # NOTE: we deliberately do NOT close the active stream generator here —
+        # closing a generator running in another thread injects GeneratorExit
+        # into the SDK mid-run, whose cleanup can raise OSError(EINVAL). Resolving
+        # the pending asks + setting abort lets the SDK unwind at its next
+        # boundary and the stream lock release on its own.
 
     def append_instruction(self, text: str) -> None:
         """Append a user instruction to the agent's memory mid-run.
@@ -853,7 +982,7 @@ class FloodMindAgent:
         session_id, persist_dir = self._memory_target(session_id_for(path))
         try:
             with self._fg():
-                self._agent = self._build_agent(session_id, persist_dir)
+                self._agent = self._build_agent(session_id, persist_dir, mode=getattr(self, "_agent_mode", "craft"))
         except Exception as e:
             print(f"[sidecar] workspace memory rebind failed for {path}: {e}", file=sys.stderr)
 
@@ -892,7 +1021,7 @@ class FloodMindAgent:
 
             self._llm = self._resolve_llm()
             with self._fg():
-                self._agent = self._build_agent(sid, persist_dir)
+                self._agent = self._build_agent(sid, persist_dir, mode=getattr(self, "_agent_mode", "craft"))
             return True
         except Exception as e:
             print(f"[sidecar] reload_model failed: {e}", file=sys.stderr)
@@ -902,9 +1031,9 @@ class FloodMindAgent:
         """Rebuild the agent so edited SOUL.md / global AGENTS.md take effect.
 
         A fresh NativeFloodAgent re-reads SOUL.md via _build_stable_prompt and
-        gets a new ContextRuntime (AGENTS.md TTL cache cleared). Re-binding the
-        workspace then re-runs _init_executors, baking the new identity into the
-        cached prompt so the NEXT message sees it. History is preserved
+        gets a new ContextRuntime (AGENTS.md TTL cache cleared). The fresh agent is
+        constructed with the current folder-first Workspace, so the cached prompt
+        sees the right identity + workspace on the NEXT message. History is preserved
         (persist_dir reused). Safe to call mid-stream: the in-flight generator
         holds the old agent; self._agent swaps on the next stream.
         """
@@ -915,7 +1044,7 @@ class FloodMindAgent:
                 sid = "desktop-default"
             _, persist_dir = self._memory_target(sid)
             with self._fg():
-                self._agent = self._build_agent(sid, persist_dir)
+                self._agent = self._build_agent(sid, persist_dir, mode=getattr(self, "_agent_mode", "craft"))
                 self._set_workspace()  # rebind workspace + refresh cached prompt
             return True
         except Exception as e:
@@ -933,7 +1062,7 @@ class FloodMindAgent:
         try:
             sid, persist_dir = self._memory_target(session_id)
             with self._fg():
-                self._agent = self._build_agent(sid, persist_dir)
+                self._agent = self._build_agent(sid, persist_dir, mode=getattr(self, "_agent_mode", "craft"))
         except Exception as e:
             print(f"[sidecar] activate_conversation failed for {session_id}: {e}", file=sys.stderr)
 
@@ -947,21 +1076,22 @@ class FloodMindAgent:
         Returns the resolved Workspace object (caller binds it to its agent via
         bind_workspace, since headless builds a fresh agent), or None on failure.
         """
-        from .workspace import _app_data_dir, session_id_for
+        from .workspace import session_id_for
         try:
-            from floodmind.agent.runtime.services.workspace_service import (
-                build_workspace,
-            )
             from floodmind.tools import set_session_context
 
             sid = session_id_for(workspace_path)
-            ws = build_workspace(
+            ws = self._build_workspace_for_path(sid, workspace_path)
+            set_session_context(
                 sid,
-                session_root=_app_data_dir(),
-                user_dir=workspace_path,
-                sandbox_strategy="user_dir",
-            ).ensure()
-            set_session_context(sid, output_dir=str(ws.user_dir))
+                output_dir=str(ws.user_dir),
+                cwd=str(ws.default_cwd),
+                workspace_dir=str(ws.workspace_dir),
+                state_dir=str(ws.state_dir) if ws.state_dir else None,
+                artifact_dir=str(ws.artifact_dir) if ws.artifact_dir else None,
+                tmp_dir=str(ws.tmp_dir) if ws.tmp_dir else None,
+                scripts_dir=str(ws.scripts_dir) if ws.scripts_dir else None,
+            )
             return ws
         except Exception as e:
             print(f"[sidecar] _set_workspace_for failed for {workspace_path}: {e}", file=sys.stderr)
@@ -982,19 +1112,10 @@ class FloodMindAgent:
             ws = self._set_workspace_for(workspace_path)
             output_dir = str(ws.user_dir) if ws else None
             sid, persist_dir = self._memory_target(session_id)
-            agent = self._build_agent(sid, persist_dir)
-            # Bind the task workspace to the fresh agent (instance attribute,
-            # not contextvar) — see _set_workspace for why this is required.
-            if ws:
-                agent.bind_workspace(ws)
-                # Refresh the cached prompt (see _set_workspace): _init_executors ran
-                # at construction with _workspace=None, baking the AppData fallback
-                # output dir into the prompt the LLM sees.
-                try:
-                    agent._init_executors()
-                except Exception as e:
-                    print(f"[sidecar] headless _init_executors refresh failed: {e}", file=sys.stderr)
+            # Automated/scheduled tasks always execute (craft), never ask/plan.
+            agent = self._build_agent(sid, persist_dir, workspace=ws, mode="craft")
             before = self._snapshot_outputs(output_dir)
+            _CURRENT_MODE["mode"] = "craft"  # hook must not block headless tools
             for raw in agent.stream(command):
                 for ev in translate_event(raw):
                     if ev.get("type") == "done":
@@ -1010,22 +1131,34 @@ class FloodMindAgent:
                         ev = {**ev, "approved": True, "auto_approved": True}
                     events.append(ev)
                     if ev.get("type") == "artifact":
-                        artifacts.append(
-                            {"kind": ev.get("kind", "file"),
-                             "name": ev.get("name", ""),
-                             "path": ev.get("path", "")}
-                        )
+                        artifacts.append({
+                            key: ev[key]
+                            for key in ("kind", "name", "path", *_ARTIFACT_OPTIONAL_FIELDS)
+                            if key in ev
+                        })
                     elif ev.get("type") == "text":
                         final_text += ev.get("content", "")
-            # The SDK does not reliably emit file_generated/image_generated to
-            # stream consumers, so diff the output dir the same way stream() does.
-            for ev in self._diff_outputs(before, output_dir):
+            # Prefer SDK v1.0.1's public Agent.artifacts cache; fall back to
+            # output-dir diff for older/partial artifact paths.
+            artifact_keys = set()
+            for ev in self._artifact_events_from_agent(agent):
                 events.append(ev)
-                artifacts.append(
-                    {"kind": ev.get("kind", "file"),
-                     "name": ev.get("name", ""),
-                     "path": ev.get("path", "")}
-                )
+                artifacts.append({
+                    key: ev[key]
+                    for key in ("kind", "name", "path", *_ARTIFACT_OPTIONAL_FIELDS)
+                    if key in ev
+                })
+                artifact_keys.add((ev.get("kind"), ev.get("path") or ev.get("name")))
+            for ev in self._diff_outputs(before, output_dir):
+                key = (ev.get("kind"), ev.get("path") or ev.get("name"))
+                if key in artifact_keys:
+                    continue
+                events.append(ev)
+                artifacts.append({
+                    key: ev[key]
+                    for key in ("kind", "name", "path", *_ARTIFACT_OPTIONAL_FIELDS)
+                    if key in ev
+                })
         except Exception as e:
             events.append({"type": "error", "content": f"后台执行出错：{e}"})
         return events, artifacts, final_text
@@ -1067,6 +1200,7 @@ class FloodMindAgent:
                 temperature=0.2,
                 max_tokens=10000,
                 enable_thinking=False,
+                provider=rm.provider,
             )
             prompt = (
                 "请根据用户问题拟一个简短的中文会话标题，用于左侧历史会话列表展示。"
@@ -1087,8 +1221,25 @@ class FloodMindAgent:
             print(f"[sidecar] generate_title failed: {e}", file=sys.stderr)
             return ""
 
+    def _ensure_agent_mode(self, mode: str) -> None:
+        """Rebuild the agent when the requested work mode differs from the current one.
+
+        Must be called under the foreground lock (it swaps self._agent). Session
+        history reloads from disk, so a mode switch never loses the conversation.
+        """
+        if mode not in _MODE_SYSTEM_PROMPTS and mode != "craft":
+            mode = "craft"
+        if getattr(self, "_agent", None) is None:
+            return
+        if getattr(self, "_agent_mode", "craft") == mode:
+            return
+        sid = self._agent.session_id
+        _, persist_dir = self._memory_target(sid)
+        self._agent = self._build_agent(sid, persist_dir, mode=mode)
+        self._agent_mode = mode
+
     # ── main entry ─────────────────────────────────────────────
-    def stream(self, messages: list[Message], attachments: list | None = None) -> Iterator[dict]:
+    def stream(self, messages: list[Message], attachments: list | None = None, mode="craft") -> Iterator[dict]:
         # Serialize foreground chats: only one /api/chat run at a time. The
         # shared self._agent + the process-global session context mean two
         # concurrent streams could otherwise cross-bind workspaces. Acquire the
@@ -1100,9 +1251,25 @@ class FloodMindAgent:
         abort = getattr(self, "_abort", None)
         try:
             if not acquired:
-                yield {"type": "error", "content": "已有任务正在执行，请等待当前任务结束。"}
-                yield {"type": "done"}
-                return
+                # After a pause the previous run is still unwinding: the SDK can
+                # only abort at an LLM/tool boundary, so if the current LLM call
+                # is slow the lock is held for a while. When a pause was requested
+                # (abort set), wait briefly for the lock instead of failing the
+                # post-pause resume immediately.
+                paused = abort is not None and abort.is_set()
+                if paused:
+                    waited_ms = 0
+                    while waited_ms < _LOCK_WAIT_AFTER_PAUSE_MS:
+                        time.sleep(0.2)
+                        waited_ms += 200
+                        if stream_lock is not None:
+                            acquired = stream_lock.acquire(blocking=False)
+                            if acquired:
+                                break
+                if not acquired:
+                    yield {"type": "error", "content": "已有任务正在执行，请等待当前任务结束。"}
+                    yield {"type": "done"}
+                    return
 
             # We hold the stream lock for this run — safe to reset any stale
             # pause signal from a previous run. Done AFTER the acquire check so
@@ -1153,6 +1320,12 @@ class FloodMindAgent:
                 # rebuild leaves this stream iterating the old agent, exactly
                 # as the rebind docstring promises.
                 with self._fg():
+                    # Rebuild when the requested work mode differs from the
+                    # current agent's mode (session history reloads from disk).
+                    self._ensure_agent_mode(mode)
+                    # Publish the mode to the permission hook (read at tool-call
+                    # time in the SDK thread) so Ask/Plan block every tool.
+                    _CURRENT_MODE["mode"] = mode
                     self._set_workspace()
                     agent = self._agent
                     before = self._snapshot_outputs()
@@ -1167,18 +1340,28 @@ class FloodMindAgent:
                         if ev.get("type") == "permission":
                             ev = self._handle_permission_ask(raw, ev)
                         yield ev
+                if not errored:
+                    print(f"[sidecar] stream: SDK loop ended {time.time():.3f}", file=sys.stderr)
             except Exception as e:
                 # A mid-stream SDK failure (network drop, 401, internal error) must
                 # still surface to the UI: fetch won't reject on a half-closed body,
                 # so without this the user gets a silent partial answer.
+                import traceback
+                print(f"[sidecar] stream exception: {e!r}\n{traceback.format_exc()}", file=sys.stderr)
                 errored = True
                 yield {"type": "error", "content": f"代理执行出错：{e}"}
 
-            # Artifacts: the SDK emits file/image_generated after its loop breaks, so
-            # they never reach the stream. Diff the output dir instead. Skip on crash
-            # so we don't report half-written files as deliverables.
+            # Prefer SDK v1.0.1's public Agent.artifacts cache; fall back to
+            # output-dir diff for older/partial artifact paths.
             if not errored:
+                artifact_keys = set()
+                for ev in self._artifact_events_from_agent(agent):
+                    yield ev
+                    artifact_keys.add((ev.get("kind"), ev.get("path") or ev.get("name")))
                 for ev in self._diff_outputs(before):
+                    key = (ev.get("kind"), ev.get("path") or ev.get("name"))
+                    if key in artifact_keys:
+                        continue
                     yield ev
             yield {"type": "done"}
         finally:
@@ -1190,4 +1373,5 @@ class FloodMindAgent:
             if abort is not None and acquired:
                 abort.set()
             if stream_lock is not None and acquired:
+                print(f"[sidecar] stream: releasing lock {time.time():.3f}", file=sys.stderr)
                 stream_lock.release()
