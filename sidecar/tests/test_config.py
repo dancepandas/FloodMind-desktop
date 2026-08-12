@@ -25,8 +25,9 @@ def isolated_home(tmp_path, monkeypatch):
     monkeypatch.setattr(
         config_api, "_legacy_config_path", lambda: tmp_path / "legacy_config.json"
     )
-    from floodmind.config.settings import reload_config
+    from floodmind.config.settings import initialize_floodmind_home, reload_config
 
+    initialize_floodmind_home()  # v2.0.0 显式种子 settings.json
     reload_config()  # pick up the new FLOODMIND_HOME
     yield tmp_path
     reload_config()  # restore other tests' view
@@ -390,3 +391,42 @@ def test_read_active_falls_back_to_first_enabled_when_not_in_set(isolated_home):
     cfg = read_model_config()
     assert cfg["model"]["model"] == "deepseek-v4-flash"
     assert cfg["model"]["provider"] == "deepseek"
+
+
+# ── work mode (Craft/Ask/Plan) ─────────────────────────────────
+
+
+def test_read_work_mode_defaults_to_craft(isolated_home):
+    from floodmind_desktop_sidecar.config_api import read_work_mode_config
+
+    _write_settings(isolated_home, {"desktop": {}})
+    assert read_work_mode_config() == {"mode": "craft"}
+
+
+def test_write_work_mode_roundtrip(isolated_home):
+    from floodmind_desktop_sidecar.config_api import read_work_mode_config, write_work_mode_config
+
+    _write_settings(isolated_home, {
+        "providers": {},
+        "desktop": {"activeModel": "deepseek-v4-flash", "enableReasoning": True},
+        "permissions": {"mode": "always-trust"},  # unrelated — must survive
+    })
+
+    assert write_work_mode_config({"mode": "ask"}) == {"mode": "ask"}
+    on_disk = json.loads((isolated_home / "settings.json").read_text(encoding="utf-8"))
+    assert on_disk["desktop"]["workMode"] == "ask"
+    # Unrelated keys survive the write.
+    assert on_disk["desktop"]["activeModel"] == "deepseek-v4-flash"
+    assert on_disk["permissions"]["mode"] == "always-trust"
+
+    write_work_mode_config({"mode": "plan"})
+    assert read_work_mode_config() == {"mode": "plan"}
+    write_work_mode_config({"mode": "craft"})
+    assert read_work_mode_config() == {"mode": "craft"}
+
+
+def test_write_work_mode_invalid_falls_back_to_craft(isolated_home):
+    from floodmind_desktop_sidecar.config_api import write_work_mode_config
+
+    _write_settings(isolated_home, {"desktop": {}})
+    assert write_work_mode_config({"mode": "nonsense"}) == {"mode": "craft"}
