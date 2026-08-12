@@ -50,6 +50,8 @@ function TurnView({ turn, isLast, streaming }: { turn: Msg; isLast: boolean; str
   // read on the assistant branch.
   // 执行中点击状态行展开的项（thinking/tool）；新项到来时展示的始终是最新项。
   const [expandedKind, setExpandedKind] = useState<"thinking" | "tool" | null>(null);
+  // 完成态「已用过程」折叠追踪（默认收起，对齐主流可复盘）。
+  const [showProcess, setShowProcess] = useState(false);
   const openLightbox = useUiStore((s) => s.openLightbox);
   const setPreviewPath = useUiStore((s) => s.setPreviewPath);
 
@@ -103,9 +105,13 @@ function TurnView({ turn, isLast, streaming }: { turn: Msg; isLast: boolean; str
   const pendingPerms = turn.blocks.filter(
     (b) => b.kind === "permission" && b.approved === undefined
   );
+  // 已用过程：思考/工具/权限块（完成态默认折叠的可复盘追踪）。
+  const doneProcessBlocks = turn.blocks.filter(
+    (b) => b.kind === "thinking" || b.kind === "tool" || b.kind === "permission"
+  );
 
-  // 完成态：执行状态与详情彻底消失——不渲染思维链/工具/数量/历史入口，只留
-  // 最终答案 + 产物 + 必须感知的信息（错误/未决权限/已停止）。
+  // 完成态：默认不渲染过程；只留最终答案 + 产物 + 必须感知的信息，外加一个
+  // 默认折叠的「已用过程」入口（对齐主流可复盘，而非彻底消失）。
   if (turn.done) {
     return (
       <div className="turn assistant-turn">
@@ -127,6 +133,42 @@ function TurnView({ turn, isLast, streaming }: { turn: Msg; isLast: boolean; str
         />
         {errors.map((b) => <BlockView key={b.id} block={b} isLive={false} />)}
         {pendingPerms.map((b) => <BlockView key={b.id} block={b} isLive={false} />)}
+        {/* 已用过程：默认折叠的可复盘追踪（对齐主流，不消失） */}
+        {doneProcessBlocks.length > 0 && (
+          <>
+            <button
+              className="show-process"
+              onClick={() => setShowProcess((v) => !v)}
+              type="button"
+              aria-expanded={showProcess}
+            >
+              {showProcess ? "收起已用过程" : "已用过程"}
+            </button>
+            {showProcess &&
+              doneProcessBlocks.map((b) => {
+                // 复盘视图：工具直接显示「名 + 状态 + 定长参数」；思考/权限走 BlockView。
+                if (b.kind === "tool") {
+                  return (
+                    <div key={b.id} className="blk blk-tool trace-tool">
+                      <div className="tool-row">
+                        <span className="tname">{b.tool_name}</span>
+                        <span className="tstat">{b.status}</span>
+                      </div>
+                      {b.input && <div className="tool-detail">→ {truncateParam(b.input)}</div>}
+                      {b.output && (
+                        <div className="tool-detail">{String(b.output).slice(0, 200)}</div>
+                      )}
+                    </div>
+                  );
+                }
+                return (
+                  <div key={b.id} data-block-id={b.id}>
+                    <BlockView block={b} isLive={false} />
+                  </div>
+                );
+              })}
+          </>
+        )}
         {turn.usage && <UsageLine usage={turn.usage} />}
         <PlanConfirmBar turn={turn} />
       </div>
@@ -135,9 +177,7 @@ function TurnView({ turn, isLast, streaming }: { turn: Msg; isLast: boolean; str
 
   // 执行中：最多两条动态状态行（思考中/调用工具），默认无过程详情；点击某行
   // 展开当前最新一项（工具行 = 工具名 + 定长参数），新项到来自动替换。
-  const processBlocks = turn.blocks.filter(
-    (b) => b.kind === "thinking" || b.kind === "tool" || b.kind === "permission"
-  );
+  const processBlocks = doneProcessBlocks;
   const lastThinking = processBlocks.filter((b) => b.kind === "thinking").pop();
   const lastTool = processBlocks.filter((b) => b.kind === "tool").pop();
   const lastBlock = turn.blocks[turn.blocks.length - 1];

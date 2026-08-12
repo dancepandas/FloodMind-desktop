@@ -122,11 +122,28 @@ describe("Conversation", () => {
       { id: "final", kind: "text", content: "完成", final: true },
     ]);
     render(<Conversation />);
-    // 完成态不渲染思维链/过程
+    // 完成态默认不渲染思维链
     expect(screen.queryByText("处理中")).not.toBeInTheDocument();
     // 只展示一个最终产物组
     fireEvent.click(screen.getByRole("button", { name: /最终产物/ }));
     expect(screen.getAllByText("report.txt")).toHaveLength(1);
+  });
+
+  it("completed turn keeps a collapsed 已用过程 trace that expands on click", () => {
+    seedAssistant([
+      { id: "t", kind: "thinking", content: "推理过程" },
+      { id: "tool", kind: "tool", call_id: "c1", tool_name: "Read", status: "completed", input: "a.txt" },
+      { id: "final", kind: "text", content: "完成", final: true },
+    ]);
+    render(<Conversation />);
+    // 默认折叠：不渲染过程块内容，但有「已用过程」入口
+    expect(screen.getByText("已用过程")).toBeInTheDocument();
+    expect(screen.queryByText("推理过程")).not.toBeInTheDocument();
+    // 点击展开可复盘：工具名可见，思考块以折叠 chip 呈现（内容需再点开）
+    fireEvent.click(screen.getByText("已用过程"));
+    expect(screen.getByText("Read")).toBeInTheDocument();
+    expect(screen.getByText("思考过程")).toBeInTheDocument();
+    expect(screen.queryByText("推理过程")).not.toBeInTheDocument();
   });
 
   it("routes artifact preview and folder actions through existing integrations", () => {
