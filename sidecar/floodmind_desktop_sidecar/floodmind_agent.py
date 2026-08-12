@@ -468,13 +468,17 @@ class FloodMindAgent:
         provider = desktop.get("activeProvider") or None
         rm = resolve_model(model_key=active, provider_id=provider)
         self._resolved_context_window = rm.context_window
+        # 推理默认随模型能力：settings 里没显式 enableReasoning 时，推理模型默认开
+        #（否则 MiniMax-M3 等模型不发 thinking 增量 → 「模型思考中」指示不显示）。
+        self._model_supports_reasoning = bool(getattr(rm, "supports_reasoning", False))
+        enable_reasoning = bool(desktop.get("enableReasoning", self._model_supports_reasoning))
         return ModelClient(
             api_key=rm.api_key,
             base_url=rm.base_url,
             model_name=rm.id,
             temperature=rm.temperature,
             max_tokens=rm.max_tokens,
-            enable_thinking=bool(desktop.get("enableReasoning", False)),
+            enable_thinking=enable_reasoning,
             provider=rm.provider,
         )
 
@@ -666,7 +670,7 @@ class FloodMindAgent:
         # stored under the `desktop` block (the SDK no longer persists a model
         # selection block in settings.json).
         desktop = self._desktop_block()
-        enable_reasoning = bool(desktop.get("enableReasoning", False))
+        enable_reasoning = bool(desktop.get("enableReasoning", getattr(self, "_model_supports_reasoning", False)))
         enable_search = bool(desktop.get("enableSearch", False))
 
         if mode not in _MODE_SYSTEM_PROMPTS and mode != "craft":

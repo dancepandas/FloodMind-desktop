@@ -301,6 +301,68 @@ def test_resolve_llm_passes_provider_to_model_client(monkeypatch):
     assert isinstance(a._llm, FakeMC)
 
 
+def test_resolve_llm_defaults_reasoning_to_model_capability(monkeypatch):
+    """无 enableReasoning 标志时，推理模型默认开启 thinking（v2.0.1 修复）。"""
+    import importlib
+    from floodmind.config.model_resolver import ResolvedModel
+    from floodmind_desktop_sidecar.floodmind_agent import FloodMindAgent
+
+    captured: dict = {}
+
+    class FakeMC:
+        def __init__(self, **kw):
+            captured.update(kw)
+
+    # 推理模型，desktop 块无 enableReasoning → 默认开
+    rm = ResolvedModel(
+        provider="minimax", id="MiniMax-M3", name="MiniMax M3",
+        api_key="sk", base_url="https://api.minimaxi.com/v1",
+        temperature=0.3, max_tokens=8192, context_window=131072,
+        supports_reasoning=True, supports_vision=False,
+    )
+    monkeypatch.setattr(
+        importlib.import_module("floodmind.config.model_resolver"),
+        "resolve_model", lambda model_key=None, provider_id=None: rm,
+    )
+    monkeypatch.setattr(
+        importlib.import_module("floodmind.agent.native.model_client"),
+        "ModelClient", FakeMC,
+    )
+    monkeypatch.setattr(
+        importlib.import_module("floodmind.config.settings"),
+        "reload_config", lambda: None,
+    )
+    monkeypatch.setattr(
+        FloodMindAgent, "_desktop_block",
+        lambda self: {"activeModel": "MiniMax-M3", "activeProvider": "minimax"},
+    )
+
+    a = FloodMindAgent.__new__(FloodMindAgent)
+    a._agent = type("A", (), {"session_id": "s1"})()
+    a._build_agent = lambda sid, pd, mode=None: ("AGENT", sid, pd)
+    assert a.reload_model() is True
+    assert captured["enable_thinking"] is True
+    assert a._model_supports_reasoning is True
+
+    # 非推理模型 → 默认关
+    rm2 = ResolvedModel(
+        provider="openai", id="plain", name="Plain",
+        api_key="sk", base_url="https://x/v1",
+        temperature=0.3, max_tokens=8192, context_window=32768,
+        supports_reasoning=False, supports_vision=False,
+    )
+    monkeypatch.setattr(
+        importlib.import_module("floodmind.config.model_resolver"),
+        "resolve_model", lambda model_key=None, provider_id=None: rm2,
+    )
+    captured.clear()
+    a2 = FloodMindAgent.__new__(FloodMindAgent)
+    a2._agent = type("A", (), {"session_id": "s2"})()
+    a2._build_agent = lambda sid, pd, mode=None: ("AGENT", sid, pd)
+    assert a2.reload_model() is True
+    assert captured["enable_thinking"] is False
+    assert a2._model_supports_reasoning is False
+
 
 def test_build_agent_uses_public_agent_full_runtime(monkeypatch, tmp_path):
     import importlib
