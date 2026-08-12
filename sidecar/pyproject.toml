@@ -5,7 +5,7 @@ requires-python = ">=3.10"
 dependencies = [
     "flask>=3.0",
     "flask-cors>=4.0",
-    "floodmind @ git+https://github.com/dancepandas/FloodMind.git@master",
+    "floodmind @ git+https://github.com/dancepandas/FloodMind.git@v2.0.2",
 ]
 
 [project.scripts]
