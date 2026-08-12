@@ -180,11 +180,6 @@ function TurnView({ turn, isLast, streaming }: { turn: Msg; isLast: boolean; str
   const processBlocks = doneProcessBlocks;
   const lastThinking = processBlocks.filter((b) => b.kind === "thinking").pop();
   const lastTool = processBlocks.filter((b) => b.kind === "tool").pop();
-  const lastBlock = turn.blocks[turn.blocks.length - 1];
-  const isThinkingActive = lastBlock?.kind === "thinking";
-  const isToolActive =
-    lastBlock?.kind === "tool" &&
-    ["running", "pending", "awaiting_permission"].includes(lastBlock.status);
   const answerTexts = turn.blocks.filter((b) => b.kind === "text");
   const stopped = !streaming && turn.blocks.length > 0;
 
@@ -215,7 +210,7 @@ function TurnView({ turn, isLast, streaming }: { turn: Msg; isLast: boolean; str
                   }
                 }}
               >
-                <span className="live-label">思考中{isThinkingActive && <span className="live-dots" />}</span>
+                <span className="live-label">思考中<span className="live-dots"><span className="live-dot" /><span className="live-dot" /><span className="live-dot" /></span></span>
               </span>
             )}
             {lastTool && (
@@ -231,7 +226,7 @@ function TurnView({ turn, isLast, streaming }: { turn: Msg; isLast: boolean; str
                   }
                 }}
               >
-                <span className="live-label">调用工具{isToolActive && <span className="live-dots" />}</span>
+                <span className="live-label">调用工具<span className="live-dots"><span className="live-dot" /><span className="live-dot" /><span className="live-dot" /></span></span>
               </span>
             )}
           </div>
