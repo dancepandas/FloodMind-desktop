@@ -160,28 +160,41 @@ function TurnView({ turn, isLast, streaming }: { turn: Msg; isLast: boolean; str
         <div className="blk blk-error">已停止</div>
       ) : (
         <>
-          {lastThinking && (
-            <button
-              className="blk-chip live-status"
-              onClick={() => setExpandedKind(expandedKind === "thinking" ? null : "thinking")}
-              type="button"
-              aria-expanded={expandedKind === "thinking"}
-            >
-              <span className="caret">{expandedKind === "thinking" ? "▾" : "▸"}</span>
-              <span className="live-label">思考中{isThinkingActive && <span className="live-dots" />}</span>
-            </button>
-          )}
-          {lastTool && (
-            <button
-              className="blk-chip live-status"
-              onClick={() => setExpandedKind(expandedKind === "tool" ? null : "tool")}
-              type="button"
-              aria-expanded={expandedKind === "tool"}
-            >
-              <span className="caret">{expandedKind === "tool" ? "▾" : "▸"}</span>
-              <span className="live-label">调用工具{isToolActive && <span className="live-dots" />}</span>
-            </button>
-          )}
+          {/* 动态状态行（主流风格：简洁动画文本，最多两条；点击可展开当前项） */}
+          <div className="live-status-area">
+            {lastThinking && (
+              <span
+                className="live-status-item"
+                role="button"
+                tabIndex={0}
+                onClick={() => setExpandedKind(expandedKind === "thinking" ? null : "thinking")}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    setExpandedKind(expandedKind === "thinking" ? null : "thinking");
+                  }
+                }}
+              >
+                <span className="live-label">思考中{isThinkingActive && <span className="live-dots" />}</span>
+              </span>
+            )}
+            {lastTool && (
+              <span
+                className="live-status-item"
+                role="button"
+                tabIndex={0}
+                onClick={() => setExpandedKind(expandedKind === "tool" ? null : "tool")}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    setExpandedKind(expandedKind === "tool" ? null : "tool");
+                  }
+                }}
+              >
+                <span className="live-label">调用工具{isToolActive && <span className="live-dots" />}</span>
+              </span>
+            )}
+          </div>
           {expandedKind === "thinking" && lastThinking && (
             <div className="thinking-body">{lastThinking.content}</div>
           )}

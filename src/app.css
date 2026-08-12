@@ -986,14 +986,31 @@ button:focus-visible,
   75% { content: "..."; }
 }
 
-/* 执行中的动态状态行（思考中/调用工具，最多两条） */
-.live-status {
-  border-color: var(--accent);
-  color: var(--fg-secondary);
+/* 执行中的动态状态行（主流风格：简洁动画文本，最多两条） */
+.live-status-area {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.9rem;
+  margin: 0.1rem 0 0.15rem;
 }
 
-.live-status:hover {
-  border-color: var(--accent);
+.live-status-item {
+  font-size: 13px;
+  color: var(--muted);
+  cursor: pointer;
+  border-radius: 4px;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+
+.live-status-item:hover {
+  color: var(--accent);
+  background: rgba(13, 148, 136, 0.06);
+}
+
+.live-status-item .live-label {
+  color: inherit;
+  font-weight: 500;
 }
 
 /* 展开的状态行详情（工具名 + 定长参数） */
