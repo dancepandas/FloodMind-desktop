@@ -267,6 +267,37 @@ describe("chat-store.send", () => {
     expect(reply.blocks.some((b) => b.kind === "error")).toBe(true);
   });
 
+  it("catches up buffered events after a mid-stream disconnect", async () => {
+    // Stream yields one event then the network drops (throws); the run keeps
+    // going in the sidecar and /api/chat/events?since=N replays the rest.
+    (streamChat as any).mockImplementation(async function* () {
+      yield { type: "text", content: "partial" };
+      throw new Error("network blip");
+    });
+    const fetchMock = vi.fn(async (url: unknown, _init?: RequestInit) => {
+      if (String(url).includes("/api/chat/events")) {
+        return new Response(
+          JSON.stringify({
+            events: [{ type: "text", content: "…recovered" }, { type: "done" }],
+            done: true,
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      return new Response("{}", { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await useChatStore.getState().send("hi");
+
+    const reply = useChatStore.getState().turns[1] as AssistantTurn;
+    const text = reply.blocks.find((b) => b.kind === "text");
+    // 断流后的事件与已流式文本合并，最终标记 final，无 error 块。
+    expect(text).toMatchObject({ content: "partial…recovered", final: true });
+    expect(reply.blocks.some((b) => b.kind === "error")).toBe(false);
+    vi.unstubAllGlobals();
+  });
+
   it("marks the last text block final when multiple text runs exist", async () => {
     (streamChat as any).mockImplementation(async function* () {
       yield { type: "text", content: "intermediate" };

@@ -126,3 +126,30 @@ def test_chat_resume_streams_ndjson_and_forwards_args():
     text = "".join(e["content"] for e in events if e.get("type") == "text")
     assert text == "续接输出"
     assert agent.resumed == ("cp-1", "继续")
+
+
+# ── 重连对账：游标补拉 ─────────────────────────────────────
+def test_chat_events_returns_buffered_from_cursor():
+    from floodmind_desktop_sidecar.agent import StubAgent
+    from floodmind_desktop_sidecar.app import create_app
+
+    class EventsAgent(StubAgent):
+        def run_events_since(self, since=0):
+            events = [
+                {"type": "text", "content": "a"},
+                {"type": "text", "content": "b"},
+                {"type": "done"},
+            ]
+            return events[since:], True
+
+    client = create_app(EventsAgent()).test_client()
+    r = client.get("/api/chat/events?since=1")
+    assert r.status_code == 200
+    data = r.get_json()
+    assert data["done"] is True
+    assert [e["content"] for e in data["events"] if e.get("type") == "text"] == ["b"]
+
+
+def test_chat_events_rejects_bad_since(client):
+    r = client.get("/api/chat/events?since=abc")
+    assert r.status_code == 400

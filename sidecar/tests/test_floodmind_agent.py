@@ -1455,6 +1455,16 @@ def test_stream_waits_after_pause_for_lock_to_free(tmp_path, monkeypatch):
     assert all(e.get("type") != "error" for e in out2)
 
 
+def _wait_lock_free(a, timeout: float = 3.0) -> None:
+    """Wait for the detached run thread to release _stream_lock on completion."""
+    import time
+
+    deadline = time.time() + timeout
+    while a._stream_lock.locked() and time.time() < deadline:
+        time.sleep(0.05)
+    assert not a._stream_lock.locked()
+
+
 def test_stream_releases_lock_and_allows_followup(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
 
@@ -1467,14 +1477,15 @@ def test_stream_releases_lock_and_allows_followup(tmp_path, monkeypatch):
 
     out = list(a.stream([{"role": "user", "content": "hi"}]))
     assert out[-1]["type"] == "done"
-    assert not a._stream_lock.locked()       # lock released on completion
-    assert a._abort.is_set()                 # abort set in finally (cleared next run)
+    _wait_lock_free(a)  # lock released by the run thread on completion
     # Follow-up run works because the lock was released.
     out2 = list(a.stream([{"role": "user", "content": "again"}]))
     assert out2[-1]["type"] == "done"
+    _wait_lock_free(a)
 
 
-def test_stream_sets_abort_and_releases_on_disconnect(tmp_path, monkeypatch):
+def test_stream_keeps_running_and_releases_on_disconnect(tmp_path, monkeypatch):
+    """重连对账：客户端断连不再 abort——run 后台继续、事件缓冲，完成后释放锁。"""
     monkeypatch.chdir(tmp_path)
 
     class LongAgent:
@@ -1486,10 +1497,14 @@ def test_stream_sets_abort_and_releases_on_disconnect(tmp_path, monkeypatch):
     a._agent = LongAgent()
 
     g = a.stream([{"role": "user", "content": "hi"}])
-    next(g)                                   # consume one event; generator suspended, lock held
-    g.close()                                 # simulate client disconnect
-    assert a._abort.is_set()                  # teardown armed the abort signal
-    assert not a._stream_lock.locked()        # lock released even on abnormal close
+    next(g)                                   # consume one event; generator suspended
+    g.close()                                 # simulate client disconnect (GeneratorExit)
+    assert not a._abort.is_set()              # 不再 abort：run 继续缓冲
+    _wait_lock_free(a)                        # 锁由 run 线程在完成后释放
+    # 断连期间 run 仍跑完并缓冲全部事件 → 可经游标补拉。
+    events, done = a.run_events_since(0)
+    assert done is True
+    assert [e["type"] for e in events] == ["text"] * 5 + ["done"]
 
 
 # ── vision attachments: stream() forwards to SDK + non-vision gate (Task 5) ──

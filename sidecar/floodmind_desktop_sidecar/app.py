@@ -152,6 +152,16 @@ def create_app(agent: Agent, workspace_manager=None, conversation_store=None,
 
         return Response(generate(), mimetype="application/x-ndjson")
 
+    @app.get("/api/chat/events")
+    def chat_events():
+        """重连对账：按游标返回当前 run 缓冲的 wire 事件（from index ``since``）。"""
+        try:
+            since = int(request.args.get("since", 0))
+        except ValueError:
+            return jsonify({"error": "since must be an int"}), 400
+        events, done = agent.run_events_since(since)
+        return jsonify({"events": events, "done": done})
+
     @app.post("/api/chat/append")
     def chat_append():
         """Append an instruction to the running agent (mid-run steering / queue).

@@ -165,6 +165,40 @@ function markFinal(blocks: Block[]): Block[] {
 }
 
 /**
+ * 重连对账：网络断流但 run 在 sidecar 后台继续时，按游标从缓冲补拉
+ * 错过的 wire 事件，直至 run 完结。返回 true 表示已补拉并完结。
+ */
+async function catchUpEvents(
+  lastCount: number,
+  onEvent: (ev: ChatEvent) => void,
+  signal?: AbortSignal,
+  maxMs = 120_000,
+): Promise<boolean> {
+  let count = lastCount;
+  const baseUrl = await getBaseUrl();
+  const deadline = Date.now() + maxMs;
+  while (Date.now() < deadline) {
+    if (signal?.aborted) return false;
+    try {
+      const r = await fetch(`${baseUrl}/api/chat/events?since=${count}`);
+      if (!r.ok) return false;
+      const data = (await r.json().catch(() => ({}))) as { events?: unknown[]; done?: boolean };
+      for (const raw of data.events ?? []) {
+        const ev = raw as ChatEvent;
+        if (ev.type === "done") continue;
+        count += 1;
+        onEvent(ev);
+      }
+      if (data.done) return true;
+    } catch {
+      return false;
+    }
+    await new Promise((res) => setTimeout(res, 800));
+  }
+  return false;
+}
+
+/**
  * Fold one streamed event into the active assistant turn. Pure — returns a new
  * turn — so it is unit-testable in isolation. Events arrive in order, so the
  * block list is naturally interleaved (think → tool → text → tool → final).
@@ -339,6 +373,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }));
 
     let errored = false;
+    // 重连对账：已消费事件数，断流时按游标从 sidecar 缓冲补拉。
+    let eventCount = 0;
     try {
       const baseUrl = await getBaseUrl();
       // Append [引用文件] refs to the wire text so the LLM receives the same
@@ -358,6 +394,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const wireText = text + refsBlock;
       for await (const ev of streamChat(baseUrl, [{ role: "user", content: wireText }], controller.signal, attachments, workMode)) {
         if (ev.type === "done") continue;
+        eventCount += 1;
         set((s) => {
           const turns = s.turns.slice();
           const last = turns[turns.length - 1];
@@ -367,6 +404,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
       }
     } catch (e) {
       if (controller.signal.aborted) return; // finally finalizes without marking final
+      // 网络断流（fetch/reader 错误）但 run 可能在 sidecar 后台继续——按游标补拉。
+      const recovered = await catchUpEvents(eventCount, (ev) => {
+        set((s) => {
+          const turns = s.turns.slice();
+          const last = turns[turns.length - 1];
+          if (last && last.role === "assistant") turns[turns.length - 1] = reduceEvent(last, ev);
+          return { turns };
+        });
+      }, controller.signal);
+      if (recovered) return; // 已补拉完结 → finally 正常 finalize + 持久化
       errored = true;
       // Surface a mid-stream failure as an error block on the active turn.
       set((s) => {

@@ -1303,6 +1303,33 @@ class FloodMindAgent:
         self._agent_mode = mode
 
     # ── main entry ─────────────────────────────────────────────
+    # ── run event buffer (重连对账) ──────────────────────────
+    def _reset_run_buffer(self) -> dict:
+        """Start a fresh buffered run ledger for the active stream."""
+        self._run_buffer = {"events": [], "done": False}
+        return self._run_buffer
+
+    def _append_run_event(self, ev: dict) -> None:
+        buf = getattr(self, "_run_buffer", None)
+        if buf is not None:
+            buf["events"].append(ev)
+
+    def _finish_run_buffer(self) -> None:
+        buf = getattr(self, "_run_buffer", None)
+        if buf is not None:
+            buf["done"] = True
+
+    def run_events_since(self, since: int = 0) -> tuple[list, bool]:
+        """Return (buffered wire events from index ``since``, run_done).
+
+        The active stream appends every translated event in order, so a
+        reconnecting frontend can replay what it missed. No active run → empty +
+        done (treated as settled)."""
+        buf = getattr(self, "_run_buffer", None)
+        if buf is None:
+            return [], True
+        return buf["events"][since:], buf["done"]
+
     # ── checkpoint resume (断点续跑) ─────────────────────────
     def list_checkpoints(self, session_id: str, workspace_path: str) -> list[dict]:
         """List a conversation's checkpoints, newest first.
@@ -1441,6 +1468,9 @@ class FloodMindAgent:
         stream_lock = getattr(self, "_stream_lock", None)
         acquired = stream_lock.acquire(blocking=False) if stream_lock is not None else True
         abort = getattr(self, "_abort", None)
+        # True once the detached run thread starts; that thread owns the lock
+        # release, so the outer finally only releases for early error paths.
+        run_thread_started = False
         try:
             if not acquired:
                 # After a pause the previous run is still unwinding: the SDK can
@@ -1502,7 +1532,6 @@ class FloodMindAgent:
                     yield {"type": "error", "content": f"⚠️ {msg}"}
 
             before: dict[str, float] = {}
-            errored = False
             agent = None
             try:
                 # Bind workspace + capture the agent reference under the
@@ -1521,49 +1550,84 @@ class FloodMindAgent:
                     self._set_workspace()
                     agent = self._agent
                     before = self._snapshot_outputs()
-                # Pass abort_check only when armed (production always sets _abort
-                # in __init__). Test stubs mimic the SDK stream() signature
-                # optionally, so we avoid forcing the kwarg on them.
-                stream_kwargs = {"abort_check": abort_check} if abort_check is not None else {}
-                if sdk_attachments:
-                    stream_kwargs["attachments"] = sdk_attachments
-                for raw in agent.stream(user_text, **stream_kwargs):
-                    for ev in translate_event(raw):
-                        if ev.get("type") == "permission":
-                            ev = self._handle_permission_ask(raw, ev)
-                        yield ev
-                if not errored:
-                    print(f"[sidecar] stream: SDK loop ended {time.time():.3f}", file=sys.stderr)
             except Exception as e:
-                # A mid-stream SDK failure (network drop, 401, internal error) must
-                # still surface to the UI: fetch won't reject on a half-closed body,
-                # so without this the user gets a silent partial answer.
+                # A workspace/bind failure before the run starts must surface as
+                # an error event instead of a broken stream. No run thread was
+                # started, so the outer finally releases the lock.
                 import traceback
-                print(f"[sidecar] stream exception: {e!r}\n{traceback.format_exc()}", file=sys.stderr)
-                errored = True
-                yield {"type": "error", "content": f"代理执行出错：{e}"}
+                print(f"[sidecar] stream bind exception: {e!r}\n{traceback.format_exc()}", file=sys.stderr)
+                yield {"type": "error", "content": f"准备执行出错：{e}"}
+                yield {"type": "done"}
+                return
 
-            # Prefer SDK v1.0.1's public Agent.artifacts cache; fall back to
-            # output-dir diff for older/partial artifact paths.
-            if not errored:
-                artifact_keys = set()
-                for ev in self._artifact_events_from_agent(agent):
+            # Pass abort_check only when armed (production always sets _abort
+            # in __init__). Test stubs mimic the SDK stream() signature
+            # optionally, so we avoid forcing the kwarg on them.
+            stream_kwargs = {"abort_check": abort_check} if abort_check is not None else {}
+            if sdk_attachments:
+                stream_kwargs["attachments"] = sdk_attachments
+
+            # 重连对账：run 在后台线程执行，事件按序缓冲到 _run_buffer；
+            # 本 generator 轮询缓冲下发。客户端断连不 abort——run 继续跑完、
+            # 锁由 run 线程完成时释放；前端可经 /api/chat/events?since=N 补拉。
+            import threading
+
+            run_buffer = self._reset_run_buffer()
+
+            def _run():
+                try:
+                    for raw in agent.stream(user_text, **stream_kwargs):
+                        for ev in translate_event(raw):
+                            if ev.get("type") == "permission":
+                                ev = self._handle_permission_ask(raw, ev)
+                            self._append_run_event(ev)
+                    print(f"[sidecar] stream: SDK loop ended {time.time():.3f}", file=sys.stderr)
+                    # Prefer the public Agent.artifacts cache; fall back to
+                    # output-dir diff for older/partial artifact paths.
+                    artifact_keys = set()
+                    for ev in self._artifact_events_from_agent(agent):
+                        self._append_run_event(ev)
+                        artifact_keys.add((ev.get("kind"), ev.get("path") or ev.get("name")))
+                    for ev in self._diff_outputs(before):
+                        key = (ev.get("kind"), ev.get("path") or ev.get("name"))
+                        if key in artifact_keys:
+                            continue
+                        self._append_run_event(ev)
+                except Exception as e:
+                    # A mid-stream SDK failure (network drop, 401, internal
+                    # error) must still surface to the UI: fetch won't reject
+                    # on a half-closed body, so without this the user gets a
+                    # silent partial answer.
+                    import traceback
+                    print(f"[sidecar] stream exception: {e!r}\n{traceback.format_exc()}", file=sys.stderr)
+                    self._append_run_event({"type": "error", "content": f"代理执行出错：{e}"})
+                finally:
+                    self._append_run_event({"type": "done"})
+                    self._finish_run_buffer()
+                    # The run thread owns the lock lifecycle: the request thread
+                    # never releases it, so a detached (disconnected) run still
+                    # serializes correctly until it completes.
+                    if stream_lock is not None and acquired:
+                        print(f"[sidecar] stream: releasing lock {time.time():.3f}", file=sys.stderr)
+                        stream_lock.release()
+
+            run_thread_started = True
+            threading.Thread(target=_run, daemon=True).start()
+
+            # Poll the buffer and yield new events, then done.
+            seen = 0
+            while True:
+                events, done = self.run_events_since(seen)
+                for ev in events:
+                    seen += 1
                     yield ev
-                    artifact_keys.add((ev.get("kind"), ev.get("path") or ev.get("name")))
-                for ev in self._diff_outputs(before):
-                    key = (ev.get("kind"), ev.get("path") or ev.get("name"))
-                    if key in artifact_keys:
-                        continue
-                    yield ev
-            yield {"type": "done"}
+                if done:
+                    break
+                time.sleep(0.1)
         finally:
-            # A client disconnect raises GeneratorExit here (Flask closes the
-            # response). Set the abort signal so the SDK run stops at its next
-            # boundary instead of leaking an orphaned run that keeps burning
-            # tokens and writing files the user never sees. Harmless on normal
-            # completion — the next stream() clears it.
-            if abort is not None and acquired:
-                abort.set()
-            if stream_lock is not None and acquired:
-                print(f"[sidecar] stream: releasing lock {time.time():.3f}", file=sys.stderr)
+            # Client disconnect (GeneratorExit) unwinds here. The run thread keeps
+            # running in the background (buffering events for replay) and releases
+            # the stream lock when the run completes — no abort needed. Early
+            # error paths (before the run thread starts) release the lock here.
+            if stream_lock is not None and acquired and not run_thread_started:
                 stream_lock.release()
