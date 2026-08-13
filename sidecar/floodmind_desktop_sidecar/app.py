@@ -125,6 +125,10 @@ def create_app(agent: Agent, workspace_manager=None, conversation_store=None,
     def health():
         return jsonify({"status": "ok", "version": __version__})
 
+    @app.get("/api/diagnostics")
+    def diagnostics():
+        return jsonify(agent.diagnostics())
+
     @app.post("/api/chat")
     def chat():
         body = request.get_json(silent=True) or {}
@@ -280,6 +284,12 @@ def create_app(agent: Agent, workspace_manager=None, conversation_store=None,
     def conversations_list():
         ws = request.args.get("workspace", "")
         return jsonify({"conversations": conversation_store.list(ws)})
+
+    @app.get("/api/conversations/search")
+    def conversations_search():
+        ws = request.args.get("workspace", "")
+        q = request.args.get("q", "")
+        return jsonify({"hits": conversation_store.search(ws, q)})
 
     @app.post("/api/conversations")
     def conversations_create():

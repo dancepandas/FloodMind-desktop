@@ -1365,6 +1365,76 @@ class FloodMindAgent:
         self._agent_mode = mode
 
     # ── main entry ─────────────────────────────────────────────
+    # ── 诊断 (诊断与透明) ─────────────────────────────────────
+    def diagnostics(self) -> dict:
+        """聚合诊断信息：模型 codec 路由 + 工具目录(已加载/只读/破坏) + 上下文块/token。
+
+        只读，访问 agent 私有成员（既有外层壳模式），失败时返回空结构，绝不 500。
+        """
+        out = {
+            "model": {"codec": "", "conservative": False, "model": "", "provider": "", "base_url": ""},
+            "tools": {"mode": "", "max_loaded": 0, "total": 0, "loaded": 0, "items": []},
+            "context": {"estimated_tokens": 0, "blocks": []},
+        }
+        try:
+            raw = self._agent_raw(self._agent)
+            # 模型 codec 路由诊断
+            from floodmind.agent.native.providers import route_codec
+
+            desktop = self._desktop_block()
+            provider = desktop.get("activeProvider") or getattr(self._llm, "provider", "") or ""
+            model = desktop.get("activeModel") or getattr(self._llm, "model_name", "") or ""
+            base_url = getattr(self._llm, "base_url", "") or ""
+            codec = route_codec(provider_id=provider, model_id=model, base_url=base_url)
+            out["model"] = {
+                "codec": getattr(codec, "name", type(codec).__name__),
+                "conservative": bool(getattr(codec, "conservative", False)),
+                "model": model,
+                "provider": provider,
+                "base_url": base_url,
+            }
+            # 工具目录 + 渐进加载状态
+            registry = getattr(raw, "_orchestrator_registry", None)
+            loader = getattr(raw, "_orchestrator_tool_loader", None)
+            if registry is not None:
+                loaded = set(getattr(loader, "loaded_tools", set())) if loader else set()
+                items = []
+                for t in registry.all():
+                    items.append({
+                        "name": t.name,
+                        "description": (t.description or "")[:120],
+                        "is_readonly": bool(getattr(t, "is_readonly", True)),
+                        "is_destructive": bool(getattr(t, "is_destructive", False)),
+                        "loaded": t.name in loaded,
+                    })
+                items.sort(key=lambda x: (not x["loaded"], x["name"]))
+                out["tools"] = {
+                    "mode": getattr(loader, "mode", "") if loader else "",
+                    "max_loaded": int(getattr(getattr(loader, "config", None), "max_loaded_tools", 0)) if loader else 0,
+                    "total": len(items),
+                    "loaded": len(loaded),
+                    "items": items,
+                }
+            # 上下文块 + token 估算
+            ctx = getattr(raw, "_context_runtime", None)
+            if ctx is not None:
+                blocks = []
+                for label, b in getattr(ctx, "_blocks", {}).items():
+                    content = b.get_content() if hasattr(b, "get_content") else str(getattr(b, "content", ""))
+                    blocks.append({
+                        "label": label,
+                        "priority": int(getattr(b, "priority", 0)),
+                        "chars": len(content),
+                    })
+                blocks.sort(key=lambda x: x["priority"])
+                out["context"] = {
+                    "estimated_tokens": int(ctx.estimate_tokens()) if hasattr(ctx, "estimate_tokens") else 0,
+                    "blocks": blocks,
+                }
+        except Exception as e:
+            print(f"[sidecar] diagnostics failed: {e!r}", file=sys.stderr)
+        return out
+
     # ── 插件管理器 (可扩展性) ─────────────────────────────────
     def list_plugins(self) -> list[dict]:
         """Scan plugin dirs WITHOUT executing plugin code (受信代码安全姿态).

@@ -239,3 +239,21 @@ def test_plugins_list_and_disable(tmp_path):
 
 def test_plugins_disable_requires_source(client):
     assert client.post("/api/plugins/disabled", json={"disabled": True}).status_code == 400
+
+
+# ── 诊断 + 跨会话搜索 ───────────────────────────────────────
+def test_diagnostics_forwards_from_agent():
+    from floodmind_desktop_sidecar.agent import StubAgent
+    from floodmind_desktop_sidecar.app import create_app
+
+    class DiagAgent(StubAgent):
+        def diagnostics(self):
+            return {"model": {"codec": "DeepSeekCodec"}, "tools": {"total": 3}, "context": {"estimated_tokens": 100}}
+
+    client = create_app(DiagAgent()).test_client()
+    r = client.get("/api/diagnostics")
+    assert r.status_code == 200
+    data = r.get_json()
+    assert data["model"]["codec"] == "DeepSeekCodec"
+    assert data["tools"]["total"] == 3
+    assert data["context"]["estimated_tokens"] == 100

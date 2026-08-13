@@ -6,6 +6,7 @@ import { useFeedbackStore, buildFeedbackMailto, type FeedbackForm } from "../sta
 import { useUiStore } from "../state/ui-store";
 import { openUrl } from "../lib/open-file";
 import { listExternalPaths, removeExternalPath } from "../lib/external-paths";
+import { getBaseUrl } from "../lib/sidecar-client";
 import SettingsNav, { type Tab } from "./SettingsNav";
 import { CURATED_PROVIDERS, getProviderDef } from "../lib/providers";
 import ProviderIcon from "./ProviderIcon";
@@ -23,6 +24,7 @@ export default function SettingsView() {
           {tab === "rules" && <RulesTab />}
           {tab === "permissions" && <PermissionsTab />}
           {tab === "feedback" && <FeedbackTab />}
+          {tab === "diagnostics" && <DiagnosticsTab />}
         </div>
       </div>
     </div>
@@ -606,5 +608,88 @@ function FeedbackTab() {
         {submitting ? "提交中…" : "提交反馈"}
       </button>
     </form>
+  );
+}
+
+/* ── 诊断 tab：模型 codec + 工具目录 + 上下文块/token ── */
+interface DiagnosticsData {
+  model: { codec: string; conservative: boolean; model: string; provider: string; base_url: string };
+  tools: { mode: string; max_loaded: number; total: number; loaded: number; items: { name: string; description: string; is_readonly: boolean; is_destructive: boolean; loaded: boolean }[] };
+  context: { estimated_tokens: number; blocks: { label: string; priority: number; chars: number }[] };
+}
+
+function DiagnosticsTab() {
+  const [data, setData] = useState<DiagnosticsData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  const load = async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const base = await getBaseUrl();
+      const r = await fetch(`${base}/api/diagnostics`);
+      if (!r.ok) throw new Error(`status ${r.status}`);
+      setData(await r.json());
+    } catch (e) {
+      setError(`加载诊断失败：${(e as Error).message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { void load(); }, []);
+
+  if (loading) return <div className="settings-form"><div className="empty-hint">加载中…</div></div>;
+  if (error) return <div className="settings-form"><div className="blk blk-error">⚠️ {error}</div></div>;
+  if (!data) return <div className="settings-form"><div className="empty-hint">无诊断数据</div></div>;
+
+  const { model, tools, context } = data;
+  const labelMap: Record<string, string> = {
+    project_rules: "项目规则", long_term_memory: "长期记忆", current_time: "当前时间",
+    system_env: "系统环境", recent_result: "最近结果", last_tool_use: "上次工具调用",
+    rag_context: "RAG 上下文",
+  };
+
+  return (
+    <div className="settings-form diagnostics">
+      <section>
+        <h3>模型连接</h3>
+        <div className="diag-row"><span className="diag-key">codec</span><span>{model.codec || "—"}{model.conservative ? "（保守模式）" : ""}</span></div>
+        <div className="diag-row"><span className="diag-key">模型</span><span>{model.model || "—"}</span></div>
+        <div className="diag-row"><span className="diag-key">provider</span><span>{model.provider || "—"}</span></div>
+        <div className="diag-row"><span className="diag-key">base_url</span><span className="diag-mono">{model.base_url || "—"}</span></div>
+      </section>
+
+      <section>
+        <h3>工具目录（已加载 {tools.loaded}/{tools.total} · 模式 {tools.mode}）</h3>
+        {tools.items.length === 0 && <div className="empty-hint">无工具</div>}
+        <ul className="diag-tools">
+          {tools.items.map((t) => (
+            <li key={t.name} className={t.loaded ? "loaded" : ""}>
+              <span className="diag-tool-name">{t.name}</span>
+              {t.is_destructive ? <span className="diag-badge danger">破坏性</span> : t.is_readonly ? <span className="diag-badge ro">只读</span> : <span className="diag-badge">写</span>}
+              {!t.loaded && <span className="diag-badge off">未加载</span>}
+              <span className="diag-tool-desc">{t.description}</span>
+            </li>
+          ))}
+        </ul>
+      </section>
+
+      <section>
+        <h3>上下文块（约 {context.estimated_tokens} tokens）</h3>
+        {context.blocks.length === 0 && <div className="empty-hint">无上下文块</div>}
+        <ul className="diag-context">
+          {context.blocks.map((b) => (
+            <li key={b.label}>
+              <span className="diag-key">{labelMap[b.label] ?? b.label}</span>
+              <span className="diag-chars">{b.chars} 字符</span>
+            </li>
+          ))}
+        </ul>
+      </section>
+
+      <button className="btn-secondary" onClick={load} type="button">刷新</button>
+    </div>
   );
 }

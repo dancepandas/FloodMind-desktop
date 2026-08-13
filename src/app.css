@@ -4226,3 +4226,99 @@ button:focus-visible,
   color: var(--fg-secondary);
   font-family: var(--font-mono);
 }
+
+/* ── 诊断 tab ────────────────────────────────────────────── */
+.diagnostics section {
+  margin-bottom: 1.1rem;
+  padding-bottom: 0.8rem;
+  border-bottom: 1px solid var(--border-soft);
+}
+.diagnostics h3 {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg-secondary);
+  margin: 0 0 0.5rem;
+}
+.diag-row {
+  display: flex;
+  gap: 0.8rem;
+  font-size: 12.5px;
+  padding: 0.15rem 0;
+}
+.diag-key {
+  flex-shrink: 0;
+  width: 7rem;
+  color: var(--muted);
+}
+.diag-mono { font-family: var(--font-mono); font-size: 11.5px; word-break: break-all; }
+.diag-tools, .diag-context {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+.diag-tools li {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 12px;
+  padding: 0.15rem 0;
+  opacity: 0.55;
+}
+.diag-tools li.loaded { opacity: 1; }
+.diag-tool-name { font-weight: 600; color: var(--fg); }
+.diag-tool-desc { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.diag-badge {
+  font-size: 10px; padding: 0.02rem 0.35rem; border-radius: 4px;
+  background: var(--surface-2); color: var(--fg-secondary);
+}
+.diag-badge.ro { color: var(--blue); background: rgba(37, 99, 235, 0.1); }
+.diag-badge.danger { color: var(--red); background: rgba(220, 38, 38, 0.1); }
+.diag-badge.off { color: var(--muted); }
+.diag-context li { display: flex; justify-content: space-between; font-size: 12px; padding: 0.1rem 0; }
+.diag-chars { color: var(--muted); font-size: 11px; }
+
+/* ── 跨会话搜索（Sidebar 顶部） ─────────────────────────── */
+.sidebar-search {
+  position: relative;
+  margin-bottom: 0.75rem;
+}
+.sidebar-search input {
+  width: 100%;
+  padding: 0.35rem 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--fg);
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+}
+.sidebar-search-results {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  z-index: 40;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.1);
+  max-height: 260px;
+  overflow-y: auto;
+}
+.sidebar-search-hit {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 0.4rem 0.55rem;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-family: var(--font-sans);
+}
+.sidebar-search-hit:hover { background: var(--sidebar-hover); }
+.sidebar-search-hit .hit-title { font-size: 12.5px; font-weight: 600; color: var(--fg); }
+.sidebar-search-hit .hit-snippet { font-size: 11.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sidebar-search-empty { padding: 0.5rem; font-size: 12px; color: var(--muted); text-align: center; }

@@ -3,6 +3,7 @@ import { useChatStore } from "../state/chat-store";
 import { useConversationStore, type ConvSummary } from "../state/conversation-store";
 import { useUiStore, type View } from "../state/ui-store";
 import { useWorkspaceStore, type WorkspaceSummary } from "../state/workspace-store";
+import { getBaseUrl } from "../lib/sidecar-client";
 import Logo from "./Logo";
 
 function NavIcon({ children }: { children: ReactNode }) {
@@ -74,6 +75,57 @@ const PuzzleIcon = () => (
     <path d="M10 3v3a2 2 0 1 0 4 0V3h5v4a2 2 0 1 1 0 4v5h-4a2 2 0 1 0 0 4h4v5H3v-5h3a2 2 0 1 0 0-4H3V7h4a2 2 0 1 0 0-4V3z" />
   </NavIcon>
 );
+
+interface SearchHit {
+  conv_id: string;
+  title: string;
+  snippet: string;
+}
+
+function SidebarSearch({ workspace, onOpen, onGoChat }: { workspace: string; onOpen: (id: string) => void; onGoChat: () => void }) {
+  const [query, setQuery] = useState("");
+  const [hits, setHits] = useState<SearchHit[]>([]);
+  const [searching, setSearching] = useState(false);
+
+  useEffect(() => {
+    if (!query.trim() || !workspace) { setHits([]); return; }
+    setSearching(true);
+    const t = setTimeout(async () => {
+      try {
+        const base = await getBaseUrl();
+        const r = await fetch(`${base}/api/conversations/search?workspace=${encodeURIComponent(workspace)}&q=${encodeURIComponent(query)}`);
+        if (r.ok) setHits((await r.json()).hits ?? []);
+      } catch { setHits([]); } finally { setSearching(false); }
+    }, 250);
+    return () => clearTimeout(t);
+  }, [query, workspace]);
+
+  const open = (id: string) => { onOpen(id); onGoChat(); setQuery(""); setHits([]); };
+
+  return (
+    <div className="sidebar-search">
+      <input
+        type="search"
+        placeholder="搜索会话…"
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+      />
+      {query.trim() && hits.length > 0 && (
+        <div className="sidebar-search-results">
+          {hits.map((h) => (
+            <button className="sidebar-search-hit" key={h.conv_id} onClick={() => open(h.conv_id)} type="button">
+              <span className="hit-title">{h.title}</span>
+              <span className="hit-snippet">{h.snippet}</span>
+            </button>
+          ))}
+        </div>
+      )}
+      {query.trim() && !searching && hits.length === 0 && workspace && (
+        <div className="sidebar-search-results"><div className="sidebar-search-empty">无匹配会话</div></div>
+      )}
+    </div>
+  );
+}
 
 const NAV: { view: View; label: string; icon: ReactNode }[] = [
   { view: "chat", label: "新建任务", icon: <PlusIcon /> },
@@ -206,6 +258,8 @@ export default function Sidebar() {
         <Logo className="sidebar-logo" />
         FloodMind
       </div>
+
+      <SidebarSearch workspace={current?.path ?? ""} onOpen={loadConversation} onGoChat={() => setView("chat")} />
 
       <nav className="sidebar-nav-list" aria-label="主导航">
         {NAV.map((n) => {
