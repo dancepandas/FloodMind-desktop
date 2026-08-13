@@ -5,6 +5,7 @@ import { useChatStore } from "../state/chat-store";
 import { useFeedbackStore, buildFeedbackMailto, type FeedbackForm } from "../state/feedback-store";
 import { useUiStore } from "../state/ui-store";
 import { openUrl } from "../lib/open-file";
+import { listExternalPaths, removeExternalPath } from "../lib/external-paths";
 import SettingsNav, { type Tab } from "./SettingsNav";
 import { CURATED_PROVIDERS, getProviderDef } from "../lib/providers";
 import ProviderIcon from "./ProviderIcon";
@@ -29,6 +30,9 @@ export default function SettingsView() {
 }
 
 /* ── 模型 tab：左 provider 列表 + 右详情（master-detail，配置即可用） ── */
+/** 模型列表默认渲染上限：中继平台可能返回数百个模型，超出的折叠为「显示全部」。 */
+const MODEL_VISIBLE_LIMIT = 80;
+
 function ModelTab() {
   const model = useConfigStore((s) => s.model);
   const providers = useConfigStore((s) => s.providers);
@@ -52,6 +56,10 @@ function ModelTab() {
   const [testing, setTesting] = useState<Record<string, boolean>>({});
   const [testResult, setTestResult] = useState<Record<string, { ok: boolean; error: string | null } | null>>({});
   const [fetching, setFetching] = useState<Record<string, boolean>>({});
+  const [modelShowAll, setModelShowAll] = useState(false);
+  const [modelQuery, setModelQuery] = useState("");
+  const [fetchResult, setFetchResult] = useState<{ ok: boolean; message: string } | null>(null);
+  useEffect(() => { setModelShowAll(false); setModelQuery(""); setFetchResult(null); }, [selectedId]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -116,18 +124,33 @@ function ModelTab() {
   async function onFetch(id: string) {
     const p = form[id]; if (!p) return;
     setFetching((s) => ({ ...s, [id]: true }));
+    setFetchResult(null);
     const res = await fetchRemoteModels(id, { baseURL: p.baseURL, apiKey: p.apiKey });
     setFetching((s) => ({ ...s, [id]: false }));
-    if (!res.ok) { showToast(res.error || "拉取失败"); return; }
-    const have = new Set(p.models.map((m) => m.name));
-    const fresh = (res.models || []).filter((m: string) => !have.has(m));
-    if (fresh.length === 0) { showToast("未发现新模型"); return; }
+    if (!res.ok) {
+      // 拉取失败：保留现有列表，但明确告知这不是新拉取的结果——否则换地址后
+      // 旧列表会被误当成新结果，用户选中的旧模型必然 400。
+      setFetchResult({ ok: false, message: `拉取失败：${res.error || "未知错误"}（列表未更新）` });
+      return;
+    }
+    if (!res.models || res.models.length === 0) {
+      // 覆盖语义：该地址返回空列表 → 清空旧的（旧列表来自其他地址，留着会误导）。
+      clearSaved();
+      setForm((f) => { const pp = f[id]; if (!pp) return f; return { ...f, [id]: { ...pp, models: [] } }; });
+      setFetchResult({ ok: false, message: "该服务商未返回可用模型（列表已清空）" });
+      return;
+    }
+    // 拉取是「覆盖」语义：以服务商返回的列表为准，替换当前列表（去重）。
+    const seen = new Set<string>();
+    const fresh = (res.models || [])
+      .map((m: string) => ({ name: m, maxTokens: null, contextSize: null, temperature: null, supportsVision: false }))
+      .filter((m) => { const k = m.name; if (seen.has(k)) return false; seen.add(k); return true; });
     clearSaved();
     setForm((f) => {
       const pp = f[id]; if (!pp) return f;
-      return { ...f, [id]: { ...pp, models: [...pp.models, ...fresh.map((m: string) => ({ name: m, maxTokens: null, contextSize: null, temperature: null, supportsVision: false }))] } };
+      return { ...f, [id]: { ...pp, models: fresh } };
     });
-    showToast(`已添加 ${fresh.length} 个模型`);
+    setFetchResult({ ok: true, message: `已拉取 ${fresh.length} 个模型` });
   }
 
   async function onSetDefault(id: string, name: string) {
@@ -208,35 +231,49 @@ function ModelTab() {
                       </button>
                     </div>
                   </div>
+                  {fetchResult && (
+                    <div className={fetchResult.ok ? "save-ok inline" : "env-warn inline"} role="status">
+                      {fetchResult.ok ? "✓ " : "⚠ "}{fetchResult.message}
+                    </div>
+                  )}
                   {selected.models.length === 0 ? (
                     <div className="model-empty">暂无模型，点「拉取模型」从服务商自动获取。</div>
                   ) : (
-                    <div className="model-rows">
-                      {selected.models.map((m) => {
-                        const isDefault = model?.provider === selectedId && model?.model === m.name;
-                        const isLocal = selectedId === "ollama";
-                        const canDefault = selectedKeyPresent || isLocal;
-                        return (
-                          <div key={m.name} className={`model-row${isDefault ? " default" : ""}`}>
-                            <span className="model-name">{m.name}</span>
-                            {m.supportsVision && <span className="model-vision-tag" title="支持图片">👁 视觉</span>}
-                            {isDefault ? (
-                              <span className="model-default-tag">默认</span>
-                            ) : (
-                              <button type="button" className="model-set-default" onClick={() => onSetDefault(selectedId, m.name)} disabled={!canDefault} title={canDefault ? "设为默认模型" : "需先配置 API Key"}>设为默认</button>
-                            )}
-                            <button type="button" className="model-remove" aria-label={`移除 ${m.name}`} title="移除模型" onClick={(e) => { e.stopPropagation(); removeModel(selectedId, m.name); }}>✕</button>
-                          </div>
-                        );
-                      })}
-                    </div>
+                    <>
+                      <div className="model-rows">
+                        {(modelShowAll ? selected.models : selected.models.slice(0, MODEL_VISIBLE_LIMIT)).map((m) => {
+                          const isDefault = model?.provider === selectedId && model?.model === m.name;
+                          const isLocal = selectedId === "ollama";
+                          const canDefault = selectedKeyPresent || isLocal;
+                          return (
+                            <div key={m.name} className={`model-row${isDefault ? " default" : ""}`}>
+                              <span className="model-name">{m.name}</span>
+                              {m.supportsVision && <span className="model-vision-tag" title="支持图片">👁 视觉</span>}
+                              {isDefault ? (
+                                <span className="model-default-tag">默认</span>
+                              ) : (
+                                <button type="button" className="model-set-default" onClick={() => onSetDefault(selectedId, m.name)} disabled={!canDefault} title={canDefault ? "设为默认模型" : "需先配置 API Key"}>设为默认</button>
+                              )}
+                              <button type="button" className="model-remove" aria-label={`移除 ${m.name}`} title="移除模型" onClick={(e) => { e.stopPropagation(); removeModel(selectedId, m.name); }}>✕</button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                      {selected.models.length > MODEL_VISIBLE_LIMIT && (
+                        <button type="button" className="model-show-all" onClick={() => setModelShowAll((v) => !v)}>
+                          {modelShowAll ? "收起" : `显示全部 ${selected.models.length} 个模型`}
+                        </button>
+                      )}
+                    </>
                   )}
                 </div>
               </>
             )}
           </div>
         </div>
-        <button className="save-btn" type="submit" disabled={saving}>{saving ? "保存中…" : "保存并重载"}</button>
+        <div className="model-save-bar">
+          <button className="save-btn" type="submit" disabled={saving}>{saving ? "保存中…" : "保存并重载"}</button>
+        </div>
       </form>
     </>
   );
@@ -340,6 +377,8 @@ function PermissionsTab() {
       </div>
       {saving && <div className="cat-empty">保存中…</div>}
 
+      <ExternalPathsSection />
+
       {confirmOpen && (
         <div className="modal-overlay" onClick={() => setConfirmOpen(false)}>
           <div className="modal-card" onClick={(e) => e.stopPropagation()}>
@@ -377,6 +416,56 @@ function PermissionsTab() {
             </div>
           </div>
         </div>
+      )}
+    </div>
+  );
+}
+
+/** 工作区外文件读取授权管理：列出已注册的外部可读文件，可单独移除。 */
+function ExternalPathsSection() {
+  const showToast = useUiStore((s) => s.showToast);
+  const [paths, setPaths] = useState<string[] | null>(null);
+
+  useEffect(() => {
+    listExternalPaths()
+      .then(setPaths)
+      .catch(() => setPaths([]));
+  }, []);
+
+  async function onRemove(p: string) {
+    try {
+      setPaths(await removeExternalPath(p));
+    } catch {
+      showToast("移除授权失败");
+    }
+  }
+
+  return (
+    <div className="field" style={{ marginTop: "1.2rem" }}>
+      <span className="field-label">外部文件授权</span>
+      <div style={{ fontSize: "12px", color: "var(--muted)", marginBottom: "0.4rem" }}>
+        从资源管理器拖入或粘贴工作区外的文件/文件夹时会自动注册；agent 读取前仍需按权限模式确认。
+      </div>
+      {paths === null ? (
+        <div className="cat-empty">加载中…</div>
+      ) : paths.length === 0 ? (
+        <div className="cat-empty">暂无外部文件授权。</div>
+      ) : (
+        <ul className="external-paths-list">
+          {paths.map((p) => (
+            <li key={p} className="external-path-row" title={p}>
+              <span className="external-path">{p}</span>
+              <button
+                type="button"
+                className="external-path-remove"
+                aria-label={`移除授权 ${p}`}
+                onClick={() => onRemove(p)}
+              >
+                ✕
+              </button>
+            </li>
+          ))}
+        </ul>
       )}
     </div>
   );

@@ -54,6 +54,14 @@ export interface EnabledModel {
 
 export type PermissionMode = "always-trust" | "trust-once" | "always-ask";
 
+/** Composer work mode: craft (execute directly) / ask (Q&A only) / plan (propose then confirm). */
+export type WorkMode = "craft" | "ask" | "plan";
+
+const WORK_MODES: WorkMode[] = ["craft", "ask", "plan"];
+export function isWorkMode(v: unknown): v is WorkMode {
+  return typeof v === "string" && (WORK_MODES as string[]).includes(v);
+}
+
 /** Merge providers returned by the backend with the curated provider list.
  *  Authoritative: saved model list wins (this is what makes "delete a model"
  *  stick); curated defaults are seeded only when a provider is absent from
@@ -117,6 +125,12 @@ interface ConfigState {
   permissionSaving: boolean;
   permissionSavedAt: number | null;
   permissionError: string | null;
+  // work-mode slice
+  workMode: WorkMode;
+  workModeLoading: boolean;
+  workModeSaving: boolean;
+  workModeSavedAt: number | null;
+  workModeError: string | null;
   load: () => Promise<void>;
   save: (form: ModelForm) => Promise<boolean>;
   clearSaved: () => void;
@@ -129,6 +143,8 @@ interface ConfigState {
   resetSoul: () => Promise<void>;
   loadPermissions: () => Promise<void>;
   savePermissions: (mode: PermissionMode) => Promise<boolean>;
+  loadWorkMode: () => Promise<void>;
+  saveWorkMode: (mode: WorkMode) => Promise<boolean>;
   testConnection: (provider: string, opts?: { baseURL?: string; apiKey?: string }) => Promise<{ ok: boolean; error: string | null }>;
   fetchRemoteModels: (provider: string, opts?: { baseURL?: string; apiKey?: string }) => Promise<{ ok: boolean; models: string[]; error: string | null }>;
 }
@@ -158,6 +174,12 @@ export const useConfigStore = create<ConfigState>((set) => ({
   permissionSaving: false,
   permissionSavedAt: null,
   permissionError: null,
+  // work-mode slice
+  workMode: "craft",
+  workModeLoading: false,
+  workModeSaving: false,
+  workModeSavedAt: null,
+  workModeError: null,
 
   async load() {
     set({ loading: true, error: null });
@@ -435,6 +457,53 @@ export const useConfigStore = create<ConfigState>((set) => ({
       return true;
     } catch {
       set({ permissionSaving: false, permissionError: "无法连接到 sidecar" });
+      return false;
+    }
+  },
+
+  async loadWorkMode() {
+    set({ workModeLoading: true, workModeError: null });
+    try {
+      const b = await getBaseUrl();
+      const r = await fetch(`${b}/api/work-mode`);
+      if (!r.ok) {
+        set({ workModeLoading: false, workModeError: "加载工作模式失败" });
+        return;
+      }
+      const data = await r.json();
+      const mode = data.work_mode?.mode ?? data.mode;
+      set({
+        workMode: isWorkMode(mode) ? mode : "craft",
+        workModeLoading: false,
+      });
+    } catch {
+      set({ workModeLoading: false, workModeError: "无法连接到 sidecar" });
+    }
+  },
+
+  async saveWorkMode(mode: WorkMode) {
+    set({ workModeSaving: true, workModeError: null, workModeSavedAt: null });
+    try {
+      const b = await getBaseUrl();
+      const r = await fetch(`${b}/api/work-mode`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode }),
+      });
+      if (!r.ok) {
+        set({ workModeSaving: false, workModeError: "保存失败" });
+        return false;
+      }
+      const data = await r.json();
+      const saved = data.work_mode?.mode;
+      set({
+        workMode: isWorkMode(saved) ? saved : mode,
+        workModeSaving: false,
+        workModeSavedAt: Date.now(),
+      });
+      return true;
+    } catch {
+      set({ workModeSaving: false, workModeError: "无法连接到 sidecar" });
       return false;
     }
   },

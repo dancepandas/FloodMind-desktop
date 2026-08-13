@@ -208,3 +208,76 @@ describe("SettingsView model tab — enabled set + add/delete all providers", ()
     await waitFor(() => expect(useConfigStore.getState().save).toHaveBeenCalled());
   });
 });
+
+describe("SettingsView model fetch overwrites instead of appending", () => {
+  beforeEach(() => {
+    useConfigStore.setState({
+      model: { provider: "openai", model: "stale-a", temperature: 0.3, maxTokens: 4096, enableReasoning: false, enableSearch: false, supportsVision: false },
+      providers: [{
+        id: "openai", name: "OpenAI 兼容", baseURL: "https://relay.example.com/v1",
+        apiKeyPresent: true,
+        models: [{ name: "stale-a", maxTokens: null, contextSize: null, temperature: null, supportsVision: false }],
+      }],
+      load: vi.fn(),
+      save: vi.fn(async () => true),
+      clearSaved: vi.fn(),
+      switchActive: vi.fn(async () => true),
+      testConnection: vi.fn(async () => ({ ok: true, error: null })),
+      fetchRemoteModels: vi.fn(async () => ({ ok: true, models: ["m-new1", "m-new1", "m-new2"], error: null })),
+    } as any);
+  });
+  afterEach(() => cleanup());
+
+  it("replaces the provider's model list with the fetched list (deduped)", async () => {
+    render(<SettingsView />);
+    fireEvent.click(screen.getByRole("button", { name: /OpenAI 兼容/ }));
+    fireEvent.click(screen.getByText("↻ 拉取模型"));
+
+    await waitFor(() => expect(screen.queryByText("stale-a")).toBeNull());
+    // The stale model from a previous base_url must NOT survive an overwrite.
+    expect(screen.getByText("m-new1")).toBeInTheDocument();
+    expect(screen.getByText("m-new2")).toBeInTheDocument();
+    expect(screen.getAllByText("m-new1")).toHaveLength(1); // deduped
+  });
+
+  it("caps the rendered model list with a show-all toggle", () => {
+    const many = Array.from({ length: 200 }, (_, i) => ({
+      name: `model-${i}`, maxTokens: null, contextSize: null, temperature: null, supportsVision: false,
+    }));
+    useConfigStore.setState({ providers: [{
+      id: "openai", name: "OpenAI 兼容", baseURL: "https://relay.example.com/v1",
+      apiKeyPresent: true, models: many,
+    }] } as any);
+    render(<SettingsView />);
+    fireEvent.click(screen.getByRole("button", { name: /OpenAI 兼容/ }));
+
+    // Only the first 80 render by default; the rest are behind a toggle.
+    expect(screen.getAllByRole("button", { name: /设为默认/ })).toHaveLength(80);
+    expect(screen.getByText(/显示全部 200 个模型/)).toBeInTheDocument();
+  });
+
+  it("clears the list when the endpoint returns no models (stale must not persist)", async () => {
+    useConfigStore.setState({
+      fetchRemoteModels: vi.fn(async () => ({ ok: true, models: [], error: null })),
+    } as any);
+    render(<SettingsView />);
+    fireEvent.click(screen.getByRole("button", { name: /OpenAI 兼容/ }));
+    fireEvent.click(screen.getByText("↻ 拉取模型"));
+
+    await waitFor(() => expect(screen.queryByText("stale-a")).toBeNull());
+    expect(screen.getByText(/未返回可用模型/)).toBeInTheDocument();
+  });
+
+  it("keeps the list but flags it when the fetch fails", async () => {
+    useConfigStore.setState({
+      fetchRemoteModels: vi.fn(async () => ({ ok: false, models: [], error: "连接失败" })),
+    } as any);
+    render(<SettingsView />);
+    fireEvent.click(screen.getByRole("button", { name: /OpenAI 兼容/ }));
+    fireEvent.click(screen.getByText("↻ 拉取模型"));
+
+    await waitFor(() => expect(screen.getByText(/拉取失败：连接失败/)).toBeInTheDocument());
+    // The stale list stays visible but is explicitly flagged as NOT a fresh result.
+    expect(screen.getByText("stale-a")).toBeInTheDocument();
+  });
+});

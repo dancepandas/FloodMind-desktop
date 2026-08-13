@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react";
-import Composer, { collectPastedImages } from "./Composer";
+import Composer, { collectPastedImages, looksLikeFsPath, toFileRefPath } from "./Composer";
 import { useConfigStore } from "../state/config-store";
+import { useBackgroundTaskStore } from "../state/background-task-store";
 import type { FileEntry } from "../state/workspace-store";
 
 const sendMock = vi.fn();
@@ -75,6 +76,8 @@ vi.mock("../state/ui-store", () => ({
     }),
 }));
 
+vi.mock("../lib/sidecar-client", () => ({ getBaseUrl: vi.fn(async () => "http://test") }));
+
 vi.mock("../state/attachment-store", () => {
   const selectorFn = (selector: (s: any) => any) =>
     selector({
@@ -112,10 +115,16 @@ vi.mock("../state/catalog-store", () => ({
 }));
 
 // Tauri drag-drop is a native window event — jsdom cannot fire it, so stub the
-// listener registration. The wiring itself is verified in Task 12's manual pass.
+// listener registration and capture the handler so tests can drive drops.
+const { dragDropHandler } = vi.hoisted(() => ({
+  dragDropHandler: { current: null as ((ev: any) => void) | null },
+}));
 vi.mock("@tauri-apps/api/window", () => ({
   getCurrentWindow: () => ({
-    onDragDropEvent: vi.fn(() => Promise.resolve(() => {})),
+    onDragDropEvent: (handler: any) => {
+      dragDropHandler.current = handler;
+      return Promise.resolve(() => {});
+    },
   }),
 }));
 
@@ -131,6 +140,23 @@ const { pathToDataUrlMock } = vi.hoisted(() => ({
 vi.mock("../lib/image-thumb", async () => {
   const actual = await vi.importActual<typeof import("../lib/image-thumb")>("../lib/image-thumb");
   return { ...actual, pathToDataUrl: pathToDataUrlMock };
+});
+
+// Explorer-copied file paste falls back to the Rust clipboard command; stub it
+// so tests can return synthetic file lists (default: nothing on the clipboard).
+const { getClipboardFilePathsMock } = vi.hoisted(() => ({
+  getClipboardFilePathsMock: vi.fn(async (): Promise<string[]> => []),
+}));
+vi.mock("../lib/clipboard", () => ({ getClipboardFilePaths: getClipboardFilePathsMock }));
+
+// External-file authorization registration is a sidecar fetch; stub it (keep the
+// real pure `partitionPaths`) so drop/paste tests never hit the network.
+const { registerExternalPathsMock } = vi.hoisted(() => ({
+  registerExternalPathsMock: vi.fn(async (): Promise<string[]> => []),
+}));
+vi.mock("../lib/external-paths", async () => {
+  const actual = await vi.importActual<typeof import("../lib/external-paths")>("../lib/external-paths");
+  return { ...actual, registerExternalPaths: registerExternalPathsMock };
 });
 
 describe("Composer", () => {
@@ -250,9 +276,9 @@ describe("Composer", () => {
     const row = await screen.findByText("code-review");
     fireEvent.click(row);
     fireEvent.click(screen.getByLabelText("发送"));
-    // send(msg, wire, images, fileRefs) — no attachments here, so the last three
-    // are all undefined.
-    expect(sendMock).toHaveBeenCalledWith("review\n\n请使用 code-review skill", undefined, undefined, undefined);
+    // send(msg, wire, images, fileRefs, mode) — no attachments here, so the last
+    // three are undefined; mode defaults to the store's workMode ("craft").
+    expect(sendMock).toHaveBeenCalledWith("review\n\n请使用 code-review skill", undefined, undefined, undefined, "craft");
   });
 
   it("sends message with mcp instruction when an mcp server is selected", async () => {
@@ -262,7 +288,7 @@ describe("Composer", () => {
     const row = await screen.findByText("filesystem");
     fireEvent.click(row);
     fireEvent.click(screen.getByLabelText("发送"));
-    expect(sendMock).toHaveBeenCalledWith("list files\n\n请使用 filesystem MCP工具", undefined, undefined, undefined);
+    expect(sendMock).toHaveBeenCalledWith("list files\n\n请使用 filesystem MCP工具", undefined, undefined, undefined, "craft");
   });
 
   it("clears slash item after sending", async () => {
@@ -379,6 +405,21 @@ describe("Composer", () => {
     expect(first.data!.length).toBeGreaterThan(0);
   });
 
+  it("looksLikeFsPath recognizes drive-letter / UNC paths only", () => {
+    expect(looksLikeFsPath("C:\\data\\report.xlsx")).toBe(true);
+    expect(looksLikeFsPath("E:/预报分析/降雨.csv")).toBe(true);
+    expect(looksLikeFsPath("\\\\nas\\share\\file.txt")).toBe(true);
+    expect(looksLikeFsPath("普通文本")).toBe(false);
+    expect(looksLikeFsPath("report.xlsx")).toBe(false); // relative → not a paste-ref
+  });
+
+  it("toFileRefPath makes inside-workspace paths relative, keeps external absolute", () => {
+    expect(toFileRefPath("C:\\ws\\data\\info.csv", "C:\\ws")).toBe("data/info.csv");
+    expect(toFileRefPath("C:\\ws\\report.xlsx", "C:\\ws")).toBe("report.xlsx");
+    expect(toFileRefPath("D:\\outside\\notes.txt", "C:\\ws")).toBe("D:\\outside\\notes.txt");
+    expect(toFileRefPath("data/info.csv", "C:\\ws")).toBe("data/info.csv"); // already relative
+  });
+
   it("does not accept pasted images while streaming", async () => {
     // Single-turn contract: only the initiating send carries images. A paste
     // during an active stream must NOT add an image chip — otherwise it would
@@ -400,6 +441,126 @@ describe("Composer", () => {
     await new Promise((r) => setTimeout(r, 10));
 
     expect(addImagesMock).not.toHaveBeenCalled();
+  });
+
+  it("pastes a copied file's path as a file reference (not raw text)", async () => {
+    render(<Composer />);
+    const textarea = screen.getByLabelText("任务输入") as HTMLTextAreaElement;
+    const clipboardData = {
+      items: [],
+      getData: (t: string) => (t === "text/plain" ? "C:\\data\\report.xlsx" : ""),
+    };
+    fireEvent.paste(textarea, { clipboardData });
+
+    // The ref flows through the async attachPaths (which also registers the
+    // external file), so await the attachment.
+    await waitFor(() => expect(addAttachmentsMock).toHaveBeenCalledWith(["C:\\data\\report.xlsx"]));
+    expect(registerExternalPathsMock).toHaveBeenCalledWith(["C:\\data\\report.xlsx"]);
+    expect(textarea.value).toBe(""); // path was not inserted as text
+  });
+
+  it("adds a non-image File with a path from the clipboard as a reference", async () => {
+    render(<Composer />);
+    const textarea = screen.getByLabelText("任务输入") as HTMLTextAreaElement;
+    const file = Object.assign(new File(["x"], "report.xlsx"), { path: "C:\\data\\report.xlsx" });
+    const clipboardData = {
+      items: [{ kind: "file", type: "application/vnd.ms-excel", getAsFile: () => file }],
+      getData: () => "",
+    };
+    fireEvent.paste(textarea, { clipboardData });
+
+    await waitFor(() => expect(addAttachmentsMock).toHaveBeenCalledWith(["C:\\data\\report.xlsx"]));
+    expect(registerExternalPathsMock).toHaveBeenCalledWith(["C:\\data\\report.xlsx"]);
+  });
+
+  it("pastes Explorer-copied files (CF_HDROP) via the Rust command and attaches them", async () => {
+    // The Rust command already dedupes the CF_HDROP list before returning.
+    getClipboardFilePathsMock.mockResolvedValue(["D:\\clip\\notes.txt"]);
+    render(<Composer />);
+    const textarea = screen.getByLabelText("任务输入") as HTMLTextAreaElement;
+    // WebView exposes only a "Files" type for a CF_HDROP paste: no text, no
+    // images, no File.path — so the handler must fall back to the Rust command.
+    const clipboardData = {
+      items: [],
+      getData: () => "",
+      types: ["Files"],
+    };
+    fireEvent.paste(textarea, { clipboardData });
+
+    await waitFor(() => expect(getClipboardFilePathsMock).toHaveBeenCalled());
+    await waitFor(() => expect(addAttachmentsMock).toHaveBeenCalledWith(["D:\\clip\\notes.txt"]));
+    expect(registerExternalPathsMock).toHaveBeenCalledWith(["D:\\clip\\notes.txt"]);
+  });
+
+  it("leaves a path+prose mixed paste to the browser instead of swallowing the prose", async () => {
+    render(<Composer />);
+    const textarea = screen.getByLabelText("任务输入") as HTMLTextAreaElement;
+    const clipboardData = {
+      items: [],
+      getData: (t: string) => (t === "text/plain" ? "C:\\data\\report.xlsx\n请分析这份报告" : ""),
+      types: ["text/plain"],
+    };
+    fireEvent.paste(textarea, { clipboardData });
+
+    await new Promise((r) => setTimeout(r, 10));
+    expect(getClipboardFilePathsMock).not.toHaveBeenCalled();
+    expect(addAttachmentsMock).not.toHaveBeenCalled();
+    expect(registerExternalPathsMock).not.toHaveBeenCalled();
+  });
+
+  it("does not invoke Rust for a plain-text paste and leaves it to the browser", async () => {
+    render(<Composer />);
+    const textarea = screen.getByLabelText("任务输入") as HTMLTextAreaElement;
+    const clipboardData = {
+      items: [],
+      getData: (t: string) => (t === "text/plain" ? "hello world" : ""),
+      types: ["text/plain"],
+    };
+    fireEvent.paste(textarea, { clipboardData });
+
+    await new Promise((r) => setTimeout(r, 10));
+    expect(getClipboardFilePathsMock).not.toHaveBeenCalled();
+    expect(addAttachmentsMock).not.toHaveBeenCalled();
+    expect(registerExternalPathsMock).not.toHaveBeenCalled();
+  });
+
+  it("drops a non-image file as a workspace-relative reference", async () => {
+    mockCurrent = { path: "C:\\ws", name: "ws" };
+    render(<Composer />);
+    await dragDropHandler.current?.({
+      payload: { type: "drop", paths: ["C:\\ws\\data\\info.csv"] },
+    });
+
+    expect(addAttachmentsMock).toHaveBeenCalledWith(["data/info.csv"]);
+    expect(registerExternalPathsMock).not.toHaveBeenCalled();
+  });
+
+  it("drops an external (non-workspace) file as an absolute reference and registers it", async () => {
+    render(<Composer />);
+    await dragDropHandler.current?.({
+      payload: { type: "drop", paths: ["D:\\outside\\notes.txt"] },
+    });
+
+    expect(addAttachmentsMock).toHaveBeenCalledWith(["D:\\outside\\notes.txt"]);
+    expect(registerExternalPathsMock).toHaveBeenCalledWith(["D:\\outside\\notes.txt"]);
+  });
+
+  it("renders an 外部 badge on external (absolute) attachment chips", () => {
+    mockPending = ["D:\\outside\\notes.txt", "data/info.csv"];
+    render(<Composer />);
+    const badges = screen.getAllByText("外部");
+    expect(badges).toHaveLength(1);
+    expect(screen.getByText("notes.txt").closest(".attachment-pill")).not.toBeNull();
+  });
+
+  it("still routes dropped images to the visual channel", async () => {
+    render(<Composer />);
+    await dragDropHandler.current?.({
+      payload: { type: "drop", paths: ["C:\\ws\\chart.png"] },
+    });
+
+    expect(addImagesMock).toHaveBeenCalled();
+    expect(addAttachmentsMock).not.toHaveBeenCalled();
   });
 
   it("forwards attachments + images snapshot when sending", () => {
@@ -538,5 +699,100 @@ describe("Composer", () => {
       src: "data:image/png;base64,AAAA",
       name: "shot.png",
     });
+  });
+
+  it("renders the three work-mode buttons with craft active by default", () => {
+    useConfigStore.setState({ workMode: "craft" } as any);
+    render(<Composer />);
+    expect(screen.getByRole("button", { name: "执行" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "问答" })).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByRole("button", { name: "计划" })).toHaveAttribute("aria-pressed", "false");
+  });
+
+  it("clicking a mode button saves it and switches the active state", async () => {
+    useConfigStore.setState({ workMode: "craft" } as any);
+    const fetchMock = vi.fn(async () =>
+      new Response(JSON.stringify({ ok: true, work_mode: { mode: "ask" } }), { status: 200 })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const { rerender } = render(<Composer />);
+
+    fireEvent.click(screen.getByRole("button", { name: "问答" }));
+
+    await waitFor(() => expect(useConfigStore.getState().workMode).toBe("ask"));
+    // The bridged config-store mock does not subscribe to store changes, so
+    // force a re-render to confirm the control reflects the saved mode.
+    rerender(<Composer />);
+    expect(screen.getByRole("button", { name: "问答" })).toHaveAttribute("aria-pressed", "true");
+    vi.unstubAllGlobals();
+  });
+
+  it("doSend passes the current work mode as the 5th send arg", () => {
+    useConfigStore.setState({ workMode: "plan" } as any);
+    render(<Composer />);
+    const textarea = screen.getByLabelText("任务输入") as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: "做一个水文报告" } });
+    fireEvent.click(screen.getByLabelText("发送"));
+
+    expect(sendMock).toHaveBeenCalledWith("做一个水文报告", undefined, undefined, undefined, "plan");
+  });
+
+  it("permission pill cycles to the next mode without navigating to settings", async () => {
+    useConfigStore.setState({ permissionMode: "trust-once" } as any);
+    const fetchMock = vi.fn(async () =>
+      new Response(JSON.stringify({ ok: true, permissions: { mode: "always-ask" } }), { status: 200 })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    render(<Composer />);
+
+    fireEvent.click(screen.getByRole("button", { name: /授权：首次询问/ }));
+
+    await waitFor(() => expect(useConfigStore.getState().permissionMode).toBe("always-ask"));
+    expect(setViewMock).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
+
+  it("permission pill shows the always-trust confirmation before switching", async () => {
+    useConfigStore.setState({ permissionMode: "always-ask" } as any);
+    const fetchMock = vi.fn(async () =>
+      new Response(JSON.stringify({ ok: true, permissions: { mode: "always-trust" } }), { status: 200 })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    render(<Composer />);
+
+    fireEvent.click(screen.getByRole("button", { name: /授权：每次都问/ }));
+
+    // 确认框先弹出，模式尚未切换
+    expect(screen.getByText(/切换到「完全信任」/)).toBeInTheDocument();
+    expect(useConfigStore.getState().permissionMode).toBe("always-ask");
+
+    fireEvent.click(screen.getByRole("button", { name: /确认切换/ }));
+    await waitFor(() => expect(useConfigStore.getState().permissionMode).toBe("always-trust"));
+    vi.unstubAllGlobals();
+  });
+
+  it("shows the shell indicator with running background-task count and opens the panel", () => {
+    useBackgroundTaskStore.setState({
+      tasks: [
+        { task_id: "t1", status: "running", command: "ping", exit_code: null, started_at: 1, finished_at: null, tail: "", stdout_path: "" },
+        { task_id: "t2", status: "running", command: "sleep", exit_code: null, started_at: 1, finished_at: null, tail: "", stdout_path: "" },
+      ],
+      panelOpen: false,
+    });
+    render(<Composer />);
+    expect(screen.getByText("shell (2)")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("shell (2)"));
+    expect(useBackgroundTaskStore.getState().panelOpen).toBe(true);
+    useBackgroundTaskStore.setState({ tasks: [], panelOpen: false });
+  });
+
+  it("hides the shell indicator when no background task is running", () => {
+    useBackgroundTaskStore.setState({
+      tasks: [{ task_id: "t1", status: "completed", command: "ls", exit_code: 0, started_at: 1, finished_at: 1, tail: "", stdout_path: "" }],
+      panelOpen: false,
+    });
+    render(<Composer />);
+    expect(screen.queryByText(/shell/)).not.toBeInTheDocument();
+    useBackgroundTaskStore.setState({ tasks: [], panelOpen: false });
   });
 });

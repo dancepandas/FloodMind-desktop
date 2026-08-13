@@ -214,3 +214,58 @@ describe("switchActive", () => {
     vi.unstubAllGlobals();
   });
 });
+
+describe("config-store work-mode slice", () => {
+  beforeEach(() => {
+    useConfigStore.setState({
+      workMode: "craft",
+      workModeLoading: false,
+      workModeSaving: false,
+      workModeSavedAt: null,
+      workModeError: null,
+    });
+    vi.clearAllMocks();
+  });
+
+  it("loadWorkMode reads /api/work-mode and fills the store", async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response(JSON.stringify({ mode: "ask" }), { status: 200 })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await useConfigStore.getState().loadWorkMode();
+
+    expect(fetchMock).toHaveBeenCalledWith("http://test/api/work-mode");
+    expect(useConfigStore.getState().workMode).toBe("ask");
+    vi.unstubAllGlobals();
+  });
+
+  it("loadWorkMode falls back to craft on an invalid server value", async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response(JSON.stringify({ mode: "nonsense" }), { status: 200 })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await useConfigStore.getState().loadWorkMode();
+
+    expect(useConfigStore.getState().workMode).toBe("craft");
+    vi.unstubAllGlobals();
+  });
+
+  it("saveWorkMode posts the mode and updates the store", async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response(JSON.stringify({ ok: true, work_mode: { mode: "plan" } }), { status: 200 })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const ok = await useConfigStore.getState().saveWorkMode("plan");
+
+    expect(ok).toBe(true);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://test/api/work-mode",
+      expect.objectContaining({ method: "POST", body: JSON.stringify({ mode: "plan" }) })
+    );
+    expect(useConfigStore.getState().workMode).toBe("plan");
+    vi.unstubAllGlobals();
+  });
+});

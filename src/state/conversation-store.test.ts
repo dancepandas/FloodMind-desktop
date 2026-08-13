@@ -85,6 +85,32 @@ describe("conversation-store", () => {
     expect(((fetchMock as any).mock.calls[1][1] as RequestInit).method).toBe("DELETE");
   });
 
+  it("removeEmpty deletes only empty conversations except the excluded one", async () => {
+    const calls: { url: string; method?: string }[] = [];
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      calls.push({ url: String(url), method: init?.method });
+      if (String(url).includes("?workspace=")) {
+        return new Response(JSON.stringify({ conversations: [
+          { id: "empty1", title: "新会话", updated_at: "x", active: false, turns_count: 0 },
+          { id: "empty2", title: "新会话", updated_at: "x", active: false, turns_count: 0 },
+          { id: "keep", title: "新会话", updated_at: "x", active: true, turns_count: 0 }, // excluded (current)
+          { id: "hascontent", title: "有内容", updated_at: "x", active: false, turns_count: 5 },
+        ] }), { status: 200 });
+      }
+      return new Response("{}", { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await useConversationStore.getState().removeEmpty("/ws/A", "keep");
+    const deletes = calls.filter((c) => c.method === "DELETE").map((c) => c.url);
+    expect(deletes).toHaveLength(2);
+    expect(deletes.some((u) => u.includes("/empty1"))).toBe(true);
+    expect(deletes.some((u) => u.includes("/empty2"))).toBe(true);
+    expect(deletes.some((u) => u.includes("/keep"))).toBe(false);
+    expect(deletes.some((u) => u.includes("/hascontent"))).toBe(false);
+    vi.unstubAllGlobals();
+  });
+
   it("returns [] / null / false on fetch failure without throwing", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response("", { status: 500 })));
     expect(await useConversationStore.getState().loadList("/ws")).toEqual([]);

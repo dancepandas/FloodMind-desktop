@@ -1,11 +1,18 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useChatStore } from "../state/chat-store";
 import { useWorkspaceStore } from "../state/workspace-store";
-import { useConfigStore, type PermissionMode } from "../state/config-store";
+import { useConfigStore, type PermissionMode, type WorkMode } from "../state/config-store";
 import { useUiStore } from "../state/ui-store";
 import { useAttachmentStore, type ImageItem } from "../state/attachment-store";
+import { useBackgroundTaskStore, runningCount } from "../state/background-task-store";
 import { fileToDataUrl, isImageName, mimeForName, pathToDataUrl } from "../lib/image-thumb";
+import { getClipboardFilePaths } from "../lib/clipboard";
+import { partitionPaths, registerExternalPaths } from "../lib/external-paths";
+import { looksLikeFsPath, toFileRefPath } from "../lib/file-refs";
+
+// Re-export the path helpers so existing imports (incl. tests) keep working.
+export { looksLikeFsPath, toFileRefPath } from "../lib/file-refs";
 import FilePickerModal from "./FilePickerModal";
 import ComposerFilePicker from "./ComposerFilePicker";
 import SlashPicker, { type SlashItem } from "./SlashPicker";
@@ -16,6 +23,21 @@ const PERMISSION_MODE_LABELS: Record<PermissionMode, string> = {
   "always-trust": "完全信任",
   "trust-once": "首次询问",
   "always-ask": "每次都问",
+};
+
+/** 点击授权 pill 时循环的顺序：首次询问 → 每次都问 → 完全信任（需确认）→ 回到首次询问。 */
+const PERMISSION_CYCLE: PermissionMode[] = ["trust-once", "always-ask", "always-trust"];
+
+const WORK_MODE_ORDER: WorkMode[] = ["craft", "ask", "plan"];
+const WORK_MODE_LABELS: Record<WorkMode, string> = {
+  craft: "执行",
+  ask: "问答",
+  plan: "计划",
+};
+const WORK_MODE_TOOLTIPS: Record<WorkMode, string> = {
+  craft: "执行模式：直接使用工具完成任务",
+  ask: "问答模式：只回答，不调用任何工具",
+  plan: "计划模式：先制定计划，确认后执行",
 };
 
 /** 10MB client-side cap for pasted images. The sidecar remains the authority. */
@@ -60,6 +82,7 @@ export default function Composer() {
   const [slashOpen, setSlashOpen] = useState(false);
   const [slashQuery, setSlashQuery] = useState("");
   const [filePickerOpen, setFilePickerOpen] = useState(false);
+  const [trustToggleOpen, setTrustToggleOpen] = useState(false);
   const [slashItem, setSlashItem] = useState<SlashItem | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const streaming = useChatStore((s) => s.streaming);
@@ -70,6 +93,9 @@ export default function Composer() {
   const openPath = useWorkspaceStore((s) => s.openPath);
   const pickAndOpen = useWorkspaceStore((s) => s.pickAndOpen);
   const permissionMode = useConfigStore((s) => s.permissionMode);
+  const savePermissions = useConfigStore((s) => s.savePermissions);
+  const workMode = useConfigStore((s) => s.workMode);
+  const saveWorkMode = useConfigStore((s) => s.saveWorkMode);
   const modelName = useConfigStore((s) => s.model?.model ?? null);
   const supportsVision = useConfigStore((s) => !!s.model?.supportsVision);
   const switchActive = useConfigStore((s) => s.switchActive);
@@ -78,6 +104,8 @@ export default function Composer() {
   const setPreviewPath = useUiStore((s) => s.setPreviewPath);
   const openLightbox = useUiStore((s) => s.openLightbox);
   const attachments = useAttachmentStore((s) => s.pending);
+  const bgRunning = useBackgroundTaskStore((s) => runningCount(s.tasks));
+  const setBgPanelOpen = useBackgroundTaskStore((s) => s.setPanelOpen);
   const addAttachments = useAttachmentStore((s) => s.add);
   const removeAttachment = useAttachmentStore((s) => s.remove);
   const clearAttachments = useAttachmentStore((s) => s.clear);
@@ -235,6 +263,7 @@ export default function Composer() {
       wire.length ? wire : undefined,
       imageSnap.length ? imageSnap : undefined,
       fileRefs.length ? fileRefs : undefined,
+      workMode,
     );
     setText("");
     setSlashItem(null);
@@ -247,6 +276,17 @@ export default function Composer() {
     doSend();
   }
 
+  /** 授权 pill 点击：循环切换模式；切到「完全信任」先弹确认框。 */
+  function onTogglePermission() {
+    const idx = PERMISSION_CYCLE.indexOf(permissionMode);
+    const next = PERMISSION_CYCLE[(idx + 1) % PERMISSION_CYCLE.length];
+    if (next === "always-trust") {
+      setTrustToggleOpen(true);
+      return;
+    }
+    savePermissions(next);
+  }
+
   function onKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key === "Enter" && !e.shiftKey && !slashOpen) {
       e.preventDefault();
@@ -256,26 +296,125 @@ export default function Composer() {
 
   async function onPaste(e: React.ClipboardEvent<HTMLTextAreaElement>) {
     const items = Array.from(e.clipboardData?.items ?? []);
-    const hasImage = items.some((it) => it.kind === "file" && it.type.startsWith("image/"));
-    if (!hasImage) return; // plain-text paste — let the browser handle it.
-    // Single-turn: only the initiating send carries images. While streaming,
-    // paste is text-only — bail before touching the image chip store.
-    if (streaming) return;
+    const imageItems = items.filter((it) => it.kind === "file" && it.type.startsWith("image/"));
+    const types = e.clipboardData?.types ?? [];
+    const plain = (() => {
+      try {
+        return e.clipboardData?.getData("text/plain") ?? "";
+      } catch {
+        return "";
+      }
+    })();
+    // A file copied in Explorer renders as its path text in a webview textarea;
+    // turn path-looking text (and any File.path the platform exposes) into file
+    // references rather than dumping the path into the message.
+    const refs: string[] = [];
+    if (plain) {
+      for (const line of plain.split(/\r?\n/)) {
+        if (looksLikeFsPath(line)) refs.push(line.trim());
+      }
+    }
+    for (const it of items) {
+      if (it.kind !== "file" || it.type.startsWith("image/")) continue;
+      const f = it.getAsFile() as (File & { path?: string }) | null;
+      if (f?.path) refs.push(f.path);
+    }
+    // A text paste that MIXES a path with prose is not a file paste — let the
+    // browser insert the whole text (the path stays as text) instead of
+    // silently dropping the prose. Only pure-path text counts as a file paste.
+    const nonEmptyPlainLines = plain.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    if (nonEmptyPlainLines.length > 0 && !nonEmptyPlainLines.every((l) => looksLikeFsPath(l))) return;
+    const hasRefs = refs.length > 0;
+    const hasText = plain.trim().length > 0;
+    // Browser should handle: pure prose, or only non-file rich content (HTML).
+    // Returning here means a normal text paste is never delayed or swallowed.
+    const browserHandles = hasText || (types.length > 0 && !types.includes("Files"));
+    if (!hasRefs && imageItems.length === 0 && browserHandles) return;
+    if (streaming) return; // single-turn: pastes only attach to the initiating send
+    e.preventDefault();
+    // Copying files puts CF_HDROP on the clipboard: the WebView exposes a "Files"
+    // type (or nothing) with no usable File.path, so ask Rust for the complete
+    // list and merge it — a multi-file copy isn't truncated to whatever paths
+    // WebView2 happened to render as text.
+    const looksLikeFilePaste =
+      imageItems.length === 0 && (types.includes("Files") || types.length === 0);
+    let paths = Array.from(new Set(refs));
+    if (looksLikeFilePaste) {
+      const clipPaths = await getClipboardFilePaths();
+      if (clipPaths.length) paths = Array.from(new Set([...paths, ...clipPaths]));
+    }
+    if (paths.length) await attachPaths(paths);
+    if (imageItems.length === 0) return;
     if (!supportsVision) {
-      // Don't silently swallow an image paste on a non-vision model — tell the
-      // user why nothing was attached, so they don't think the model saw it.
-      showToast("当前模型不支持图片输入，请在设置中切换视觉模型后再附加图片");
+      // Only toast when the paste was purely images (a mixed paste already
+      // added the file refs above).
+      if (!hasRefs) showToast("当前模型不支持图片输入，请在设置中切换视觉模型后再附加图片");
       return;
     }
-    e.preventDefault();
     const next = await collectPastedImages(items as unknown as Parameters<typeof collectPastedImages>[0]);
     if (next.length) addImages(next);
   }
 
+  /**
+   * Attach absolute file paths dropped/pasted into the composer. Paths OUTSIDE
+   * the workspace are registered (per-workspace) so the agent's later Read of
+   * them triggers the permission ASK instead of a hard "不在允许目录内" — the
+   * read-time authorization flow. Internal paths become workspace-relative refs;
+   * external stay absolute. Images route to the visual channel (needs a vision
+   * model); other files become file references.
+   */
+  const attachPaths = useCallback(
+    async (absPaths: string[]) => {
+      if (!absPaths.length) return;
+      const { outside } = partitionPaths(absPaths, current?.path);
+      if (outside.length) {
+        // Register BEFORE the chips appear, so a fast Enter can never send a
+        // message referencing a file the agent can't read (the registration
+        // keys to the current workspace and takes effect on the next stream's
+        // _set_workspace). Local 127.0.0.1 fetch — typically a few ms. A
+        // failure only means the file may still be unreadable; never fails the
+        // drop/paste itself.
+        await registerExternalPaths(outside).catch(() =>
+          showToast("外部文件授权注册失败：该文件可能无法读取"),
+        );
+      }
+      const imgs = absPaths.filter((p) => isImageName(p));
+      const files = absPaths.filter((p) => !isImageName(p));
+      if (imgs.length > 0) {
+        if (!supportsVision) {
+          showToast("当前模型不支持图片输入，请在设置中切换视觉模型后再附加图片");
+        } else {
+          const next: ImageItem[] = [];
+          for (const p of imgs) {
+            try {
+              const thumb = await pathToDataUrl(p);
+              next.push({
+                id: `attach-${Date.now()}-${p}`,
+                name: p.split(/[\\/]/).pop() || p,
+                mime: mimeForName(p),
+                thumb,
+                source: "file",
+                absPath: p,
+              });
+            } catch {
+              /* skip unreadable */
+            }
+          }
+          if (next.length) addImages(next);
+        }
+      }
+      if (files.length > 0) {
+        addAttachments(files.map((p) => toFileRefPath(p, current?.path)));
+      }
+    },
+    [current, supportsVision, addImages, addAttachments, showToast],
+  );
+
   // Window-level drag-drop (Tauri 2 native event). Only the webview receives
   // DOM drag events from outside; Tauri's onDragDropEvent covers OS-level drops
-  // uniformly. Drag-over highlight is only shown when the payload contains an
-  // image, and drops are ignored entirely when the active model lacks vision.
+  // uniformly. Images route to the visual channel (needs a vision model); any
+  // other file becomes a file reference — the drag-over highlight shows for any
+  // file payload.
   useEffect(() => {
     const win = getCurrentWindow();
     let unlisten: (() => void) | undefined;
@@ -286,39 +425,14 @@ export default function Composer() {
         // Single-turn: drops while streaming would attach to the wrong (next)
         // turn, so ignore them — text appends remain allowed via the textarea.
         if (streaming) return;
-        if (!supportsVision) {
-          // Tell the user why their image drop did nothing (only for image
-          // drops; non-image drops are also ignored but aren't worth a toast).
-          if ((payload.paths ?? []).some((p) => isImageName(p))) {
-            showToast("当前模型不支持图片输入，请在设置中切换视觉模型后再附加图片");
-          }
+        const paths = payload.paths ?? [];
+        if (payload.type === "enter" || payload.type === "over") {
+          if (paths.length > 0) setDragOver(true);
           return;
         }
-        if (payload.type === "enter" || payload.type === "over") {
-          if ((payload.paths ?? []).some((p) => isImageName(p))) setDragOver(true);
-        } else {
-          setDragOver(false);
-          if (payload.type === "drop") {
-            const imgs = (payload.paths ?? []).filter((p) => isImageName(p));
-            const next: ImageItem[] = [];
-            for (const p of imgs) {
-              try {
-                const thumb = await pathToDataUrl(p);
-                next.push({
-                  id: `drop-${Date.now()}-${p}`,
-                  name: p.split(/[\\/]/).pop() || p,
-                  mime: mimeForName(p),
-                  thumb,
-                  source: "file",
-                  absPath: p,
-                });
-              } catch {
-                /* skip unreadable */
-              }
-            }
-            if (next.length) addImages(next);
-          }
-        }
+        setDragOver(false);
+        if (payload.type !== "drop") return;
+        await attachPaths(paths);
       });
       if (!active && unlisten) unlisten();
     })();
@@ -326,7 +440,7 @@ export default function Composer() {
       active = false;
       if (unlisten) unlisten();
     };
-  }, [supportsVision, streaming, addImages]);
+  }, [streaming, attachPaths]);
 
   return (
     <div className="composer-wrap">
@@ -394,6 +508,9 @@ export default function Composer() {
                 >
                   <span className="attachment-icon" aria-hidden="true">📄</span>
                   <span className="attachment-name">{p.split(/[\\/]/).pop() || p}</span>
+                  {looksLikeFsPath(p) && (
+                    <span className="attachment-badge-external">外部</span>
+                  )}
                 </button>
                 <button
                   type="button"
@@ -526,6 +643,33 @@ export default function Composer() {
         </div>
       </form>
       <div className="composer-meta">
+        {bgRunning > 0 && (
+          <button
+            type="button"
+            className="bg-shell-pill"
+            onClick={() => setBgPanelOpen(true)}
+            title="查看后台任务"
+            aria-label={`${bgRunning} 个后台任务运行中`}
+          >
+            <span className="bg-shell-dot" aria-hidden="true" />
+            shell{bgRunning > 1 ? ` (${bgRunning})` : ""}
+          </button>
+        )}
+        <div className="mode-seg" role="group" aria-label="工作模式">
+          {WORK_MODE_ORDER.map((m) => (
+            <button
+              key={m}
+              type="button"
+              className={`mode-seg-btn${workMode === m ? " active" : ""}`}
+              onClick={() => saveWorkMode(m)}
+              title={WORK_MODE_TOOLTIPS[m]}
+              aria-pressed={workMode === m}
+              disabled={streaming}
+            >
+              {WORK_MODE_LABELS[m]}
+            </button>
+          ))}
+        </div>
         <select
           className="workspace-select"
           value={current?.path ?? ""}
@@ -557,8 +701,8 @@ export default function Composer() {
           <button
             type="button"
             className="permission-mode-pill"
-            onClick={() => setView("settings")}
-            title="点击打开权限设置"
+            onClick={onTogglePermission}
+            title="点击切换授权模式（首次询问 → 每次都问 → 完全信任）"
           >
             授权：{PERMISSION_MODE_LABELS[permissionMode]}
           </button>
@@ -608,6 +752,38 @@ export default function Composer() {
             setFilePickerOpen(false);
           }}
         />
+      )}
+
+      {trustToggleOpen && (
+        <div className="modal-overlay" onClick={() => setTrustToggleOpen(false)}>
+          <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-title" style={{ color: "var(--red)" }}>⚠️ 切换到「完全信任」模式？</div>
+            <div style={{ fontSize: "13px", lineHeight: "1.6", color: "var(--fg-secondary)" }}>
+              <p><strong>此模式非常危险：</strong>所有工具调用（含 Bash、文件写删、网络请求）将自动执行，<strong>不再弹出任何授权提示</strong>。智能体可能因误导/恶意/错误指令直接执行危险操作。</p>
+              <p><strong>确定要切换吗？</strong></p>
+            </div>
+            <div className="modal-actions">
+              <button
+                className="btn-secondary"
+                type="button"
+                onClick={() => setTrustToggleOpen(false)}
+              >
+                取消
+              </button>
+              <button
+                className="btn-primary"
+                type="button"
+                style={{ background: "var(--red)" }}
+                onClick={() => {
+                  setTrustToggleOpen(false);
+                  savePermissions("always-trust");
+                }}
+              >
+                确认切换
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
