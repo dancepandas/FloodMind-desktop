@@ -6,6 +6,7 @@ import Lightbox from "./components/Lightbox";
 import McpView from "./components/McpView";
 import PlanPanel from "./components/PlanPanel";
 import PreviewPanel from "./components/PreviewPanel";
+import BackgroundTasksPanel from "./components/BackgroundTasksPanel";
 import ScheduledTasksView from "./components/ScheduledTasksView";
 import SettingsView from "./components/SettingsView";
 import Sidebar from "./components/Sidebar";
@@ -17,6 +18,7 @@ import { useWorkspaceStore } from "./state/workspace-store";
 import { useConversationStore } from "./state/conversation-store";
 import { useChatStore } from "./state/chat-store";
 import { useConfigStore } from "./state/config-store";
+import { useBackgroundTaskStore } from "./state/background-task-store";
 import { useResizableWidth } from "./lib/use-resizable-width";
 import { initLogCapture } from "./lib/log-capture";
 
@@ -29,6 +31,18 @@ export default function App() {
   const planPanelOpen = useUiStore((s) => s.planPanelOpen);
   const toast = useUiStore((s) => s.toast);
   const currentPath = useWorkspaceStore((s) => s.current?.path);
+  const bgPanelOpen = useBackgroundTaskStore((s) => s.panelOpen);
+  const loadBgTasks = useBackgroundTaskStore((s) => s.load);
+
+  // 聊天视图下每 3s 轮询后台任务：store 初始为空，若只在「已有任务」时才轮询
+  // 就永远发现不了任务——所以只要在聊天视图就持续轮询，有后台任务跑时输入框
+  // 下方的 shell 指示器才能及时出现。
+  useEffect(() => {
+    if (view !== "chat") return;
+    loadBgTasks();
+    const id = setInterval(() => loadBgTasks(), 3000);
+    return () => clearInterval(id);
+  }, [view, loadBgTasks]);
 
   // One-time first-launch welcome splash. Show only until the user dismisses it
   // (flag persisted in localStorage). null = still deciding, to avoid a flash
@@ -115,10 +129,12 @@ export default function App() {
                 <Conversation />
                 <Composer />
               </DropZone>
-              {(planPanelOpen || previewPath) && (
+              {(planPanelOpen || previewPath || bgPanelOpen) && (
                 <div className="chat-right" style={{ width: rightResize.width }} data-resizable="left">
                   <div className="resize-handle resize-handle-left" onMouseDown={rightResize.startResize} />
-                  {previewPath ? (
+                  {bgPanelOpen ? (
+                    <BackgroundTasksPanel />
+                  ) : previewPath ? (
                     <PreviewPanel path={previewPath} onClose={closePreview} />
                   ) : (
                     <PlanPanel />
