@@ -8,6 +8,7 @@ import PlanPanel from "./components/PlanPanel";
 import PreviewPanel from "./components/PreviewPanel";
 import BackgroundTasksPanel from "./components/BackgroundTasksPanel";
 import ScheduledTasksView from "./components/ScheduledTasksView";
+import ExperienceView from "./components/ExperienceView";
 import SettingsView from "./components/SettingsView";
 import Sidebar from "./components/Sidebar";
 import SkillsView from "./components/SkillsView";
@@ -147,6 +148,7 @@ export default function App() {
         {view === "tasks" && <ScheduledTasksView />}
         {view === "skills" && <SkillsView />}
         {view === "mcp" && <McpView />}
+        {view === "experience" && <ExperienceView />}
         {view === "settings" && <SettingsView />}
       </div>
     </div>

@@ -600,6 +600,49 @@ def create_app(agent: Agent, workspace_manager=None, conversation_store=None,
         except PermissionError as e:
             return jsonify({"error": str(e)}), 403
 
+    # ── 经验库 (记忆与经验) ──────────────────────────────────
+    @app.get("/api/experience")
+    def experience_list():
+        return jsonify(agent.list_experiences())
+
+    @app.get("/api/experience/search")
+    def experience_search():
+        q = request.args.get("q", "")
+        try:
+            top_k = int(request.args.get("top_k", 10))
+        except ValueError:
+            top_k = 10
+        return jsonify({"results": agent.search_experiences(q, top_k)})
+
+    @app.post("/api/experience/feedback")
+    def experience_feedback():
+        body = request.get_json(silent=True) or {}
+        node_id = str(body.get("node_id", ""))
+        helpful = bool(body.get("helpful"))
+        if not node_id:
+            return jsonify({"error": "node_id required"}), 400
+        ok = agent.experience_feedback(node_id, helpful)
+        return jsonify({"ok": ok})
+
+    @app.post("/api/experience/maintain")
+    def experience_maintain():
+        return jsonify(agent.maintain_experiences())
+
+    # ── 建议技能 (记忆与经验) ────────────────────────────────
+    @app.get("/api/skills/drafts")
+    def skill_drafts():
+        return jsonify({"drafts": agent.list_draft_skills()})
+
+    @app.post("/api/skills/drafts/<name>/approve")
+    def skill_draft_approve(name):
+        ok = agent.approve_draft_skill(name)
+        return jsonify({"ok": ok}) if ok else (jsonify({"error": "未找到或已生效"}), 404)
+
+    @app.post("/api/skills/drafts/<name>/reject")
+    def skill_draft_reject(name):
+        ok = agent.reject_draft_skill(name)
+        return jsonify({"ok": ok}) if ok else (jsonify({"error": "未找到"}), 404)
+
     @app.get("/api/mcp")
     def mcp_list():
         """Every MCP server the UI should show: configured servers (connected or

@@ -262,6 +262,43 @@ def _build_artifact_event(
 _ARTIFACT_OPTIONAL_FIELDS = ("final", "exists", "size", "source")
 
 
+def _read_skill_frontmatter(md_path) -> dict:
+    """Parse a SKILL.md YAML frontmatter into a dict (empty on any error)."""
+    try:
+        import yaml
+
+        text = md_path.read_text(encoding="utf-8")
+        if not text.startswith("---"):
+            return {}
+        end = text.find("\n---", 3)
+        if end == -1:
+            return {}
+        fm = yaml.safe_load(text[3:end]) or {}
+        return fm if isinstance(fm, dict) else {}
+    except Exception:
+        return {}
+
+
+def _set_skill_status(skill_md: str, status: str) -> str:
+    """Rewrite a SKILL.md frontmatter's ``status`` line in place."""
+    lines = skill_md.split("\n")
+    if not lines or lines[0].strip() != "---":
+        return skill_md
+    end = None
+    for i in range(1, len(lines)):
+        if lines[i].strip() == "---":
+            end = i
+            break
+    if end is None:
+        return skill_md
+    changed = False
+    for i in range(1, end):
+        if lines[i].startswith("status:"):
+            lines[i] = f"status: {status}"
+            changed = True
+    return "\n".join(lines) if changed else skill_md
+
+
 def translate_event(raw: dict) -> list[dict]:
     """Map one raw SDK event to zero-or-more sidecar-schema events.
 
@@ -1329,6 +1366,187 @@ class FloodMindAgent:
         if buf is None:
             return [], True
         return buf["events"][since:], buf["done"]
+
+    # ── 经验库 + 建议技能 (记忆与经验) ────────────────────────
+    def _experience_store(self):
+        """The active agent's TaskExperienceStore (owner-specific, shared across
+        runs in the same process). None when the agent has no capture wired."""
+        try:
+            raw = self._agent_raw(self._agent)
+            capture = getattr(raw, "_task_experience_capture", None)
+            return getattr(capture, "store", None)
+        except Exception:
+            return None
+
+    def _experience_tree(self):
+        store = self._experience_store()
+        return getattr(store, "tree", None) if store is not None else None
+
+    def list_experiences(self) -> dict:
+        """Serialize the experience library: stats, summaries, and case leaves."""
+        tree = self._experience_tree()
+        if tree is None:
+            return {"stats": {}, "summaries": [], "leaves": []}
+        try:
+            leaves = []
+            for leaf in tree.get_all_leaves():
+                d = leaf.to_dict() if hasattr(leaf, "to_dict") else dict(leaf)
+                leaves.append({
+                    "node_id": getattr(leaf, "node_id", d.get("node_id", "")),
+                    "path": getattr(leaf, "path", d.get("path", [])),
+                    "task_description": d.get("task_description", ""),
+                    "skill_used": d.get("skill_used", ""),
+                    "domain_keywords": d.get("domain_keywords", []),
+                    "pitfalls": d.get("pitfalls", []),
+                    "solutions": d.get("solutions", []),
+                    "final_outcome": d.get("final_outcome", "success"),
+                    "importance": d.get("importance", 0.5),
+                    "hit_count": d.get("hit_count", 0),
+                    "success_count": d.get("success_count", 0),
+                    "failure_count": d.get("failure_count", 0),
+                    "updated_at": d.get("updated_at", ""),
+                })
+            summaries = [
+                {"path": getattr(s, "path", []), "text": getattr(s, "summary_text", "")}
+                for s in tree.get_all_summaries()
+            ]
+            return {
+                "stats": tree.get_stats(),
+                "summaries": summaries,
+                "leaves": leaves,
+            }
+        except Exception as e:
+            print(f"[sidecar] list_experiences failed: {e!r}", file=sys.stderr)
+            return {"stats": {}, "summaries": [], "leaves": []}
+
+    def search_experiences(self, query: str, top_k: int = 10) -> list[dict]:
+        store = self._experience_store()
+        if store is None or not query.strip():
+            return []
+        try:
+            out = []
+            for leaf in store.search_keywords(query, top_k=top_k):
+                d = leaf.to_dict() if hasattr(leaf, "to_dict") else dict(leaf)
+                out.append({
+                    "node_id": getattr(leaf, "node_id", d.get("node_id", "")),
+                    "path": getattr(leaf, "path", d.get("path", [])),
+                    "task_description": d.get("task_description", ""),
+                    "pitfalls": d.get("pitfalls", []),
+                    "solutions": d.get("solutions", []),
+                    "final_outcome": d.get("final_outcome", "success"),
+                    "importance": d.get("importance", 0.5),
+                    "hit_count": d.get("hit_count", 0),
+                })
+            return out
+        except Exception as e:
+            print(f"[sidecar] search_experiences failed: {e!r}", file=sys.stderr)
+            return []
+
+    def experience_feedback(self, node_id: str, helpful: bool) -> bool:
+        store = self._experience_store()
+        if store is None or not node_id:
+            return False
+        try:
+            return store.mark_helpful(node_id) if helpful else store.mark_not_helpful(node_id)
+        except Exception as e:
+            print(f"[sidecar] experience_feedback failed: {e!r}", file=sys.stderr)
+            return False
+
+    def maintain_experiences(self) -> dict:
+        store = self._experience_store()
+        if store is None:
+            return {}
+        try:
+            return store.run_maintenance()
+        except Exception as e:
+            print(f"[sidecar] maintain_experiences failed: {e!r}", file=sys.stderr)
+            return {}
+
+    def _skill_writable_root(self):
+        try:
+            raw = self._agent_raw(self._agent)
+            reg = getattr(raw, "_skill_registry", None)
+            return getattr(reg, "writable_root", None)
+        except Exception:
+            return None
+
+    def list_draft_skills(self) -> list[dict]:
+        """Scan the writable skill root for auto-generated draft skills."""
+        from pathlib import Path
+
+        root = self._skill_writable_root()
+        if root is None:
+            return []
+        out = []
+        try:
+            for skill_dir in Path(root).iterdir():
+                if not skill_dir.is_dir():
+                    continue
+                md = skill_dir / "SKILL.md"
+                if not md.exists():
+                    continue
+                fm = _read_skill_frontmatter(md)
+                if fm.get("source") != "auto-generated-from-experience":
+                    continue
+                if fm.get("status") != "draft":
+                    continue
+                out.append({
+                    "name": fm.get("name", skill_dir.name),
+                    "description": fm.get("description", ""),
+                    "path": str(skill_dir),
+                    "keywords": fm.get("trigger_keywords", []),
+                })
+        except Exception as e:
+            print(f"[sidecar] list_draft_skills failed: {e!r}", file=sys.stderr)
+        return out
+
+    def approve_draft_skill(self, name: str) -> bool:
+        from pathlib import Path
+
+        root = self._skill_writable_root()
+        if root is None or not name:
+            return False
+        md = Path(root) / name / "SKILL.md"
+        if not md.exists():
+            return False
+        try:
+            text = md.read_text(encoding="utf-8")
+            updated = _set_skill_status(text, "active")
+            if updated == text:
+                return False
+            md.write_text(updated, encoding="utf-8")
+            self._refresh_skills()
+            return True
+        except Exception as e:
+            print(f"[sidecar] approve_draft_skill failed: {e!r}", file=sys.stderr)
+            return False
+
+    def reject_draft_skill(self, name: str) -> bool:
+        import shutil
+        from pathlib import Path
+
+        root = self._skill_writable_root()
+        if root is None or not name:
+            return False
+        skill_dir = Path(root) / name
+        if not skill_dir.is_dir():
+            return False
+        try:
+            shutil.rmtree(skill_dir)
+            self._refresh_skills()
+            return True
+        except Exception as e:
+            print(f"[sidecar] reject_draft_skill failed: {e!r}", file=sys.stderr)
+            return False
+
+    def _refresh_skills(self) -> None:
+        try:
+            raw = self._agent_raw(self._agent)
+            refresh = getattr(raw, "refresh_skills", None)
+            if callable(refresh):
+                refresh()
+        except Exception as e:
+            print(f"[sidecar] refresh_skills failed: {e!r}", file=sys.stderr)
 
     # ── checkpoint resume (断点续跑) ─────────────────────────
     def list_checkpoints(self, session_id: str, workspace_path: str) -> list[dict]:

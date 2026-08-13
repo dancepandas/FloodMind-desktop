@@ -4009,3 +4009,167 @@ button:focus-visible,
 .lightbox-close:hover {
   background: rgba(255, 255, 255, 0.25);
 }
+
+/* ── 经验库 (记忆与经验) ─────────────────────────────────── */
+.experience-view {
+  padding: 1rem 1.25rem;
+  max-width: 860px;
+  margin: 0 auto;
+}
+
+.experience-toolbar {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  margin: 0.75rem 0 1rem;
+}
+
+.experience-search {
+  flex: 1;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-2);
+  color: var(--fg);
+  font-family: var(--font-sans);
+  font-size: 13px;
+}
+
+.experience-group {
+  margin-bottom: 1rem;
+}
+
+.experience-domain {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg-secondary);
+  margin: 0 0 0.4rem;
+}
+
+.experience-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.6rem 0.7rem;
+  margin-bottom: 0.5rem;
+  background: var(--surface-1);
+}
+
+.experience-card-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.experience-outcome {
+  font-size: 11px;
+  padding: 0.05rem 0.4rem;
+  border-radius: 4px;
+  font-weight: 600;
+}
+.experience-outcome.ok { background: rgba(16, 185, 129, 0.15); color: #10b981; }
+.experience-outcome.bad { background: rgba(239, 68, 68, 0.15); color: #ef4444; }
+
+.experience-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.experience-skill {
+  font-size: 11px;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.05rem 0.4rem;
+}
+
+.experience-section {
+  margin-top: 0.4rem;
+}
+
+.experience-label {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--muted);
+  margin-right: 0.4rem;
+}
+
+.experience-section ul {
+  margin: 0.2rem 0 0;
+  padding-left: 1.1rem;
+  font-size: 12.5px;
+  color: var(--fg-secondary);
+}
+
+.experience-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+  margin-top: 0.5rem;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.experience-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 0.4rem;
+}
+
+.btn-mini {
+  border: 1px solid var(--border);
+  background: transparent;
+  border-radius: 4px;
+  padding: 0.1rem 0.45rem;
+  font-size: 11.5px;
+  color: var(--fg-secondary);
+  cursor: pointer;
+}
+.btn-mini:hover { border-color: var(--accent); color: var(--accent); }
+
+/* ── 建议技能 (Skills 视图) ──────────────────────────────── */
+.draft-skills {
+  margin: 0.6rem 0 0.8rem;
+  padding: 0.6rem 0.7rem;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
+}
+
+.draft-skills-head {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--fg-secondary);
+  margin-bottom: 0.5rem;
+}
+
+.draft-skill-card {
+  padding: 0.4rem 0;
+  border-top: 1px dashed var(--border);
+}
+.draft-skill-card:first-of-type { border-top: none; }
+
+.draft-skill-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.draft-skill-desc {
+  font-size: 12px;
+  color: var(--fg-secondary);
+  margin: 0.15rem 0;
+}
+
+.draft-skill-keywords {
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.draft-skill-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.4rem;
+}

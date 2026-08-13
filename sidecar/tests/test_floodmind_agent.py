@@ -1599,3 +1599,30 @@ def test_list_checkpoints_empty_for_missing_dir(tmp_path, monkeypatch):
 
     a = FloodMindAgent.__new__(FloodMindAgent)
     assert a.list_checkpoints("session-missing", str(tmp_path)) == []
+
+
+def test_skill_frontmatter_helpers(tmp_path):
+    """_read_skill_frontmatter + _set_skill_status parse/rewrite SKILL.md."""
+    from floodmind_desktop_sidecar.floodmind_agent import (
+        _read_skill_frontmatter,
+        _set_skill_status,
+    )
+
+    md = tmp_path / "SKILL.md"
+    md.write_text(
+        "---\nname: hydrology-forecast\ndescription: 水文预报\nstatus: draft\n"
+        "source: auto-generated-from-experience\ntrigger_keywords: []\n---\n\n# 内容\n",
+        encoding="utf-8",
+    )
+
+    fm = _read_skill_frontmatter(md)
+    assert fm["status"] == "draft"
+    assert fm["source"] == "auto-generated-from-experience"
+
+    updated = _set_skill_status(md.read_text(encoding="utf-8"), "active")
+    assert "status: active" in updated
+    assert "status: draft" not in updated
+
+    # No status line → unchanged (can't approve).
+    plain = "---\nname: x\n---\nbody\n"
+    assert _set_skill_status(plain, "active") == plain

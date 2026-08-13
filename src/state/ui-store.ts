@@ -1,6 +1,6 @@
 import { create } from "zustand";
 
-export type View = "chat" | "skills" | "mcp" | "settings" | "tasks";
+export type View = "chat" | "skills" | "mcp" | "settings" | "tasks" | "experience";
 
 export interface Toast {
   id: number;

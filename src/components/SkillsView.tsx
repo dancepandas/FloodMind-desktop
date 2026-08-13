@@ -2,6 +2,70 @@ import { useEffect, useState } from "react";
 import PageHeader from "./PageHeader";
 import { useCatalogStore, type SkillForm } from "../state/catalog-store";
 import SkillEditModal from "./SkillEditModal";
+import { getBaseUrl } from "../lib/sidecar-client";
+
+interface DraftSkill {
+  name: string;
+  description: string;
+  path: string;
+  keywords: string[];
+}
+
+/** 建议技能：引擎从重复成功的经验分支自动生成的 draft SKILL.md，待人工审阅。 */
+function DraftSkillsSection({ onChanged }: { onChanged: () => void }) {
+  const [drafts, setDrafts] = useState<DraftSkill[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const base = await getBaseUrl();
+      const r = await fetch(`${base}/api/skills/drafts`);
+      if (!r.ok) throw new Error(`status ${r.status}`);
+      setDrafts((await r.json()).drafts ?? []);
+    } catch {
+      setDrafts([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void load();
+  }, []);
+
+  const act = async (name: string, action: "approve" | "reject") => {
+    try {
+      const base = await getBaseUrl();
+      await fetch(`${base}/api/skills/drafts/${encodeURIComponent(name)}/${action}`, { method: "POST" });
+      await load();
+      onChanged();
+    } catch {
+      /* best-effort; reload reflects truth */
+    }
+  };
+
+  if (loading || drafts.length === 0) return null;
+
+  return (
+    <div className="draft-skills">
+      <div className="draft-skills-head">建议技能（由历史经验自动生成，待审阅）</div>
+      {drafts.map((d) => (
+        <div className="draft-skill-card" key={d.name}>
+          <div className="draft-skill-name">{d.name}</div>
+          {d.description && <div className="draft-skill-desc">{d.description}</div>}
+          {d.keywords.length > 0 && (
+            <div className="draft-skill-keywords">关键词：{d.keywords.join("、")}</div>
+          )}
+          <div className="draft-skill-actions">
+            <button className="btn-primary" onClick={() => act(d.name, "approve")} type="button">安装</button>
+            <button className="btn-secondary" onClick={() => act(d.name, "reject")} type="button">拒绝</button>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
 
 export default function SkillsView() {
   const skills = useCatalogStore((s) => s.skills);
@@ -79,6 +143,7 @@ export default function SkillsView() {
           ＋ 新建
         </button>
       </PageHeader>
+      <DraftSkillsSection onChanged={loadSkills} />
       <div className="page-body master-detail">
         <ul className="cat-list">
           {skills.length === 0 && <li className="cat-empty">暂无 Skill</li>}

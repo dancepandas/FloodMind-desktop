@@ -62,12 +62,20 @@ const SlidersIcon = () => (
   </NavIcon>
 );
 
+const BookIcon = () => (
+  <NavIcon>
+    <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+    <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
+  </NavIcon>
+);
+
 const NAV: { view: View; label: string; icon: ReactNode }[] = [
   { view: "chat", label: "新建任务", icon: <PlusIcon /> },
   { view: "chat", label: "对话", icon: <ChatIcon /> },
   { view: "skills", label: "Skills", icon: <ZapIcon /> },
   { view: "mcp", label: "MCP", icon: <LinkIcon /> },
   { view: "tasks", label: "自动化", icon: <ClockIcon /> },
+  { view: "experience", label: "经验", icon: <BookIcon /> },
   { view: "settings", label: "设置", icon: <SlidersIcon /> },
 ];
 
