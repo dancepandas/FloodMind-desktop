@@ -210,3 +210,32 @@ def test_skill_drafts_approve_and_reject():
     assert client.post("/api/skills/drafts/hydrology-forecast/reject").get_json()["ok"] is True
     assert agent.approved == ["hydrology-forecast"]
     assert agent.rejected == ["hydrology-forecast"]
+
+
+# ── 插件管理器 ─────────────────────────────────────────────
+def test_plugins_list_and_disable(tmp_path):
+    from floodmind_desktop_sidecar.agent import StubAgent
+    from floodmind_desktop_sidecar.app import create_app
+
+    class PluginAgent(StubAgent):
+        def list_plugins(self):
+            return [{"name": "demo", "version": "0.1.0", "description": "演示插件",
+                     "source": "/x/demo.py", "kind": "file", "disabled": False}]
+
+        def set_plugin_disabled(self, source, disabled):
+            assert source == "/x/demo.py"
+            assert disabled is True
+            return True
+
+    agent = PluginAgent()
+    client = create_app(agent).test_client()
+
+    r = client.get("/api/plugins")
+    assert r.get_json()["plugins"][0]["name"] == "demo"
+
+    r = client.post("/api/plugins/disabled", json={"source": "/x/demo.py", "disabled": True})
+    assert r.get_json()["ok"] is True
+
+
+def test_plugins_disable_requires_source(client):
+    assert client.post("/api/plugins/disabled", json={"disabled": True}).status_code == 400

@@ -171,6 +171,9 @@ export default function SkillsView() {
                 {detail.category && <span className="cat-tag">{detail.category}</span>}
               </div>
               {detail.description && <p className="cat-detail-desc">{detail.description}</p>}
+              {detail.is_knowledge_only && (
+                <span className="cat-tag">纯知识</span>
+              )}
               {detail.provides_tools && detail.provides_tools.length > 0 && (
                 <div className="cat-tools">
                   <div className="cat-subhead">提供工具</div>
@@ -179,6 +182,30 @@ export default function SkillsView() {
                       <span className="cat-tool-chip" key={t}>{t}</span>
                     ))}
                   </div>
+                </div>
+              )}
+              {detail.scripts && detail.scripts.length > 0 && (
+                <div className="cat-tools">
+                  <div className="cat-subhead">脚本（{detail.scripts.length}）</div>
+                  <ul className="cat-file-list">
+                    {detail.scripts.map((s) => <li key={s}>{s}</li>)}
+                  </ul>
+                </div>
+              )}
+              {detail.references && detail.references.length > 0 && (
+                <div className="cat-tools">
+                  <div className="cat-subhead">参考文档（{detail.references.length}）</div>
+                  <ul className="cat-file-list">
+                    {detail.references.map((r) => <li key={r}>{r}</li>)}
+                  </ul>
+                </div>
+              )}
+              {detail.assets && detail.assets.length > 0 && (
+                <div className="cat-tools">
+                  <div className="cat-subhead">资源（{detail.assets.length}）</div>
+                  <ul className="cat-file-list">
+                    {detail.assets.map((a) => <li key={a}>{a}</li>)}
+                  </ul>
                 </div>
               )}
               {detail.prompt && (

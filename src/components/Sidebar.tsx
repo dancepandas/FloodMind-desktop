@@ -69,11 +69,18 @@ const BookIcon = () => (
   </NavIcon>
 );
 
+const PuzzleIcon = () => (
+  <NavIcon>
+    <path d="M10 3v3a2 2 0 1 0 4 0V3h5v4a2 2 0 1 1 0 4v5h-4a2 2 0 1 0 0 4h4v5H3v-5h3a2 2 0 1 0 0-4H3V7h4a2 2 0 1 0 0-4V3z" />
+  </NavIcon>
+);
+
 const NAV: { view: View; label: string; icon: ReactNode }[] = [
   { view: "chat", label: "新建任务", icon: <PlusIcon /> },
   { view: "chat", label: "对话", icon: <ChatIcon /> },
   { view: "skills", label: "Skills", icon: <ZapIcon /> },
   { view: "mcp", label: "MCP", icon: <LinkIcon /> },
+  { view: "plugins", label: "插件", icon: <PuzzleIcon /> },
   { view: "tasks", label: "自动化", icon: <ClockIcon /> },
   { view: "experience", label: "经验", icon: <BookIcon /> },
   { view: "settings", label: "设置", icon: <SlidersIcon /> },

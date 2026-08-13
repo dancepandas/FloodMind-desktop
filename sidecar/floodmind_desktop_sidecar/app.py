@@ -527,6 +527,10 @@ def create_app(agent: Agent, workspace_manager=None, conversation_store=None,
             "category": s.category,
             "provides_tools": s.provides_tools,
             "version": s.version,
+            "scripts": getattr(s, "scripts", []) or [],
+            "references": getattr(s, "references", []) or [],
+            "assets": getattr(s, "assets", []) or [],
+            "is_knowledge_only": getattr(s, "is_knowledge_only", False),
             "disabled": s.name in set(read_skills_disabled()),
             "builtin": s.name in set(list_builtin_skills()),
         })
@@ -641,6 +645,21 @@ def create_app(agent: Agent, workspace_manager=None, conversation_store=None,
     @app.post("/api/skills/drafts/<name>/reject")
     def skill_draft_reject(name):
         ok = agent.reject_draft_skill(name)
+        return jsonify({"ok": ok}) if ok else (jsonify({"error": "未找到"}), 404)
+
+    # ── 插件管理器 (可扩展性) ────────────────────────────────
+    @app.get("/api/plugins")
+    def plugins_list():
+        return jsonify({"plugins": agent.list_plugins()})
+
+    @app.post("/api/plugins/disabled")
+    def plugin_set_disabled():
+        body = request.get_json(silent=True) or {}
+        source = str(body.get("source", ""))
+        disabled = bool(body.get("disabled"))
+        if not source:
+            return jsonify({"error": "source required"}), 400
+        ok = agent.set_plugin_disabled(source, disabled)
         return jsonify({"ok": ok}) if ok else (jsonify({"error": "未找到"}), 404)
 
     @app.get("/api/mcp")

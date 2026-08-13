@@ -1365,6 +1365,100 @@ class FloodMindAgent:
         self._agent_mode = mode
 
     # ── main entry ─────────────────────────────────────────────
+    # ── 插件管理器 (可扩展性) ─────────────────────────────────
+    def list_plugins(self) -> list[dict]:
+        """Scan plugin dirs WITHOUT executing plugin code (受信代码安全姿态).
+
+        The engine loads plugins via PluginLoader at agent construction; here we
+        only read on-disk metadata (plugin.json for dir plugins, filename for
+        single-file plugins) so a "list" never imports arbitrary user Python.
+        """
+        import json
+        from pathlib import Path
+
+        out: list[dict] = []
+        for directory in (Path.home() / ".floodmind" / "plugins", Path(".") / ".floodmind" / "plugins"):
+            if not directory.exists():
+                continue
+            try:
+                for py in sorted(directory.glob("*.py")):
+                    if py.name.startswith(("_", ".")):
+                        continue
+                    out.append({
+                        "name": py.stem,
+                        "version": "",
+                        "description": "",
+                        "source": str(py),
+                        "kind": "file",
+                        "disabled": False,
+                    })
+                for pdir in sorted(directory.iterdir()):
+                    if not pdir.is_dir() or pdir.name.startswith("."):
+                        continue
+                    manifest = pdir / "plugin.json"
+                    if not manifest.exists():
+                        continue
+                    cfg = json.loads(manifest.read_text(encoding="utf-8"))
+                    out.append({
+                        "name": cfg.get("name", pdir.name),
+                        "version": str(cfg.get("version", "")),
+                        "description": cfg.get("description", ""),
+                        "source": str(pdir),
+                        "kind": "dir",
+                        "disabled": False,
+                    })
+                # Disabled plugins (moved to *.py.disabled / *.disabled dir).
+                for disabled in sorted(directory.glob("*.py.disabled")):
+                    out.append({
+                        "name": disabled.stem.removesuffix(".py"),
+                        "version": "",
+                        "description": "",
+                        "source": str(disabled),
+                        "kind": "file",
+                        "disabled": True,
+                    })
+                for ddir in sorted(directory.iterdir()):
+                    if ddir.is_dir() and ddir.name.endswith(".disabled"):
+                        out.append({
+                            "name": ddir.name.removesuffix(".disabled"),
+                            "version": "",
+                            "description": "",
+                            "source": str(ddir),
+                            "kind": "dir",
+                            "disabled": True,
+                        })
+            except Exception as e:
+                print(f"[sidecar] list_plugins failed for {directory}: {e!r}", file=sys.stderr)
+        return out
+
+    def set_plugin_disabled(self, source: str, disabled: bool) -> bool:
+        """Enable/disable a plugin by renaming its file/dir (重启/下次发送生效).
+
+        The engine's PluginLoader globs `*.py` and `*/plugin.json`; renaming to a
+        `.disabled` suffix takes the plugin out of both globs without deleting it.
+        """
+        from pathlib import Path
+
+        src = Path(source)
+        if not src.exists():
+            return False
+        try:
+            if disabled:
+                target = src.with_name(src.name + ".disabled") if src.is_file() else src.with_name(src.name + ".disabled")
+            else:
+                name = src.name
+                if name.endswith(".py.disabled"):
+                    target = src.with_name(name[: -len(".disabled")])
+                elif name.endswith(".disabled"):
+                    target = src.with_name(name[: -len(".disabled")])
+                else:
+                    return False
+            src.rename(target)
+            return True
+        except Exception as e:
+            print(f"[sidecar] set_plugin_disabled failed: {e!r}", file=sys.stderr)
+            return False
+
     # ── run event buffer (重连对账) ──────────────────────────
     def _reset_run_buffer(self) -> dict:
         """Start a fresh buffered run ledger for the active stream."""
