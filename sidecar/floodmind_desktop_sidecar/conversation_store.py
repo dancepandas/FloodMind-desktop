@@ -133,6 +133,8 @@ class ConversationStore:
                 "title": r.get("title") or "新会话",
                 "updated_at": r.get("updated_at", ""),
                 "active": r["id"] == active,
+                # 空会话判定：无任何 turns 即未发起对话（用于前端新建任务时清理空会话）。
+                "turns_count": len(r.get("turns") or []),
             }
             for r in out
         ]

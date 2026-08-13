@@ -11,7 +11,7 @@ class Message(TypedDict):
 
 
 class Agent(Protocol):
-    def stream(self, messages: list[Message], attachments: list | None = None) -> Iterator[dict]:
+    def stream(self, messages: list[Message], attachments: list | None = None, mode: str = "craft") -> Iterator[dict]:
         """Yield event dicts, e.g. {"type": "text", "content": "..."} and {"type": "done"}.
 
         ``attachments`` is an optional list of front-end image descriptors
@@ -87,7 +87,7 @@ class Agent(Protocol):
 class StubAgent:
     """Deterministic stub used until the real FloodMind agent is wired in."""
 
-    def stream(self, messages: list[Message], attachments: list | None = None) -> Iterator[dict]:
+    def stream(self, messages: list[Message], attachments: list | None = None, mode: str = "craft") -> Iterator[dict]:
         user_text = messages[-1]["content"] if messages else ""
         reply = f"[sidecar stub] 收到：{user_text}"
         mid = len(reply) // 2

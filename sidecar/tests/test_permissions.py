@@ -31,16 +31,18 @@ def test_fingerprint_write_file_uses_path(tmp_path):
 
 
 def test_fingerprint_read_file_workspace_internal(tmp_path):
+    # The SDK's read tool is `Read` (input key `file_path`); workspace-internal
+    # reads share one fingerprint.
     internal = tmp_path / "file.txt"
-    a = permission_fingerprint("ReadFile", {"path": str(internal)}, workspace_path=str(tmp_path))
-    b = permission_fingerprint("ReadFile", {"path": str(tmp_path / "other.txt")}, workspace_path=str(tmp_path))
+    a = permission_fingerprint("Read", {"file_path": str(internal)}, workspace_path=str(tmp_path))
+    b = permission_fingerprint("Read", {"file_path": str(tmp_path / "other.txt")}, workspace_path=str(tmp_path))
     assert a == b  # workspace-internal reads share a fingerprint
 
 
 def test_fingerprint_read_file_external(tmp_path):
     external = tmp_path.parent / "outside.txt"
-    a = permission_fingerprint("ReadFile", {"path": str(external)}, workspace_path=str(tmp_path))
-    b = permission_fingerprint("ReadFile", {"path": str(tmp_path / "inside.txt")}, workspace_path=str(tmp_path))
+    a = permission_fingerprint("Read", {"file_path": str(external)}, workspace_path=str(tmp_path))
+    b = permission_fingerprint("Read", {"file_path": str(tmp_path / "inside.txt")}, workspace_path=str(tmp_path))
     assert a != b
 
 

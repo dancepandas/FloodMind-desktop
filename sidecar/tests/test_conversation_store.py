@@ -35,7 +35,7 @@ def test_list_filters_by_workspace_and_marks_active(tmp_path):
     assert next(i for i in items if i["id"] == a1["id"])["active"] is False
     assert {i["id"] for i in s.list("/ws/B")} == {b1["id"]}
     # list items carry only summary fields.
-    assert set(items[0]) == {"id", "title", "updated_at", "active"}
+    assert set(items[0]) == {"id", "title", "updated_at", "active", "turns_count"}
 
 
 def test_list_orders_by_updated_at_desc(tmp_path):

@@ -40,8 +40,11 @@ _ENV_VARS = [
     "FLOODMIND_ENABLE_SEARCH",
 ]
 
-# Code-internal fallbacks when a model definition omits a field. These mirror
-# the SDK's own defaults in model_resolver._build() and are NOT user-facing.
+# Code-internal fallbacks when a model definition omits a field. The desktop keeps
+# a larger output default than the SDK core (SDK v1.0.1 falls back to 8192 in
+# model_resolver._build()) because this GUI previously treated missing/stale
+# maxTokens metadata as a desktop model-catalog default. Prefer each model's own
+# default_max_tokens whenever it is present.
 DEFAULT_TEMPERATURE = 0.3
 DEFAULT_MAX_TOKENS = 65_536
 DEFAULT_CONTEXT_WINDOW = 32_768
@@ -534,6 +537,35 @@ def write_permissions_config(body: dict[str, Any]) -> dict:
     raw.setdefault("permissions", {})["mode"] = mode
     save_config(raw)
     return read_permissions_config()
+
+
+_WORK_MODES = ("craft", "ask", "plan")
+
+
+def read_work_mode_config() -> dict:
+    """Return the desktop work-mode block from raw settings (default craft)."""
+    raw = _load_raw_settings()
+    desktop = raw.get("desktop") if isinstance(raw.get("desktop"), dict) else {}
+    mode = desktop.get("workMode", "craft")
+    if mode not in _WORK_MODES:
+        mode = "craft"
+    return {"mode": mode}
+
+
+def write_work_mode_config(body: dict[str, Any]) -> dict:
+    """Persist the desktop work-mode block and return the new snapshot."""
+    from floodmind.config.settings import save_config
+
+    raw = _load_raw_settings()
+    mode = body.get("mode", "craft")
+    if mode not in _WORK_MODES:
+        mode = "craft"
+    desktop = raw.get("desktop") if isinstance(raw.get("desktop"), dict) else {}
+    desktop = dict(desktop)
+    desktop["workMode"] = mode
+    raw["desktop"] = desktop
+    save_config(raw)
+    return read_work_mode_config()
 
 
 # ── Connection probe & remote model listing ─────────────────
