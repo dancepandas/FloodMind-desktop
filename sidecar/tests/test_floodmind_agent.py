@@ -1575,3 +1575,12 @@ def test_stream_non_vision_model_yields_error_and_drops_attachments(monkeypatch,
     assert captured["attachments"] == []
     assert any("不支持图片" in e.get("content", "")
                for e in events if e.get("type") == "error")
+
+
+def test_list_checkpoints_empty_for_missing_dir(tmp_path, monkeypatch):
+    """A non-existent session/checkpoint dir must yield [] (never raise)."""
+    monkeypatch.chdir(tmp_path)
+    from floodmind_desktop_sidecar.floodmind_agent import FloodMindAgent
+
+    a = FloodMindAgent.__new__(FloodMindAgent)
+    assert a.list_checkpoints("session-missing", str(tmp_path)) == []

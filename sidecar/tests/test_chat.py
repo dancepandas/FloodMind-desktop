@@ -90,3 +90,39 @@ def test_floodmind_agent_pause_arms_abort_check():
     assert a._abort.is_set() is False  # abort_check reads False before pause
     a.pause()
     assert a._abort.is_set() is True   # abort_check now reads True → SDK aborts
+
+
+# ── checkpoint resume (断点续跑) ─────────────────────────────
+def test_chat_resume_requires_checkpoint(client):
+    res = client.post("/api/chat/resume", json={})
+    assert res.status_code == 400
+
+
+def test_chat_resume_streams_ndjson_and_forwards_args():
+    from floodmind_desktop_sidecar.agent import StubAgent
+    from floodmind_desktop_sidecar.app import create_app
+
+    class ResumeAgent(StubAgent):
+        def __init__(self):
+            self.resumed = None
+
+        def resume_stream(self, checkpoint_id, user_message=""):
+            self.resumed = (checkpoint_id, user_message)
+            yield {"type": "text", "content": "续接输出"}
+            yield {"type": "done"}
+
+    agent = ResumeAgent()
+    client = create_app(agent).test_client()
+
+    res = client.post(
+        "/api/chat/resume",
+        json={"checkpoint_id": "cp-1", "user_message": "继续"},
+    )
+    assert res.status_code == 200
+    assert res.mimetype == "application/x-ndjson"
+    lines = [ln for ln in res.data.decode().splitlines() if ln.strip()]
+    events = [json.loads(ln) for ln in lines]
+    assert events[-1] == {"type": "done"}
+    text = "".join(e["content"] for e in events if e.get("type") == "text")
+    assert text == "续接输出"
+    assert agent.resumed == ("cp-1", "继续")

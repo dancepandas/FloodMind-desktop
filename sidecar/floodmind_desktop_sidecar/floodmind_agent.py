@@ -1303,6 +1303,134 @@ class FloodMindAgent:
         self._agent_mode = mode
 
     # ── main entry ─────────────────────────────────────────────
+    # ── checkpoint resume (断点续跑) ─────────────────────────
+    def list_checkpoints(self, session_id: str, workspace_path: str) -> list[dict]:
+        """List a conversation's checkpoints, newest first.
+
+        The SDK executor auto-writes checkpoints at loop boundaries under
+        ``<workspace>/.floodmind/sessions/<session_id>/checkpoints/``. Returns
+        CheckpointSummary dicts (checkpoint_id/status/iteration/created_at/
+        has_files_snapshot). Empty on any error — a missing dir or bad session
+        must never 500 the UI.
+        """
+        from pathlib import Path
+        from floodmind.agent.runtime.services.checkpoint_service import CheckpointService
+
+        base_dir = str(Path(workspace_path) / ".floodmind" / "sessions")
+        try:
+            svc = CheckpointService(base_dir=base_dir)
+            records = svc.list(session_id)
+            records.sort(key=lambda r: r.created_at, reverse=True)
+            return [r.model_dump(mode="json") for r in records]
+        except Exception as e:
+            print(f"[sidecar] list_checkpoints failed: {e!r}", file=sys.stderr)
+            return []
+
+    def resume_stream(self, checkpoint_id: str, user_message: str = "") -> Iterator[dict]:
+        """Resume an interrupted run from a checkpoint, streaming legacy events.
+
+        ``agent.resume()`` is synchronous — it drives the executor's
+        ``run_from_state`` to completion. We run it on a background thread and
+        capture the executor's event_bus in real-time, so the resumed run streams
+        like a normal chat: thinking/text/tool deltas, live permission asks,
+        then artifacts + done. On client disconnect the generator's finally joins
+        the thread, so the resumed run finishes before the foreground lock is
+        released (only one run may mutate the shared agent at a time).
+        """
+        import queue as _queue
+        import threading
+
+        stream_lock = getattr(self, "_stream_lock", None)
+        acquired = stream_lock.acquire(blocking=False) if stream_lock is not None else True
+        abort = getattr(self, "_abort", None)
+        try:
+            if not acquired:
+                yield {"type": "error", "content": "已有任务正在执行，请等待当前任务结束。"}
+                yield {"type": "done"}
+                return
+            if abort is not None:
+                abort.clear()
+            if getattr(self, "_agent", None) is None:
+                yield {"type": "error", "content": "模型未配置，请先在左侧「设置」中配置 API Key 后保存。"}
+                yield {"type": "done"}
+                return
+
+            with self._fg():
+                # Bind the workspace (also sets _output_dir for artifact diffing)
+                # and capture the agent reference so a concurrent rebind can't
+                # swap it mid-resume.
+                self._set_workspace()
+                agent = self._agent
+            raw = self._agent_raw(agent)
+            executor = getattr(raw, "_orchestrator_executor", None)
+            bus = getattr(executor, "event_bus", None) if executor is not None else None
+            if bus is None:
+                yield {"type": "error", "content": "该会话不支持从检查点恢复（缺少执行器）。"}
+                yield {"type": "done"}
+                return
+
+            before = self._snapshot_outputs()
+            q: _queue.Queue = _queue.Queue()
+            _SENTINEL = object()
+
+            def _listener(ev):
+                q.put(ev)
+
+            bus.add_listener(_listener)
+            outcome: dict = {}
+
+            def _run():
+                try:
+                    outcome["final"] = agent.resume(checkpoint_id, user_message)
+                except Exception as e:  # noqa: BLE001
+                    outcome["error"] = e
+                finally:
+                    q.put(_SENTINEL)
+
+            thread = threading.Thread(target=_run, daemon=True)
+            thread.start()
+
+            errored = False
+            try:
+                while True:
+                    try:
+                        ev = q.get(timeout=0.5)
+                    except _queue.Empty:
+                        if not thread.is_alive() and "error" not in outcome:
+                            break
+                        continue
+                    if ev is _SENTINEL:
+                        break
+                    for wire in translate_event(ev):
+                        if wire.get("type") == "permission":
+                            wire = self._handle_permission_ask(ev, wire)
+                        yield wire
+            except Exception as e:  # noqa: BLE001
+                import traceback
+                print(f"[sidecar] resume_stream exception: {e!r}\n{traceback.format_exc()}", file=sys.stderr)
+                errored = True
+                yield {"type": "error", "content": f"恢复执行出错：{e}"}
+            finally:
+                bus.remove_listener(_listener)
+                # Client disconnect (GeneratorExit) unwinds here: wait for the
+                # resume to finish before releasing the foreground lock.
+                thread.join()
+
+            if not errored and "error" in outcome:
+                err = outcome["error"]
+                print(f"[sidecar] resume failed: {err!r}", file=sys.stderr)
+                yield {"type": "error", "content": f"恢复执行出错：{err}"}
+
+            if not errored:
+                for ev in self._artifact_events_from_agent(agent):
+                    yield ev
+                for ev in self._diff_outputs(before):
+                    yield ev
+            yield {"type": "done"}
+        finally:
+            if stream_lock is not None and acquired:
+                stream_lock.release()
+
     def stream(self, messages: list[Message], attachments: list | None = None, mode="craft") -> Iterator[dict]:
         # Serialize foreground chats: only one /api/chat run at a time. The
         # shared self._agent + the process-global session context mean two

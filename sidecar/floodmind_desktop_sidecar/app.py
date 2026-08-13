@@ -133,11 +133,14 @@ def create_app(agent: Agent, workspace_manager=None, conversation_store=None,
         # /api/chat/append steering path stays text-only. None when absent so
         # stream()'s `if attachments:` guard skips the normalize path entirely.
         attachments = body.get("attachments") or None
+        # Per-request work mode (craft/ask/plan). The sidecar rebuilds the agent
+        # when the requested mode differs from the current one.
+        mode = body.get("mode", "craft")
         if not messages:
             return jsonify({"error": "messages must be a non-empty list"}), 400
 
         def generate():
-            gen = agent.stream(messages, attachments=attachments)
+            gen = agent.stream(messages, attachments=attachments, mode=mode)
             try:
                 for event in gen:
                     yield json.dumps(event, ensure_ascii=False) + "\n"
@@ -176,6 +179,29 @@ def create_app(agent: Agent, workspace_manager=None, conversation_store=None,
         agent.pause()
         return jsonify({"status": "paused"})
 
+    @app.post("/api/chat/resume")
+    def chat_resume():
+        """Resume an interrupted run from a checkpoint (断点续跑).
+
+        Streams the resumed run as NDJSON (same wire dialect as /api/chat):
+        thinking/text/tool deltas, live permission asks, then artifacts + done.
+        """
+        body = request.get_json(silent=True) or {}
+        checkpoint_id = body.get("checkpoint_id", "")
+        if not checkpoint_id:
+            return jsonify({"error": "checkpoint_id required"}), 400
+        user_message = body.get("user_message", "") or ""
+
+        def generate():
+            gen = agent.resume_stream(checkpoint_id, user_message)
+            try:
+                for event in gen:
+                    yield json.dumps(event, ensure_ascii=False) + "\n"
+            finally:
+                gen.close()
+
+        return Response(generate(), mimetype="application/x-ndjson")
+
     @app.get("/api/permissions")
     def permissions_get():
         from .config_api import read_permissions_config
@@ -197,6 +223,24 @@ def create_app(agent: Agent, workspace_manager=None, conversation_store=None,
         except Exception as e:  # pragma: no cover - defensive
             app.logger.warning("agent.set_permission_mode failed: %s", e)
         return jsonify({"ok": True, "permissions": snapshot})
+
+    @app.get("/api/work-mode")
+    def work_mode_get():
+        from .config_api import read_work_mode_config
+        try:
+            return jsonify(read_work_mode_config())
+        except Exception as e:  # pragma: no cover - defensive
+            return jsonify({"error": str(e)}), 500
+
+    @app.post("/api/work-mode")
+    def work_mode_set():
+        from .config_api import write_work_mode_config
+        body = request.get_json(silent=True) or {}
+        try:
+            snapshot = write_work_mode_config(body)
+        except Exception as e:  # pragma: no cover - defensive
+            return jsonify({"error": str(e)}), 500
+        return jsonify({"ok": True, "work_mode": snapshot})
 
     @app.post("/api/permission/respond")
     def permission_respond():
@@ -246,6 +290,18 @@ def create_app(agent: Agent, workspace_manager=None, conversation_store=None,
         if rec is None:
             return jsonify({"error": "未找到"}), 404
         return jsonify(rec)
+
+    @app.get("/api/conversations/<conv_id>/checkpoints")
+    def conversation_checkpoints(conv_id):
+        """List the conversation's checkpoints (for 断点续跑), newest first."""
+        rec = conversation_store.get(conv_id)
+        if rec is None:
+            return jsonify({"error": "未找到"}), 404
+        session_id = rec.get("session_id", "")
+        workspace = rec.get("workspace", "")
+        if not session_id or not workspace:
+            return jsonify({"checkpoints": []})
+        return jsonify({"checkpoints": agent.list_checkpoints(session_id, workspace)})
 
     @app.post("/api/conversations/<conv_id>/activate")
     def conversations_activate(conv_id):
@@ -378,15 +434,6 @@ def create_app(agent: Agent, workspace_manager=None, conversation_store=None,
         except Exception as e:
             return jsonify({"error": str(e)}), 400
         return jsonify({"task": task})
-
-    @app.delete("/api/scheduled-tasks/<task_id>")
-    def scheduled_tasks_delete(task_id):
-        try:
-            task_runtime.delete_task(task_id)
-        except Exception as e:
-            return jsonify({"error": str(e)}), 400
-        task_index.remove(task_id)
-        return jsonify({"ok": True})
 
     @app.post("/api/scheduled-tasks/<task_id>/run")
     def scheduled_tasks_run_now(task_id):
@@ -784,24 +831,116 @@ def create_app(agent: Agent, workspace_manager=None, conversation_store=None,
                 return current
         return os.environ.get("FLOODMIND_DESKTOP_WORKSPACE", "")
 
+    def _external_paths_root():
+        """Workspace root the external-path registry keys to (default-workspace when none open).
+
+        Prefers the real agent's current_workspace_root() so a no-workspace-open
+        registration lands in the same default-workspace dir the agent binds;
+        falls back for StubAgent tests.
+        """
+        from .workspace import _app_data_dir
+
+        fn = getattr(agent, "current_workspace_root", None)
+        if callable(fn):
+            try:
+                return fn()
+            except Exception:  # pragma: no cover - defensive
+                pass
+        ws = _require_workspace()
+        if ws:
+            return ws
+        return str(_app_data_dir() / "default-workspace")
+
+    @app.get("/api/external-paths")
+    def external_paths_get():
+        from . import external_paths
+
+        return jsonify({"paths": external_paths.read_external_paths(_external_paths_root())})
+
+    @app.post("/api/external-paths")
+    def external_paths_add():
+        from . import external_paths
+
+        body = request.get_json(silent=True) or {}
+        paths = body.get("paths")
+        if not isinstance(paths, list) or not paths:
+            return jsonify({"error": "paths 列表不能为空"}), 400
+        try:
+            out = external_paths.add_external_paths(_external_paths_root(), [str(p) for p in paths])
+        except Exception as e:  # pragma: no cover - defensive
+            return jsonify({"error": str(e)}), 500
+        return jsonify({"paths": out})
+
+    @app.delete("/api/external-paths")
+    def external_paths_remove():
+        from . import external_paths
+
+        body = request.get_json(silent=True) or {}
+        path = str(body.get("path", "")).strip()
+        if not path:
+            return jsonify({"error": "path 不能为空"}), 400
+        return jsonify({"paths": external_paths.remove_external_path(_external_paths_root(), path)})
+
+    @app.get("/api/background-tasks")
+    def background_tasks_list():
+        """Running/completed background Bash tasks (exec_bash run_in_background)."""
+        fn = getattr(agent, "list_background_tasks", None)
+        tasks = fn() if callable(fn) else []
+        return jsonify({"tasks": tasks})
+
+    @app.post("/api/background-tasks/<task_id>/kill")
+    def background_tasks_kill(task_id):
+        fn = getattr(agent, "kill_background_task", None)
+        ok = fn(task_id) if callable(fn) else False
+        return jsonify({"ok": ok}) if ok else (jsonify({"error": "任务不存在或已结束"}), 404)
+
     @app.get("/api/workspace/file")
     def read_workspace_file():
-        workspace = _require_workspace()
-        if not workspace:
-            return jsonify({"error": "未打开工作区"}), 400
-        rel = request.args.get("path", "").lstrip("/\\")
-        if not rel:
+        from . import external_paths
+
+        raw_path = request.args.get("path", "").strip()
+        if not raw_path:
             return jsonify({"error": "需要提供路径"}), 400
-        target = Path(workspace) / rel
-        target = target.resolve()
-        root = Path(workspace).resolve()
-        # Prevent escape outside the workspace.
-        if root not in target.parents and target != root:
+        workspace = _require_workspace()
+        root = Path(workspace).resolve() if workspace else None
+        if os.path.isabs(raw_path):
+            # 拖入/粘贴的工作区外文件：绝对路径，按外部授权列表校验。
+            target = Path(raw_path).resolve()
+        else:
+            if not workspace:
+                return jsonify({"error": "未打开工作区"}), 400
+            target = (Path(workspace) / raw_path).resolve()
+
+        # Authorized: 工作区内，或显式注册的外部可读路径（该文件本身、或其所在
+        # 目录被拖入授权过）。未授权的外部路径仍禁止预览。
+        def _preview_allowed(p: Path) -> bool:
+            if root is not None and (p == root or root in p.parents):
+                return True
+            for auth in external_paths.read_external_paths(_external_paths_root()):
+                ap = Path(auth).resolve()
+                if p == ap or ap in p.parents:
+                    return True
+            return False
+
+        if not _preview_allowed(target):
             return jsonify({"error": "禁止访问"}), 403
         if not target.exists():
             return jsonify({"error": "未找到"}), 404
+        # 目录 → 返回可浏览的文件列表（拖入的文件夹 chip 可点进其内容）。
         if target.is_dir():
-            return jsonify({"error": "路径是目录"}), 400
+            entries = []
+            try:
+                for p in sorted(target.iterdir()):
+                    if p.name.startswith("."):
+                        continue
+                    entries.append({
+                        "name": p.name,
+                        "type": "dir" if p.is_dir() else "file",
+                        "path": str(p.resolve()),
+                    })
+            except OSError:
+                pass
+            return jsonify({"kind": "dir", "entries": entries, "path": str(target)})
         mime = "text/plain"
         ext = target.suffix.lower()
         image_exts = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"}
@@ -836,6 +975,7 @@ def create_app(agent: Agent, workspace_manager=None, conversation_store=None,
             content = target.read_text(encoding="utf-8", errors="replace")
             previewable = True
         return jsonify({
+            "kind": "file",
             "content": content,
             "mime": mime,
             "previewable": previewable,
@@ -947,7 +1087,10 @@ def create_app(agent: Agent, workspace_manager=None, conversation_store=None,
             entries = []
             try:
                 for p in sorted(target.iterdir()):
-                    if p.name.startswith(".") and p.name != ".floodmind":
+                    # Hide hidden / SDK-managed dirs (`.floodmind` holds sessions,
+                    # checkpoints, memory, artifacts archives) — never expose them
+                    # as referenceable files in the @ picker.
+                    if p.name.startswith("."):
                         continue
                     entries.append({
                         "name": p.name,
