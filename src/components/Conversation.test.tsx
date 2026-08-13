@@ -8,6 +8,11 @@ import { openFileInSystem } from "../lib/open-file";
 vi.mock("../lib/open-file", () => ({
   openFileInSystem: vi.fn(() => Promise.resolve()),
 }));
+// Resume streams over /api/chat/resume; stub it so banner clicks don't hit fetch.
+vi.mock("../lib/chat-stream", () => ({
+  streamChat: vi.fn(),
+  streamResume: vi.fn(async function* () {}),
+}));
 
 // jsdom doesn't implement Element.scrollIntoView; the Conversation mounts and
 // runs its auto-scroll effect on every test, so stub it before any render.
@@ -20,7 +25,7 @@ beforeAll(() => {
 afterEach(() => {
   cleanup();
   // Reset the store + id counter between tests so seeding is order-independent.
-  useChatStore.setState({ turns: [], streaming: false });
+  useChatStore.setState({ turns: [], streaming: false, resumableCheckpoint: null });
   useUiStore.setState({ previewPath: null, lightboxImage: null });
   _resetBlockIdsForTest();
   vi.clearAllMocks();
@@ -169,33 +174,33 @@ describe("Conversation", () => {
     expect(screen.queryByRole("button", { name: /最终产物/ })).not.toBeInTheDocument();
   });
 
-  it("shows 思考中 status while reasoning and expands the current thinking on click", () => {
+  it("shows 正在思考 status while reasoning and expands the current thinking on click", () => {
     seedAssistant(
       [{ id: "t", kind: "thinking", content: "先算一下" }],
       false,
       true,
     );
     render(<Conversation />);
-    // 执行中：当前步骤动态指示 = 思考中，默认不显示思考内容
-    expect(screen.getByText(/思考中/)).toBeInTheDocument();
+    // 执行中：当前步骤动态指示 = 正在思考，默认不显示思考内容
+    expect(screen.getByText(/正在思考/)).toBeInTheDocument();
     expect(screen.queryByText("先算一下")).not.toBeInTheDocument();
     // 点击展开当前思考内容
-    fireEvent.click(screen.getByText(/思考中/));
+    fireEvent.click(screen.getByText(/正在思考/));
     expect(screen.getByText("先算一下")).toBeInTheDocument();
   });
 
-  it("shows 调用工具 status and expands tool name + truncated params on click", () => {
+  it("shows 正在调用工具 status and expands tool name + truncated params on click", () => {
     seedAssistant(
       [{ id: "tool", kind: "tool", call_id: "c1", tool_name: "Read", status: "running", input: "读取 E:\\very\\long\\path\\file.txt" }],
       false,
       true,
     );
     render(<Conversation />);
-    expect(screen.getByText(/调用工具/)).toBeInTheDocument();
+    expect(screen.getByText(/正在调用/)).toBeInTheDocument();
     // 默认不显示工具名
     expect(screen.queryByText("Read")).not.toBeInTheDocument();
     // 点击展开工具名 + 参数
-    fireEvent.click(screen.getByText(/调用工具/));
+    fireEvent.click(screen.getByText(/正在调用/));
     expect(screen.getByText("Read")).toBeInTheDocument();
   });
 
@@ -204,6 +209,50 @@ describe("Conversation", () => {
     render(<Conversation />);
     expect(screen.getByText(/正在生成回答/)).toBeInTheDocument();
     expect(screen.getByText("答案")).toBeInTheDocument();
+  });
+
+  it("during execution shows only the last text block, intermediate hidden", () => {
+    seedAssistant(
+      [
+        { id: "mid", kind: "text", content: "中间回答", final: false },
+        { id: "tool", kind: "tool", call_id: "c1", tool_name: "Read", status: "running", input: "a.txt" },
+        { id: "cur", kind: "text", content: "正在生成的答案", final: false },
+      ],
+      false,
+      true,
+    );
+    render(<Conversation />);
+    // 只流式展示最后一个 text 块；中间回答不占对话流（追加形式消除）
+    expect(screen.getByText("正在生成的答案")).toBeInTheDocument();
+    expect(screen.queryByText("中间回答")).not.toBeInTheDocument();
+  });
+
+  it("folds intermediate answers into the 已用过程 trace on completion", () => {
+    seedAssistant([
+      { id: "mid", kind: "text", content: "我先查一下资料", final: false },
+      { id: "final", kind: "text", content: "最终结论", final: true },
+    ]);
+    render(<Conversation />);
+    // 完成态：只显示最终回答；中间 text 默认不可见
+    expect(screen.getByText("最终结论")).toBeInTheDocument();
+    expect(screen.queryByText("我先查一下资料")).not.toBeInTheDocument();
+    // 展开「已用过程」可复盘中间回答（折叠摘要）
+    fireEvent.click(screen.getByText("已用过程"));
+    expect(screen.getByText("我先查一下资料")).toBeInTheDocument();
+  });
+
+  it("shows partial answer + 已停止 for an aborted completed turn", () => {
+    seedAssistant(
+      [
+        { id: "t", kind: "thinking", content: "思考" },
+        { id: "partial", kind: "text", content: "写了一半的回答", final: false },
+      ],
+      true,
+      false,
+    );
+    render(<Conversation />);
+    expect(screen.getByText("已停止")).toBeInTheDocument();
+    expect(screen.getByText("写了一半的回答")).toBeInTheDocument();
   });
 
   it("shows 已停止 for an aborted (stopped) turn", () => {
@@ -245,5 +294,31 @@ describe("Conversation", () => {
       plan: { awaiting: false },
     });
     expect(screen.queryByText("已生成计划，请选择：")).not.toBeInTheDocument();
+  });
+
+  it("shows a resume banner for an interrupted run and resumes on click", () => {
+    seedAssistant([{ id: "f", kind: "text", content: "之前完成", final: true }]);
+    useChatStore.setState({
+      resumableCheckpoint: { checkpoint_id: "cp-1", status: "running", iteration: 3, created_at: "t" },
+    });
+    render(<Conversation />);
+
+    expect(screen.getByText(/未完成的任务/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "恢复执行" }));
+    // resume() consumes the offer immediately.
+    expect(useChatStore.getState().resumableCheckpoint).toBeNull();
+  });
+
+  it("hides the resume banner while streaming", () => {
+    seedAssistant(
+      [{ id: "t", kind: "thinking", content: "思考" }],
+      false,
+      true, // streaming
+    );
+    useChatStore.setState({
+      resumableCheckpoint: { checkpoint_id: "cp-1", status: "running", iteration: 3, created_at: "t" },
+    });
+    render(<Conversation />);
+    expect(screen.queryByText(/未完成的任务/)).not.toBeInTheDocument();
   });
 });

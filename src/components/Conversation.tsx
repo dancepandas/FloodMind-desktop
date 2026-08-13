@@ -3,7 +3,7 @@ import Logo from "./Logo";
 import BlockView from "./BlockView";
 import ArtifactGroup from "./ArtifactGroup";
 import WelcomeView from "./WelcomeView";
-import { useChatStore, type ArtifactBlock, type Block, type Msg } from "../state/chat-store";
+import { useChatStore, deriveStatusText, type ArtifactBlock, type Block, type Msg } from "../state/chat-store";
 import { useUiStore } from "../state/ui-store";
 import { openFileInSystem } from "../lib/open-file";
 import { formatTokens } from "../lib/format-tokens";
@@ -36,10 +36,33 @@ export default function Conversation() {
 
   return (
     <div className="conversation">
+      <ResumeBanner />
       {turns.map((m, i) => (
         <TurnView key={m.id} turn={m} isLast={i === turns.length - 1} streaming={streaming} />
       ))}
       <div ref={endRef} />
+    </div>
+  );
+}
+
+/** 断点续跑：会话存在未完成的中断任务时给出「恢复执行」入口。 */
+function ResumeBanner() {
+  const checkpoint = useChatStore((s) => s.resumableCheckpoint);
+  const resume = useChatStore((s) => s.resume);
+  const streaming = useChatStore((s) => s.streaming);
+  if (!checkpoint || streaming) return null;
+  return (
+    <div className="resume-banner">
+      <span className="resume-banner-text">
+        检测到未完成的任务（第 {checkpoint.iteration} 步时中断），可从中断处继续。
+      </span>
+      <button
+        type="button"
+        className="resume-banner-btn"
+        onClick={() => resume(checkpoint.checkpoint_id)}
+      >
+        恢复执行
+      </button>
     </div>
   );
 }
@@ -96,6 +119,9 @@ function TurnView({ turn, isLast, streaming }: { turn: Msg; isLast: boolean; str
 
   // ── after the turn completes, only the final answer + artifacts remain ──
   const finalBlock = turn.done ? turn.blocks.find((b) => b.kind === "text" && b.final) : null;
+  // 中断/失败 turn（done 但未 markFinal）：兜底展示最后一个 text 块的半截内容，不凭空消失。
+  const abortedPartial =
+    turn.done && !finalBlock ? [...turn.blocks].reverse().find((b) => b.kind === "text") ?? null : null;
   const finalArtifacts = turn.done
     ? turn.blocks.filter(
         (b): b is ArtifactBlock => b.kind === "artifact" && b.final !== false
@@ -105,9 +131,17 @@ function TurnView({ turn, isLast, streaming }: { turn: Msg; isLast: boolean; str
   const pendingPerms = turn.blocks.filter(
     (b) => b.kind === "permission" && b.approved === undefined
   );
-  // 已用过程：思考/工具/权限块（完成态默认折叠的可复盘追踪）。
+  // 主答案（final 或中断兜底）不重复进复盘区。
+  const mainTexts = [finalBlock, abortedPartial].filter((b): b is Block => b != null);
+  const mainTextIds = new Set(mainTexts.map((b) => b.id));
+  // 已用过程：思考/工具/权限 + 中间 text 块（完成态默认折叠的可复盘追踪）。
   const doneProcessBlocks = turn.blocks.filter(
-    (b) => b.kind === "thinking" || b.kind === "tool" || b.kind === "permission"
+    (b) =>
+      (b.kind === "thinking" ||
+        b.kind === "tool" ||
+        b.kind === "permission" ||
+        (b.kind === "text" && !b.final)) &&
+      !mainTextIds.has(b.id)
   );
 
   // 完成态：默认不渲染过程；只留最终答案 + 产物 + 必须感知的信息，外加一个
@@ -125,6 +159,14 @@ function TurnView({ turn, isLast, streaming }: { turn: Msg; isLast: boolean; str
           <div data-block-id={finalBlock.id}>
             <BlockView block={finalBlock} isLive={false} />
           </div>
+        )}
+        {abortedPartial && (
+          <>
+            <div className="blk blk-error">已停止</div>
+            <div data-block-id={abortedPartial.id}>
+              <BlockView block={abortedPartial} isLive={false} />
+            </div>
+          </>
         )}
         <ArtifactGroup
           artifacts={finalArtifacts}
@@ -146,7 +188,7 @@ function TurnView({ turn, isLast, streaming }: { turn: Msg; isLast: boolean; str
             </button>
             {showProcess &&
               doneProcessBlocks.map((b) => {
-                // 复盘视图：工具直接显示「名 + 状态 + 定长参数」；思考/权限走 BlockView。
+                // 复盘视图：工具直接显示「名 + 状态 + 定长参数」；思考/权限/中间 text 走 BlockView。
                 if (b.kind === "tool") {
                   return (
                     <div key={b.id} className="blk blk-tool trace-tool">
@@ -177,20 +219,15 @@ function TurnView({ turn, isLast, streaming }: { turn: Msg; isLast: boolean; str
 
   // 执行中：一条随当前步骤变化的动态指示（主流），默认无过程详情；点击展开当前项。
   const lastBlock = turn.blocks[turn.blocks.length - 1];
-  const status: "thinking" | "tool" | "writing" | null = lastBlock
-    ? lastBlock.kind === "thinking"
-      ? "thinking"
-      : lastBlock.kind === "tool"
-        ? "tool"
-        : lastBlock.kind === "text"
-          ? "writing"
-          : null
-    : null;
+  const statusText = deriveStatusText(lastBlock);
+  // 只有「正在思考 / 正在调用工具」才有可点击展开的内容；过渡态（tool 已完成）不可展开。
+  const runningTool =
+    lastBlock?.kind === "tool" &&
+    ["running", "pending", "awaiting_permission"].includes(lastBlock.status);
   const statusBlock =
-    status === "thinking" || status === "tool" ? lastBlock : null;
-  const statusLabel =
-    status === "thinking" ? "思考中" : status === "tool" ? "调用工具" : status === "writing" ? "正在生成回答" : "";
-  const answerTexts = turn.blocks.filter((b) => b.kind === "text");
+    lastBlock?.kind === "thinking" || runningTool ? lastBlock : null;
+  // 只流式展示【最后一个】text 块；更早的中间回答不占对话流（收进完成态复盘）。
+  const lastTextBlock = [...turn.blocks].reverse().find((b) => b.kind === "text") ?? null;
   const stopped = !streaming && turn.blocks.length > 0;
 
   return (
@@ -205,8 +242,8 @@ function TurnView({ turn, isLast, streaming }: { turn: Msg; isLast: boolean; str
         <div className="blk blk-error">已停止</div>
       ) : (
         <>
-          {/* 当前步骤动态指示（思考中 → 调用工具 → 正在生成回答），随步骤变化 */}
-          {status && (
+          {/* 当前步骤动态指示（正在思考 → 正在调用工具 → 正在生成回答），随步骤变化 */}
+          {statusText && (
             <span
               className="live-status-item"
               role={statusBlock ? "button" : undefined}
@@ -225,7 +262,7 @@ function TurnView({ turn, isLast, streaming }: { turn: Msg; isLast: boolean; str
               }}
             >
               <span className="live-label">
-                {statusLabel}
+                {statusText}
                 <span className="live-dots"><span className="live-dot" /><span className="live-dot" /><span className="live-dot" /></span>
               </span>
             </span>
@@ -239,12 +276,12 @@ function TurnView({ turn, isLast, streaming }: { turn: Msg; isLast: boolean; str
               {statusBlock.input ? `：${truncateParam(statusBlock.input)}` : ""}
             </div>
           )}
-          {/* 流式回答输出（执行中持续显示） */}
-          {answerTexts.map((b) => (
-            <div key={b.id} data-block-id={b.id}>
-              <BlockView block={b} isLive={false} />
+          {/* 流式回答输出（只流式展示最后一个 text 块，isLive 展开显示） */}
+          {lastTextBlock && (
+            <div data-block-id={lastTextBlock.id}>
+              <BlockView block={lastTextBlock} isLive={true} />
             </div>
-          ))}
+          )}
         </>
       )}
       {errors.map((b) => <BlockView key={b.id} block={b} isLive={false} />)}

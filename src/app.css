@@ -989,12 +989,14 @@ button:focus-visible,
   40% { opacity: 1; transform: translateY(-2px); }
 }
 
-/* 执行中的动态状态行（主流风格：简洁动画文本，最多两条，竖排分行） */
+/* 执行中的动态状态行（主流风格：简洁动画文本，一行动态指示） */
 .live-status-item {
+  display: inline-block;
   font-size: 13px;
   color: var(--accent);
   cursor: pointer;
   border-radius: 4px;
+  margin: 0.15rem 0 0.35rem;
   transition: color 0.15s ease, background 0.15s ease;
 }
 
@@ -1338,6 +1340,38 @@ button:focus-visible,
 .show-process:hover {
   color: var(--fg-secondary);
   border-color: var(--muted);
+}
+
+/* 断点续跑：中断任务恢复入口 */
+.resume-banner {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  margin: 0.4rem 0 0.6rem;
+  padding: 0.5rem 0.7rem;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+  font-size: 13px;
+  color: var(--fg-secondary);
+}
+
+.resume-banner-btn {
+  margin-left: auto;
+  border: none;
+  border-radius: 6px;
+  padding: 0.28rem 0.7rem;
+  background: var(--accent);
+  color: #fff;
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.resume-banner-btn:hover {
+  filter: brightness(1.08);
 }
 
 .empty-hint {

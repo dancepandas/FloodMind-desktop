@@ -54,11 +54,18 @@ function firstLine(s: string, max = 80): string {
 
 /* ── Thinking ────────────────────────────────────────────── */
 function ThinkingBlock({ block, isLive }: { block: Extract<Block, { kind: "thinking" }>; isLive: boolean }) {
-  const [collapsed, toggle] = useCollapse(true, isLive);
+  // 思考过程默认折叠（streaming 时也折叠）；折叠态用动态「正在思考…」指示，
+  // 点击展开查看具体思考内容。
+  const [collapsed, toggle] = useCollapse(true, false);
   return (
     <div className="blk blk-thinking">
-      <button className="blk-chip" onClick={toggle} type="button">
-        <span className="caret">{collapsed ? "▸" : "▾"}</span> 思考过程
+      <button className="blk-chip" onClick={toggle} type="button" aria-expanded={!collapsed}>
+        <span className="caret">{collapsed ? "▸" : "▾"}</span>
+        {isLive ? (
+          <span className="live-label">正在思考<span className="live-dots" /></span>
+        ) : (
+          <span>思考过程</span>
+        )}
       </button>
       {!collapsed && <div className="thinking-body">{block.content}</div>}
     </div>
@@ -67,17 +74,20 @@ function ThinkingBlock({ block, isLive }: { block: Extract<Block, { kind: "think
 
 /* ── Tool ────────────────────────────────────────────────── */
 function ToolBlock({ block, isLive }: { block: Extract<Block, { kind: "tool" }>; isLive: boolean }) {
-  const [collapsed, toggle] = useCollapse(true, isLive);
+  // 工具调用默认折叠：只显示「调用工具…」指示（运行中省略号动画），
+  // 点击展开才显示具体工具名/参数/输出。
+  const [collapsed, toggle] = useCollapse(true, false);
   const args = (block.input || "").replace(/\s+/g, " ").trim();
   const hasDetail = !!(block.input || block.output);
   const dot = statusDot(block.status);
+  const running = isLive || ["running", "pending", "awaiting_permission"].includes(block.status);
   return (
     <div className="blk blk-tool">
       <div
         className="tool-row"
-        role={hasDetail ? "button" : undefined}
-        tabIndex={hasDetail ? 0 : undefined}
-        aria-expanded={hasDetail ? !collapsed : undefined}
+        role="button"
+        tabIndex={0}
+        aria-expanded={!collapsed}
         onClick={() => hasDetail && toggle()}
         onKeyDown={(e) => {
           if (hasDetail && (e.key === "Enter" || e.key === " ")) {
@@ -85,12 +95,20 @@ function ToolBlock({ block, isLive }: { block: Extract<Block, { kind: "tool" }>;
             toggle();
           }
         }}
-        style={{ cursor: hasDetail ? "pointer" : "default" }}
+        style={{ cursor: "pointer" }}
       >
         <span className={`sdot sdot-${dot}`} />
-        <span className="tname">{block.tool_name}</span>
-        {args && <span className="targs">{args.length > 60 ? args.slice(0, 60) + "…" : args}</span>}
-        <span className="tstat">{block.status}</span>
+        {collapsed ? (
+          <span className={running ? "live-label" : undefined}>
+            调用工具{running && <span className="live-dots" />}
+          </span>
+        ) : (
+          <>
+            <span className="tname">{block.tool_name}</span>
+            {args && <span className="targs">{args.length > 60 ? args.slice(0, 60) + "…" : args}</span>}
+            <span className="tstat">{block.status}</span>
+          </>
+        )}
       </div>
       {!collapsed && hasDetail && (
         <div className="tool-detail">
@@ -110,9 +128,9 @@ function TextBlock({
   block: Extract<Block, { kind: "text" }>;
   isLive: boolean;
 }) {
-  // Final answer: always expanded. Intermediate: collapsed unless live.
+  // Final answer or live-streaming answer: always expanded (streaming adds cursor).
   const [collapsed, toggle] = useCollapse(!block.final, isLive);
-  if (block.final) {
+  if (block.final || isLive) {
     return (
       <div className="blk blk-text final">
         <Markdown>{block.content}</Markdown>
@@ -167,6 +185,8 @@ function ArtifactBlock({ block }: { block: Extract<Block, { kind: "artifact" }> 
       name={block.name}
       artKind={block.artKind}
       path={block.path}
+      exists={block.exists}
+      size={block.size}
       onOpen={() => setPreviewPath(block.path)}
     />
   );
@@ -184,7 +204,7 @@ function PermissionBlock({ block }: { block: Extract<Block, { kind: "permission"
   if (block.approved === true && block.auto_approved) {
     return (
       <div className="blk blk-permission">
-        <span className="perm-badge perm-auto">🔓 已自动批准 {block.tool_name}</span>
+        <span className="perm-badge perm-auto">已自动批准 {block.tool_name}</span>
       </div>
     );
   }
@@ -193,7 +213,7 @@ function PermissionBlock({ block }: { block: Extract<Block, { kind: "permission"
     return (
       <div className="blk blk-permission">
         <span className={`perm-badge ${approved ? "perm-approved" : "perm-rejected"}`}>
-          {approved ? "🔓 已批准" : "🚫 已拒绝"} {block.tool_name}
+          {approved ? "已批准" : "已拒绝"} {block.tool_name}
         </span>
       </div>
     );

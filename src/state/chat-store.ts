@@ -1,7 +1,8 @@
 import { create } from "zustand";
 import { getBaseUrl } from "../lib/sidecar-client";
-import { streamChat, appendInstruction as postAppendInstruction, pauseChat, respondToPermissionAsk, type ChatEvent, type ChatMessage, type ImageAttachmentWire } from "../lib/chat-stream";
-import { useConversationStore } from "./conversation-store";
+import { streamChat, streamResume, appendInstruction as postAppendInstruction, pauseChat, respondToPermissionAsk, type ArtifactSource, type ChatEvent, type ChatMessage, type ImageAttachmentWire } from "../lib/chat-stream";
+import { looksLikeFsPath } from "../lib/file-refs";
+import { useConversationStore, type Conversation } from "./conversation-store";
 import { useConfigStore } from "./config-store";
 
 export interface PlanStep {
@@ -29,9 +30,21 @@ export type Block =
     }
   | { id: string; kind: "text"; content: string; final?: boolean }
   | { id: string; kind: "plan"; title: string; steps: PlanStep[] }
-  | { id: string; kind: "artifact"; artKind: "file" | "image"; name: string; path: string }
+  | {
+      id: string;
+      kind: "artifact";
+      artKind: "file" | "image";
+      name: string;
+      path: string;
+      final?: boolean;
+      exists?: boolean;
+      size?: number;
+      source?: ArtifactSource;
+    }
   | { id: string; kind: "permission"; ask_id: string; call_id: string; tool_name: string; reason: string; input?: unknown; approved?: boolean; auto_approved?: boolean }
   | { id: string; kind: "error"; content: string };
+
+export type ArtifactBlock = Extract<Block, { kind: "artifact" }>;
 
 export type Msg =
   | { id: string; role: "user"; content: string; images?: { name: string; thumb: string }[]; attachments?: { path: string; name: string }[] }
@@ -42,25 +55,42 @@ export interface AssistantTurn {
   blocks: Block[];
   usage: Usage | null;
   done: boolean;
+  /** Plan-mode proposal awaiting user confirmation (produced by a plan-mode send). */
+  plan?: { awaiting: boolean; originalText?: string; cancelled?: boolean };
 }
 
 /**
  * Derive a human-readable streaming action status from the latest assistant
  * block. Returns an empty string when there is no meaningful action to show.
+ *
+ * 对齐主流的「一行动态指示」：随当前步骤变化，文案具体（带工具名）。
+ * 已完成/最终/已解析的块返回空串或过渡态——tool 完成后模型在处理结果，
+ * 视为「正在思考…」而非继续显示「调用工具」。
  */
 export function deriveStatusText(lastBlock?: Block): string {
-  if (!lastBlock) return "等待响应…";
-  if (lastBlock.kind === "thinking") return "正在思考…";
-  if (lastBlock.kind === "tool" && lastBlock.status === "running") return `正在执行：${lastBlock.tool_name}…`;
-  if (lastBlock.kind === "tool") return "";
-  if (lastBlock.kind === "permission" && lastBlock.approved === undefined) return `等待授权：${lastBlock.tool_name}`;
-  if (lastBlock.kind === "text" && !lastBlock.final) return "正在回答…";
-  return "";
+  if (!lastBlock) return "正在思考…";
+  switch (lastBlock.kind) {
+    case "thinking":
+      return "正在思考…";
+    case "tool":
+      return ["running", "pending", "awaiting_permission"].includes(lastBlock.status)
+        ? `正在调用 ${lastBlock.tool_name}…`
+        : "正在思考…"; // tool 已完成 → 过渡态
+    case "text":
+      return lastBlock.final ? "" : "正在生成回答…";
+    case "permission":
+      return lastBlock.approved === undefined ? `等待授权：${lastBlock.tool_name}` : "";
+    default:
+      return "正在思考…"; // plan / artifact / error
+  }
 }
 
 interface ChatState {
   turns: Msg[];
   streaming: boolean;
+  /** Guards the async new-conversation creation (防连击: rapid clicks on 新建任务
+   *  must not spawn a pile of empty conversations). */
+  startingNew: boolean;
   abortController: AbortController | null;
   conversationId: string | null;
   /** Title of the active conversation (shown in the TopBar). Mirrors the
@@ -72,10 +102,28 @@ interface ChatState {
     attachments?: ImageAttachmentWire[],
     images?: { name: string; thumb: string }[],
     fileRefs?: { path: string; name: string }[],
+    mode?: import("./config-store").WorkMode,
   ) => Promise<void>;
   appendInstruction: (text: string) => Promise<void>;
   pause: () => Promise<void>;
   respondToPermission: (askId: string, approved: boolean) => Promise<void>;
+  /** Latest resumable checkpoint for the active conversation (断点续跑). */
+  resumableCheckpoint: {
+    checkpoint_id: string;
+    status: string;
+    iteration: number;
+    created_at: string;
+  } | null;
+  /** Fetch + refresh `resumableCheckpoint` for a conversation. */
+  loadCheckpoints: (conversationId: string) => Promise<void>;
+  /** Resume an interrupted run from a checkpoint, streaming into a new turn. */
+  resume: (checkpointId: string, userMessage?: string) => Promise<void>;
+  /** Confirm a plan-mode proposal: re-send the original request in craft mode. */
+  confirmPlan: (turnId: string) => Promise<void>;
+  /** Dismiss a plan proposal without executing (for 补充/讨论 — the plan stays visible). */
+  dismissPlan: (turnId: string) => void;
+  /** Cancel a plan-mode proposal (marks the turn cancelled; no execution). */
+  cancelPlan: (turnId: string) => void;
   reset: () => void;
   startNew: (workspace: string) => Promise<void>;
   loadConversation: (id: string) => Promise<void>;
@@ -183,7 +231,20 @@ export function reduceEvent(turn: AssistantTurn, ev: ChatEvent): AssistantTurn {
       );
       break;
     case "artifact":
-      blocks = [...blocks, { id: nextId(), kind: "artifact", artKind: ev.kind, name: ev.name, path: ev.path }];
+      blocks = [
+        ...blocks,
+        {
+          id: nextId(),
+          kind: "artifact",
+          artKind: ev.kind,
+          name: ev.name,
+          path: ev.path,
+          ...(ev.final !== undefined ? { final: ev.final } : {}),
+          ...(ev.exists !== undefined ? { exists: ev.exists } : {}),
+          ...(ev.size !== undefined ? { size: ev.size } : {}),
+          ...(ev.source !== undefined ? { source: ev.source } : {}),
+        },
+      ];
       break;
     case "permission":
       blocks = [
@@ -228,21 +289,27 @@ export function reduceEvent(turn: AssistantTurn, ev: ChatEvent): AssistantTurn {
 export const useChatStore = create<ChatState>((set, get) => ({
   turns: [],
   streaming: false,
+  startingNew: false,
   abortController: null,
   conversationId: null,
   title: "新会话",
+  resumableCheckpoint: null,
 
   async send(
     text: string,
     attachments?: ImageAttachmentWire[],
     images?: { name: string; thumb: string }[],
     fileRefs?: { path: string; name: string }[],
+    mode?: import("./config-store").WorkMode,
   ) {
     if (!text.trim()) return;
     // While a stream is active, route to the append path: the message is added
     // to the agent's memory and the SDK executor injects it into the running
     // loop (mid-run steering / queued follow-up).
     if (get().streaming) return get().appendInstruction(text);
+    // Request mode defaults to the Composer's current work mode.
+    const workMode: import("./config-store").WorkMode =
+      mode ?? useConfigStore.getState().workMode ?? "craft";
 
     const controller = new AbortController();
     // Index of the first turn belonging to THIS send, so the finally block can
@@ -277,14 +344,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // Append [引用文件] refs to the wire text so the LLM receives the same
       // prompt as before the structured-attachments refactor. turn.content
       // stays clean (no refs markdown); the file chips in the bubble read
-      // from turn.attachments instead.
+      // from turn.attachments instead. Workspace-EXTERNAL refs (absolute
+      // paths) are marked "已授权读取" so the model reads the exact attached
+      // path instead of hunting for a same-named copy elsewhere (e.g. an
+      // installed skill in site-packages).
+      const refLine = (r: { path: string }) =>
+        looksLikeFsPath(r.path) ? `- ${r.path}（工作区外，已授权读取）` : `- ${r.path}`;
       const refsBlock = fileRefs && fileRefs.length > 0
         ? (text.trim()
-            ? `\n\n[引用文件]\n${fileRefs.map((r) => `- ${r.path}`).join("\n")}`
-            : `请处理以下文件：\n${fileRefs.map((r) => `- ${r.path}`).join("\n")}`)
+            ? `\n\n[引用文件]\n${fileRefs.map(refLine).join("\n")}`
+            : `请处理以下文件：\n${fileRefs.map(refLine).join("\n")}`)
         : "";
       const wireText = text + refsBlock;
-      for await (const ev of streamChat(baseUrl, [{ role: "user", content: wireText }], controller.signal, attachments)) {
+      for await (const ev of streamChat(baseUrl, [{ role: "user", content: wireText }], controller.signal, attachments, workMode)) {
         if (ev.type === "done") continue;
         set((s) => {
           const turns = s.turns.slice();
@@ -319,6 +391,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
             ...last,
             blocks: finalize ? markFinal(last.blocks) : last.blocks,
             done: true,
+            // A successful plan-mode turn becomes a plan proposal awaiting the
+            // user's confirm/cancel before anything executes.
+            ...(finalize && workMode === "plan"
+              ? { plan: { awaiting: true, originalText: text } }
+              : {}),
           };
         }
         return { turns, streaming: false, abortController: null };
@@ -467,22 +544,184 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
   },
 
+  async loadCheckpoints(conversationId: string) {
+    // Best-effort: any failure just clears the resume offer — a non-resumable
+    // conversation must never block loading.
+    try {
+      const baseUrl = await getBaseUrl();
+      const r = await fetch(`${baseUrl}/api/conversations/${conversationId}/checkpoints`);
+      if (!r.ok) {
+        set({ resumableCheckpoint: null });
+        return;
+      }
+      const data = (await r.json().catch(() => ({}))) as { checkpoints?: any[] };
+      const cps = data.checkpoints ?? [];
+      // The latest non-terminal checkpoint is the interrupted run worth resuming.
+      const terminal = new Set(["completed", "failed"]);
+      const resumable = cps.find((cp) => !terminal.has(cp?.status)) ?? null;
+      set({
+        resumableCheckpoint: resumable
+          ? {
+              checkpoint_id: resumable.checkpoint_id,
+              status: resumable.status,
+              iteration: resumable.iteration,
+              created_at: resumable.created_at,
+            }
+          : null,
+      });
+    } catch {
+      set({ resumableCheckpoint: null });
+    }
+  },
+
+  async resume(checkpointId: string, userMessage?: string) {
+    if (get().streaming) return; // serialize: one active run at a time
+    const controller = new AbortController();
+    const startLen = get().turns.length;
+    set((s) => ({
+      turns: [
+        ...s.turns,
+        { id: nextTurnId(), role: "assistant", blocks: [], usage: null, done: false },
+      ],
+      streaming: true,
+      abortController: controller,
+      resumableCheckpoint: null, // consuming the offer
+    }));
+
+    let errored = false;
+    try {
+      const baseUrl = await getBaseUrl();
+      for await (const ev of streamResume(baseUrl, checkpointId, userMessage, controller.signal)) {
+        if (ev.type === "done") continue;
+        set((s) => {
+          const turns = s.turns.slice();
+          const last = turns[turns.length - 1];
+          if (last && last.role === "assistant") turns[turns.length - 1] = reduceEvent(last, ev);
+          return { turns };
+        });
+      }
+    } catch (e) {
+      if (controller.signal.aborted) return; // pause/reset aborted it
+      errored = true;
+      set((s) => {
+        const turns = s.turns.slice();
+        const last = turns[turns.length - 1];
+        if (last && last.role === "assistant") {
+          turns[turns.length - 1] = {
+            ...last,
+            blocks: [...last.blocks, { id: nextId(), kind: "error", content: `⚠️ ${(e as Error).message}` }],
+          };
+        }
+        return { turns };
+      });
+    } finally {
+      const finalize = !controller.signal.aborted && !errored;
+      set((s) => {
+        const turns = s.turns.slice();
+        const last = turns[turns.length - 1];
+        if (last && last.role === "assistant") {
+          turns[turns.length - 1] = {
+            ...last,
+            blocks: finalize ? markFinal(last.blocks) : last.blocks,
+            done: true,
+          };
+        }
+        return { turns, streaming: false, abortController: null };
+      });
+      // Persist the resumed assistant turn so a reload shows the continuation.
+      if (finalize) {
+        const cid = get().conversationId;
+        const turn = get().turns.slice(startLen).pop();
+        if (cid && turn && turn.role === "assistant") {
+          getBaseUrl()
+            .then((b) =>
+              fetch(`${b}/api/conversations/${cid}/turns`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ turns: [turn] }),
+              })
+            )
+            .catch(() => {});
+        }
+      }
+    }
+  },
+
+  async confirmPlan(turnId: string) {
+    const turn = get().turns.find((t) => t.id === turnId);
+    if (!turn || turn.role !== "assistant" || !turn.plan?.originalText) return;
+    const original = turn.plan.originalText;
+    // 点击「执行」的瞬间就切回执行模式（本地立即反映 + 持久化），而不是等
+    // 执行流结束——否则 Composer 一直显示计划模式，下一次发送还会再进计划。
+    useConfigStore.setState({ workMode: "craft" });
+    useConfigStore.getState().saveWorkMode("craft").catch(() => {});
+    // Mark this proposal as confirmed so the confirm bar disappears; the
+    // execution re-send below runs in craft mode against the plan in history.
+    set((s) => ({
+      turns: s.turns.map((t) =>
+        t.id === turnId && t.role === "assistant"
+          ? { ...t, plan: t.plan ? { ...t.plan, awaiting: false } : undefined }
+          : t
+      ),
+    }));
+    await get().send(`（已确认计划）请开始执行：${original}`, undefined, undefined, undefined, "craft");
+  },
+
+  cancelPlan(turnId: string) {
+    set((s) => ({
+      turns: s.turns.map((t) =>
+        t.id === turnId && t.role === "assistant" && t.plan
+          ? { ...t, plan: { ...t.plan, awaiting: false, cancelled: true } }
+          : t
+      ),
+    }));
+  },
+
+  dismissPlan(turnId: string) {
+    // 补充/讨论：解除「等待确认」状态，计划保留可见；用户继续在当前模式发送。
+    set((s) => ({
+      turns: s.turns.map((t) =>
+        t.id === turnId && t.role === "assistant" && t.plan
+          ? { ...t, plan: { ...t.plan, awaiting: false } }
+          : t
+      ),
+    }));
+  },
+
   reset: () => {
     get().abortController?.abort();
     set({ turns: [], streaming: false, abortController: null, title: "新会话" });
   },
 
   async startNew(workspace: string) {
-    get().abortController?.abort();
-    const conv = await useConversationStore.getState().create(workspace);
-    set({
-      turns: [],
-      streaming: false,
-      abortController: null,
-      conversationId: conv ? conv.id : null,
-      title: conv ? conv.title : "新会话",
-    });
-    await useConversationStore.getState().loadList(workspace);
+    // 防连击：上一次新建未完成（create 是异步 POST）时忽略后续点击。
+    if (get().startingNew) return;
+    set({ startingNew: true });
+    try {
+      get().abortController?.abort();
+      const currentId = get().conversationId;
+      const hasContent = get().turns.length > 0;
+      // 清理该工作区残留的空会话（保留当前会话），避免侧边栏堆"新会话"。
+      await useConversationStore.getState().removeEmpty(workspace, currentId ?? undefined);
+      let conv: Conversation | null = null;
+      if (hasContent) {
+        // 当前会话有内容 → 新建一个空会话。
+        conv = await useConversationStore.getState().create(workspace);
+      } else {
+        // 当前本来就是空会话 → 不再新建，复用（只是清空本地态）。
+        conv = currentId ? await useConversationStore.getState().open(currentId) : null;
+      }
+      set({
+        turns: [],
+        streaming: false,
+        abortController: null,
+        conversationId: conv ? conv.id : null,
+        title: conv ? conv.title : "新会话",
+      });
+      await useConversationStore.getState().loadList(workspace);
+    } finally {
+      set({ startingNew: false });
+    }
   },
 
   async loadConversation(id: string) {
@@ -514,5 +753,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     } catch {
       /* 模型恢复失败不阻断会话加载 */
     }
+    // 断点续跑：非阻塞查询该会话是否有可恢复的中断任务。
+    get().loadCheckpoints(id).catch(() => {});
   },
 }));

@@ -8,30 +8,39 @@ vi.mock("../lib/sidecar-client", () => ({
 }));
 vi.mock("../lib/chat-stream", () => ({
   streamChat: vi.fn(),
+  streamResume: vi.fn(),
   appendInstruction: vi.fn(async () => {}),
   pauseChat: vi.fn(async () => {}),
   respondToPermissionAsk: vi.fn(async () => {}),
 }));
+// Hoisted stable refs so tests can count calls across getState() invocations.
+const { convCreateMock, convOpenMock, removeEmptyMock, loadListMock } = vi.hoisted(() => ({
+  convCreateMock: vi.fn(async (ws: string) => ({
+    id: "c-new", session_id: "s-new", workspace: ws, title: "新会话",
+    created_at: "t", updated_at: "t", turns: [],
+  })),
+  convOpenMock: vi.fn(async (id: string) => ({
+    id, session_id: "s", workspace: "/ws", title: "old", created_at: "t", updated_at: "t",
+    turns: [{ role: "user", content: "loaded" }],
+  })),
+  removeEmptyMock: vi.fn(async () => {}),
+  loadListMock: vi.fn(async () => []),
+}));
 vi.mock("./conversation-store", () => ({
   useConversationStore: {
     getState: () => ({
-      create: vi.fn(async (_ws: string) => ({
-        id: "c-new", session_id: "s-new", workspace: _ws, title: "新会话",
-        created_at: "t", updated_at: "t", turns: [],
-      })),
+      create: convCreateMock,
       activate: vi.fn(async (_id: string) => true),
-      open: vi.fn(async (id: string) => ({
-        id, session_id: "s", workspace: "/ws", title: "old", created_at: "t", updated_at: "t",
-        turns: [{ role: "user", content: "loaded" }],
-      })),
-      loadList: vi.fn(async () => []),
+      open: convOpenMock,
+      loadList: loadListMock,
+      removeEmpty: removeEmptyMock,
     }),
     setState: vi.fn(),
   },
 }));
 
 // Import after mocks are registered.
-import { streamChat, appendInstruction as postAppendInstruction, pauseChat, respondToPermissionAsk } from "../lib/chat-stream";
+import { streamChat, streamResume, appendInstruction as postAppendInstruction, pauseChat, respondToPermissionAsk } from "../lib/chat-stream";
 import { useConversationStore } from "./conversation-store";
 import { useConfigStore } from "./config-store";
 
@@ -40,8 +49,8 @@ function emptyTurn(): AssistantTurn {
 }
 
 describe("deriveStatusText", () => {
-  it("returns waiting text when there is no block", () => {
-    expect(deriveStatusText(undefined)).toBe("等待响应…");
+  it("returns thinking text when there is no block", () => {
+    expect(deriveStatusText(undefined)).toBe("正在思考…");
   });
 
   it("reflects a thinking block", () => {
@@ -49,27 +58,27 @@ describe("deriveStatusText", () => {
   });
 
   it("reflects a running tool block with the tool name", () => {
-    expect(deriveStatusText({ kind: "tool", tool_name: "read_file", status: "running" } as any)).toBe("正在执行：read_file…");
+    expect(deriveStatusText({ kind: "tool", tool_name: "read_file", status: "running" } as any)).toBe("正在调用 read_file…");
   });
 
-  it("returns empty for a completed tool block", () => {
-    expect(deriveStatusText({ kind: "tool", tool_name: "read_file", status: "ok" } as any)).toBe("");
+  it("returns transitional thinking after a completed tool block", () => {
+    expect(deriveStatusText({ kind: "tool", tool_name: "read_file", status: "ok" } as any)).toBe("正在思考…");
   });
 
-  it("returns empty for a failed tool block", () => {
-    expect(deriveStatusText({ kind: "tool", tool_name: "read_file", status: "error" } as any)).toBe("");
+  it("returns transitional thinking after a failed tool block", () => {
+    expect(deriveStatusText({ kind: "tool", tool_name: "read_file", status: "error" } as any)).toBe("正在思考…");
   });
 
   it("reflects a non-final text block", () => {
-    expect(deriveStatusText({ kind: "text", content: "ans", final: false } as any)).toBe("正在回答…");
+    expect(deriveStatusText({ kind: "text", content: "ans", final: false } as any)).toBe("正在生成回答…");
   });
 
   it("returns empty for a final text block", () => {
     expect(deriveStatusText({ kind: "text", content: "ans", final: true } as any)).toBe("");
   });
 
-  it("returns empty for unknown block kinds", () => {
-    expect(deriveStatusText({ kind: "error", content: "boom" } as any)).toBe("");
+  it("returns thinking for unknown block kinds", () => {
+    expect(deriveStatusText({ kind: "error", content: "boom" } as any)).toBe("正在思考…");
   });
 });
 
@@ -97,6 +106,46 @@ describe("reduceEvent (block model)", () => {
     const tools = t.blocks.filter((b) => b.kind === "tool");
     expect(tools).toHaveLength(1);
     expect(tools[0]).toMatchObject({ call_id: "c1", status: "ok", output: "r" });
+  });
+
+  it("preserves artifact metadata and remains compatible with legacy events", () => {
+    const complete = reduceEvent(emptyTurn(), {
+      type: "artifact",
+      kind: "file",
+      name: "report.xlsx",
+      path: "C:/out/report.xlsx",
+      final: true,
+      exists: true,
+      size: 42,
+      source: "fallback",
+    });
+    expect(complete.blocks[0]).toMatchObject({
+      kind: "artifact",
+      artKind: "file",
+      name: "report.xlsx",
+      path: "C:/out/report.xlsx",
+      final: true,
+      exists: true,
+      size: 42,
+      source: "fallback",
+    });
+
+    const legacy = reduceEvent(emptyTurn(), {
+      type: "artifact",
+      kind: "image",
+      name: "plot.png",
+      path: "/out/plot.png",
+    });
+    expect(legacy.blocks[0]).toMatchObject({
+      kind: "artifact",
+      artKind: "image",
+      name: "plot.png",
+      path: "/out/plot.png",
+    });
+    expect(legacy.blocks[0]).not.toHaveProperty("final");
+    expect(legacy.blocks[0]).not.toHaveProperty("exists");
+    expect(legacy.blocks[0]).not.toHaveProperty("size");
+    expect(legacy.blocks[0]).not.toHaveProperty("source");
   });
 
   it("tracks latest prompt token count and accumulates completion/total", () => {
@@ -261,6 +310,32 @@ describe("chat-store.send", () => {
     expect(st.turns).toEqual([]);
     expect(st.conversationId).toBe("c-new");
     expect(st.title).toBe("新会话");   // from the create() mock record
+    expect(removeEmptyMock).toHaveBeenCalledWith("/ws/A", undefined);
+  });
+
+  it("startNew reuses an empty current conversation instead of creating another", async () => {
+    // 空会话不再新建：当前没有发起任何对话时，点「新建任务」只是清空本地态、复用当前。
+    convCreateMock.mockClear();
+    useChatStore.setState({
+      turns: [],
+      streaming: false,
+      conversationId: "c-old",
+      title: "新会话",
+    });
+    await useChatStore.getState().startNew("/ws/A");
+    expect(convCreateMock).not.toHaveBeenCalled();
+    expect(useChatStore.getState().conversationId).toBe("c-old");
+    expect(convOpenMock).toHaveBeenCalledWith("c-old");
+  });
+
+  it("startNew ignores rapid repeated clicks (防连击): only one conversation is created", async () => {
+    convCreateMock.mockClear();
+    useChatStore.setState({ turns: [{ id: "u1", role: "user", content: "old" }], streaming: false, conversationId: null });
+    const p1 = useChatStore.getState().startNew("/ws/A");
+    const p2 = useChatStore.getState().startNew("/ws/A"); // in-flight → ignored
+    const p3 = useChatStore.getState().startNew("/ws/A");
+    await Promise.all([p1, p2, p3]);
+    expect(convCreateMock).toHaveBeenCalledTimes(1);
   });
 
   it("loadConversation activates + hydrates turns from the loaded record", async () => {
@@ -358,16 +433,49 @@ describe("chat-store.send", () => {
 
     await useChatStore.getState().send("看图", attachments, images);
 
-    // streamChat was called with attachments as the 4th positional argument.
+    // streamChat was called with attachments as the 4th positional argument and
+    // the work mode as the 5th (default craft here).
     expect(streamChat).toHaveBeenCalledWith(
       "http://test",
       [{ role: "user", content: "看图" }],
       expect.any(AbortSignal),
       attachments,
+      "craft",
     );
     // The local user turn carries images for live display.
     const userTurn = useChatStore.getState().turns.find((t) => t.role === "user");
     expect((userTurn as any).images).toEqual(images);
+  });
+
+  it("send annotates workspace-external file refs as 已授权读取 in the wire text", async () => {
+    // Steering: an external (absolute) ref in [引用文件] must be marked
+    // "（工作区外，已授权读取）" so the model reads the exact attached path
+    // instead of hunting for a same-named copy elsewhere (e.g. an installed
+    // skill in site-packages). Workspace-internal refs stay plain.
+    (streamChat as any).mockImplementation(async function* () {
+      yield { type: "done" };
+    });
+    useChatStore.setState({ turns: [], streaming: false, conversationId: null });
+    _resetBlockIdsForTest();
+
+    await useChatStore.getState().send(
+      "注册这个skill",
+      undefined,
+      undefined,
+      [
+        { path: "D:\\chengs\\9.project\\vmodel\\.claude\\skills\\nature-figure", name: "nature-figure" },
+        { path: "data/info.csv", name: "info.csv" },
+      ],
+    );
+
+    const [url, messages] = (streamChat as any).mock.calls[0];
+    const content = messages[0].content;
+    expect(content).toContain("[引用文件]");
+    expect(content).toContain(
+      "- D:\\chengs\\9.project\\vmodel\\.claude\\skills\\nature-figure（工作区外，已授权读取）",
+    );
+    expect(content).toContain("- data/info.csv");
+    expect(content).not.toContain("data/info.csv（工作区外");
   });
 
   it("send persists [已附图片：…] prefix instead of the images payload", async () => {
@@ -406,6 +514,79 @@ describe("chat-store.send", () => {
     // images key stripped.
     expect(persistedUser.images).toBeUndefined();
     vi.unstubAllGlobals();
+  });
+
+  it("send in plan mode tags the assistant turn as awaiting confirmation", async () => {
+    (streamChat as any).mockImplementation(async function* () {
+      yield { type: "text", content: "计划：第一步…" };
+      yield { type: "done" };
+    });
+    useChatStore.setState({ turns: [], streaming: false, conversationId: null });
+    _resetBlockIdsForTest();
+
+    await useChatStore.getState().send("生成水文报告", undefined, undefined, undefined, "plan");
+
+    const { turns } = useChatStore.getState();
+    const reply = turns[1] as AssistantTurn;
+    expect(reply.done).toBe(true);
+    expect(reply.plan).toMatchObject({ awaiting: true, originalText: "生成水文报告" });
+    // streamChat received mode "plan" as the 5th arg.
+    expect(streamChat).toHaveBeenLastCalledWith(
+      "http://test",
+      [{ role: "user", content: "生成水文报告" }],
+      expect.any(AbortSignal),
+      undefined,
+      "plan",
+    );
+  });
+
+  it("confirmPlan re-sends the original request in craft mode", async () => {
+    (streamChat as any).mockImplementation(async function* () {
+      yield { type: "done" };
+    });
+    useChatStore.setState({ turns: [], streaming: false, conversationId: null });
+    _resetBlockIdsForTest();
+
+    useChatStore.setState({
+      turns: [
+        { id: "u1", role: "user", content: "生成水文报告" },
+        { id: "a1", role: "assistant", blocks: [{ id: "b1", kind: "text", content: "计划", final: true }], usage: null, done: true, plan: { awaiting: true, originalText: "生成水文报告" } },
+      ],
+    });
+
+    await useChatStore.getState().confirmPlan("a1");
+
+    const turns = useChatStore.getState().turns;
+    // The proposal is no longer awaiting.
+    expect(turns.find((t) => t.id === "a1")).toMatchObject({ plan: { awaiting: false } });
+    // A new execution pair was appended, sent in craft mode.
+    expect(turns[turns.length - 2]).toMatchObject({
+      role: "user",
+      content: "（已确认计划）请开始执行：生成水文报告",
+    });
+    expect(streamChat).toHaveBeenLastCalledWith(
+      "http://test",
+      [{ role: "user", content: "（已确认计划）请开始执行：生成水文报告" }],
+      expect.any(AbortSignal),
+      undefined,
+      "craft",
+    );
+    // Composer's work mode switches back to 执行 (craft) after confirming.
+    expect(useConfigStore.getState().workMode).toBe("craft");
+  });
+
+  it("cancelPlan marks the proposal cancelled without sending", async () => {
+    useChatStore.setState({
+      turns: [
+        { id: "a1", role: "assistant", blocks: [], usage: null, done: true, plan: { awaiting: true, originalText: "x" } },
+      ],
+    });
+
+    useChatStore.getState().cancelPlan("a1");
+
+    const t = useChatStore.getState().turns.find((x) => x.id === "a1");
+    expect(t).toMatchObject({ plan: { awaiting: false, cancelled: true } });
+    expect(streamChat).not.toHaveBeenCalled();
   });
 });
 
@@ -562,5 +743,58 @@ describe("loadConversation sticky model restore", () => {
       fetchMock.mock.calls.some((c) => (c[0] as string).endsWith("/api/config/active-model")),
     ).toBe(false);
     vi.unstubAllGlobals();
+  });
+});
+
+describe("chat-store.resume (断点续跑)", () => {
+  it("streams a checkpoint continuation into a new assistant turn and persists it", async () => {
+    (streamResume as any).mockImplementation(async function* () {
+      yield { type: "text", content: "续接输出" };
+      yield { type: "done" };
+    });
+    const fetchMock = vi.fn(async (_url: unknown, _init?: RequestInit) => new Response("{}", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    useChatStore.setState({
+      turns: [],
+      streaming: false,
+      conversationId: "c1",
+      resumableCheckpoint: { checkpoint_id: "cp-1", status: "running", iteration: 3, created_at: "t" },
+    });
+    _resetBlockIdsForTest();
+
+    await useChatStore.getState().resume("cp-1");
+
+    const st = useChatStore.getState();
+    expect(st.turns).toHaveLength(1);
+    expect(st.turns[0]).toMatchObject({ role: "assistant", done: true });
+    const textBlocks = (st.turns[0] as any).blocks.filter((b: any) => b.kind === "text");
+    expect(textBlocks[0]).toMatchObject({ content: "续接输出", final: true });
+    // The offer is consumed and streaming ends.
+    expect(st.resumableCheckpoint).toBeNull();
+    expect(st.streaming).toBe(false);
+    // The resumed assistant turn is persisted for reload.
+    const posted = fetchMock.mock.calls.find(
+      (c) => String(c[0]).includes("/api/conversations/c1/turns")
+    );
+    expect(posted).toBeTruthy();
+    const body = JSON.parse((posted![1] as RequestInit).body as string);
+    expect(body.turns).toHaveLength(1);
+    expect(body.turns[0].role).toBe("assistant");
+    vi.unstubAllGlobals();
+  });
+
+  it("surfaces a resume failure as an error block and still finalizes", async () => {
+    (streamResume as any).mockRejectedValue(new Error("checkpoint gone"));
+    useChatStore.setState({ turns: [], streaming: false, conversationId: "c1", resumableCheckpoint: null });
+    _resetBlockIdsForTest();
+
+    await useChatStore.getState().resume("cp-missing");
+
+    const st = useChatStore.getState();
+    expect(st.turns).toHaveLength(1);
+    const errBlocks = (st.turns[0] as any).blocks.filter((b: any) => b.kind === "error");
+    expect(errBlocks.length).toBeGreaterThan(0);
+    expect(st.streaming).toBe(false);
+    expect((st.turns[0] as any).done).toBe(true);
   });
 });
