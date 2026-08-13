@@ -1,3 +1,4 @@
+mod clipboard;
 mod sidecar;
 
 use sidecar::SidecarHandle;
@@ -20,7 +21,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             ping,
             sidecar::get_sidecar_base_url,
-            open_path
+            open_path,
+            clipboard::get_clipboard_file_paths
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

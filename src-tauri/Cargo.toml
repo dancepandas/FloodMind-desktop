@@ -19,3 +19,7 @@ dirs = "5"
 # Open files/folders with the OS default application without spawning a shell.
 # On Windows this calls ShellExecuteW (no cmd.exe, so no argument-injection).
 open = "5"
+# Read Explorer-copied file lists (CF_HDROP) so Ctrl+V in the composer can
+# attach files the WebView can't see as text/File entries. default-features off
+# skips the heavy `image` crate (we only need file_list, not image data).
+arboard = { version = "3", default-features = false }
