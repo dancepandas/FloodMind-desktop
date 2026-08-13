@@ -1,5 +1,6 @@
 import { useChatStore } from "../state/chat-store";
 import { useConfigStore } from "../state/config-store";
+import { formatTokens } from "../lib/format-tokens";
 
 const SIZE = 16;
 const STROKE = 2;
@@ -26,16 +27,10 @@ export default function ContextRing() {
 
   const dashOffset = CIRCUMFERENCE * (1 - pct);
 
-  const fmt = (n: number) => {
-    if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-    if (n >= 1_000) return `${(n / 1_000).toFixed(0)}K`;
-    return `${n}`;
-  };
-
   return (
     <span
       className="context-ring-wrap"
-      title={`上下文用量：${fmt(prompt)} / ${fmt(max)} tokens (${(pct * 100).toFixed(0)}%)`}
+      title={`上下文用量：${formatTokens(prompt)} / ${formatTokens(max)} (${(pct * 100).toFixed(0)}%)`}
       role="meter"
       aria-valuenow={prompt}
       aria-valuemin={0}
