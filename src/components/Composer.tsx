@@ -416,7 +416,15 @@ export default function Composer() {
   // other file becomes a file reference — the drag-over highlight shows for any
   // file payload.
   useEffect(() => {
-    const win = getCurrentWindow();
+    // Non-Tauri (plain browser / screenshot) has no window API — getCurrentWindow
+    // throws there. Skip the OS-level drag-drop listener gracefully instead of
+    // crashing the mount.
+    let win;
+    try {
+      win = getCurrentWindow();
+    } catch {
+      return;
+    }
     let unlisten: (() => void) | undefined;
     let active = true;
     (async () => {
