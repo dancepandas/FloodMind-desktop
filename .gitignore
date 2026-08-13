@@ -64,3 +64,13 @@ sidecar/*.spec
 .ds-research/
 .tmp-research/
 .workbuddy/
+/docs/
+/public/
+
+# workspace-local planning/research artifacts (never source)
+.research-tmp/
+.floodmind/
+.claude/
+# user-specified doc exclusions (covered by /docs/ but kept explicit)
+docs/superpowers/
+docs/ai-platform-execution-ux-research.md
