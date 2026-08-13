@@ -261,6 +261,20 @@ def _build_artifact_event(
 
 _ARTIFACT_OPTIONAL_FIELDS = ("final", "exists", "size", "source")
 
+# 中间文件（脚本/临时/缓存）——不是「最终产物」，产物 diff 一律排除，避免
+# 工作区根目录被几十个脚本刷屏到「最终产物」卡片区。最终成品 = 文档/表格/图等。
+_SCRIPT_SUFFIXES = (
+    ".py", ".pyc", ".pyw", ".sh", ".bat", ".cmd", ".ps1", ".js", ".ts",
+    ".jsx", ".tsx", ".go", ".rs", ".java", ".c", ".cpp", ".rb", ".php",
+)
+_TEMP_SUFFIXES = (".tmp", ".temp", ".log", ".bak", ".swp", ".pyc")
+_INTERMEDIATE_DIRS = ("__pycache__", "node_modules", ".pytest_cache", ".mypy_cache")
+
+
+def _is_intermediate_file(name: str) -> bool:
+    lower = name.lower()
+    return lower.endswith(_SCRIPT_SUFFIXES) or lower.endswith(_TEMP_SUFFIXES)
+
 
 def _read_skill_frontmatter(md_path) -> dict:
     """Parse a SKILL.md YAML frontmatter into a dict (empty on any error)."""
@@ -750,7 +764,14 @@ class FloodMindAgent:
                 "已安装的 skill 源文件（site-packages/skills 下）可直接读取（只读授权），"
                 "也可用 GetSkill/GetTool 查看说明；不要读取 SDK 包内部源码（site-packages/floodmind 下）。\n"
                 "读取文件请使用 Read/Glob 工具，不要使用 Bash（exec_bash）去查看文件内容。\n"
-                "不要向引用目录（工作区外的只读授权路径）写入任何文件；需要中转/临时文件时请写入工作区。"
+                "不要向引用目录（工作区外的只读授权路径）写入任何文件；需要中转/临时文件时请写入工作区。\n"
+                # 工作区组织与清理：任务中间产物收进专门子目录，成品放根，收尾清理脚本。
+                "【工作区组织与清理】每个任务请在工作区根目录下创建一个以任务主题命名的子目录"
+                "（如「水情简报」「销售数据分析」），所有中间脚本、临时数据、调试文件一律写入该子目录，"
+                "不要直接散落在工作区根目录；子目录内可按需再分 scripts/、data/ 等子目录分类。"
+                "最终要交付给用户的成果（报告、表格、图表、文档等）直接写入工作区根目录，方便用户查看。"
+                "任务完成、最终成果已生成后，请删除任务子目录中的中间脚本与临时文件，保持工作区整洁；"
+                "若成果复现需要脚本，只保留一份核心脚本并附简短 README 说明。"
             )
         else:
             system_prompt = "你是一个智能助手，使用可用工具帮助用户完成任务。"
@@ -846,11 +867,15 @@ class FloodMindAgent:
         snapshot: dict[str, float] = {}
         try:
             for root, dirs, files in os.walk(output_dir):
-                # Prune hidden / SDK-managed dirs (`.floodmind`, `.git`, …). They
-                # hold internal state — sessions, checkpoints, memory, sandboxes —
-                # which churns on every run and must never surface as "artifacts".
-                dirs[:] = [d for d in dirs if not d.startswith(".")]
+                # Prune hidden / SDK-managed dirs (`.floodmind`, `.git`, …) and
+                # intermediate/cache dirs (scripts' __pycache__, node_modules).
+                # They hold internal state or中间产物 which churn on every run
+                # and must never surface as "artifacts".
+                dirs[:] = [d for d in dirs if not d.startswith(".") and d not in _INTERMEDIATE_DIRS]
                 for filename in files:
+                    # 中间脚本/临时文件不是最终产物，跳过（工作区整洁 + 产物区不被刷屏）。
+                    if _is_intermediate_file(filename):
+                        continue
                     path = os.path.join(root, filename)
                     relative_path = os.path.relpath(path, output_dir)
                     try:

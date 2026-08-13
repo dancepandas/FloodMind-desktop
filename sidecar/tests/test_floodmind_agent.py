@@ -1626,3 +1626,29 @@ def test_skill_frontmatter_helpers(tmp_path):
     # No status line → unchanged (can't approve).
     plain = "---\nname: x\n---\nbody\n"
     assert _set_skill_status(plain, "active") == plain
+
+
+def test_snapshot_skips_intermediate_scripts_and_cache_dirs(tmp_path):
+    """中间脚本(.py/.sh/.tmp)与 __pycache__ 不是最终产物，产物 diff 必须排除。"""
+    from floodmind_desktop_sidecar.floodmind_agent import FloodMindAgent
+
+    out = tmp_path / "ws"
+    out.mkdir()
+    (out / "report.docx").write_text("final", encoding="utf-8")
+    (out / "chart.png").write_bytes(b"img")
+    (out / "task").mkdir()
+    (out / "task" / "script.py").write_text("print(1)", encoding="utf-8")
+    (out / "task" / "helper.sh").write_text("ls", encoding="utf-8")
+    (out / "task" / "notes.tmp").write_text("tmp", encoding="utf-8")
+    cache = out / "task" / "__pycache__"
+    cache.mkdir()
+    (cache / "script.cpython-313.pyc").write_bytes(b"\x00")
+
+    a = FloodMindAgent.__new__(FloodMindAgent)
+    a._output_dir = str(out)
+    snap = a._snapshot_outputs()
+
+    # 最终成品保留；脚本/临时/缓存一律排除。
+    assert "report.docx" in snap
+    assert "chart.png" in snap
+    assert all(not rel.endswith((".py", ".sh", ".tmp", ".pyc")) for rel in snap)
