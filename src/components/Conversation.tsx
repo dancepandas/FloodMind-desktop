@@ -36,33 +36,10 @@ export default function Conversation() {
 
   return (
     <div className="conversation">
-      <ResumeBanner />
       {turns.map((m, i) => (
         <TurnView key={m.id} turn={m} isLast={i === turns.length - 1} streaming={streaming} />
       ))}
       <div ref={endRef} />
-    </div>
-  );
-}
-
-/** 断点续跑：会话存在未完成的中断任务时给出「恢复执行」入口。 */
-function ResumeBanner() {
-  const checkpoint = useChatStore((s) => s.resumableCheckpoint);
-  const resume = useChatStore((s) => s.resume);
-  const streaming = useChatStore((s) => s.streaming);
-  if (!checkpoint || streaming) return null;
-  return (
-    <div className="resume-banner">
-      <span className="resume-banner-text">
-        检测到未完成的任务（第 {checkpoint.iteration} 步时中断），可从中断处继续。
-      </span>
-      <button
-        type="button"
-        className="resume-banner-btn"
-        onClick={() => resume(checkpoint.checkpoint_id)}
-      >
-        恢复执行
-      </button>
     </div>
   );
 }
@@ -134,12 +111,12 @@ function TurnView({ turn, isLast, streaming }: { turn: Msg; isLast: boolean; str
   // 主答案（final 或中断兜底）不重复进复盘区。
   const mainTexts = [finalBlock, abortedPartial].filter((b): b is Block => b != null);
   const mainTextIds = new Set(mainTexts.map((b) => b.id));
-  // 已用过程：思考/工具/权限 + 中间 text 块（完成态默认折叠的可复盘追踪）。
+  // 已用过程：思考/工具 + 中间 text 块（完成态默认折叠的可复盘追踪）。
+  // 权限卡片是执行期间的临时交互，不进入完成态历史。
   const doneProcessBlocks = turn.blocks.filter(
     (b) =>
       (b.kind === "thinking" ||
         b.kind === "tool" ||
-        b.kind === "permission" ||
         (b.kind === "text" && !b.final)) &&
       !mainTextIds.has(b.id)
   );
@@ -174,7 +151,6 @@ function TurnView({ turn, isLast, streaming }: { turn: Msg; isLast: boolean; str
           onOpenFolder={(directory) => void openFileInSystem(directory)}
         />
         {errors.map((b) => <BlockView key={b.id} block={b} isLive={false} />)}
-        {pendingPerms.map((b) => <BlockView key={b.id} block={b} isLive={false} />)}
         {/* 已用过程：默认折叠的可复盘追踪（对齐主流，不消失） */}
         {doneProcessBlocks.length > 0 && (
           <>
@@ -284,6 +260,7 @@ function TurnView({ turn, isLast, streaming }: { turn: Msg; isLast: boolean; str
           )}
         </>
       )}
+      {pendingPerms.map((b) => <BlockView key={b.id} block={b} isLive={false} />)}
       {errors.map((b) => <BlockView key={b.id} block={b} isLive={false} />)}
       {turn.usage && <UsageLine usage={turn.usage} />}
     </div>

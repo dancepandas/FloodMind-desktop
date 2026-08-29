@@ -66,7 +66,7 @@ export async function respondToPermissionAsk(
   }
 }
 
-/** Parse one NDJSON body into ChatEvents. Shared by /api/chat and /api/chat/resume. */
+/** Parse an NDJSON response body into ChatEvents. */
 async function* readNdjson(res: Response): AsyncGenerator<ChatEvent> {
   const reader = res.body!.getReader();
   const decoder = new TextDecoder();
@@ -122,25 +122,6 @@ export async function* streamChat(
   });
   if (!res.ok || !res.body) {
     throw new Error(`chat request failed: ${res.status}`);
-  }
-  yield* readNdjson(res);
-}
-
-/** Stream a checkpoint resume (断点续跑) as the same NDJSON wire dialect. */
-export async function* streamResume(
-  baseUrl: string,
-  checkpointId: string,
-  userMessage?: string,
-  signal?: AbortSignal,
-): AsyncGenerator<ChatEvent> {
-  const res = await fetch(`${baseUrl}/api/chat/resume`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ checkpoint_id: checkpointId, user_message: userMessage ?? "" }),
-    signal,
-  });
-  if (!res.ok || !res.body) {
-    throw new Error(`resume request failed: ${res.status}`);
   }
   yield* readNdjson(res);
 }

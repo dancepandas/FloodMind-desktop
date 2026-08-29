@@ -8,10 +8,8 @@ import { openFileInSystem } from "../lib/open-file";
 vi.mock("../lib/open-file", () => ({
   openFileInSystem: vi.fn(() => Promise.resolve()),
 }));
-// Resume streams over /api/chat/resume; stub it so banner clicks don't hit fetch.
 vi.mock("../lib/chat-stream", () => ({
   streamChat: vi.fn(),
-  streamResume: vi.fn(async function* () {}),
 }));
 
 // jsdom doesn't implement Element.scrollIntoView; the Conversation mounts and
@@ -25,7 +23,7 @@ beforeAll(() => {
 afterEach(() => {
   cleanup();
   // Reset the store + id counter between tests so seeding is order-independent.
-  useChatStore.setState({ turns: [], streaming: false, resumableCheckpoint: null });
+  useChatStore.setState({ turns: [], streaming: false });
   useUiStore.setState({ previewPath: null, lightboxImage: null });
   _resetBlockIdsForTest();
   vi.clearAllMocks();
@@ -261,6 +259,48 @@ describe("Conversation", () => {
     expect(screen.getByText("已停止")).toBeInTheDocument();
   });
 
+  it("shows a pending permission card while the turn is executing", () => {
+    seedAssistant(
+      [{
+        id: "p1",
+        kind: "permission",
+        ask_id: "ask-1",
+        call_id: "call-1",
+        tool_name: "Bash",
+        reason: "需要执行命令",
+        input: { command: "pwd" },
+      }],
+      false,
+      true,
+    );
+
+    render(<Conversation />);
+
+    expect(screen.getByText("等待授权", { selector: ".tstat" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "批准" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "拒绝" })).toBeInTheDocument();
+  });
+
+  it("does not keep a permission card after the turn completes", () => {
+    seedAssistant([
+      {
+        id: "p1",
+        kind: "permission",
+        ask_id: "ask-1",
+        call_id: "call-1",
+        tool_name: "Bash",
+        reason: "需要执行命令",
+      },
+      { id: "final", kind: "text", content: "完成", final: true },
+    ]);
+
+    render(<Conversation />);
+
+    expect(screen.queryByText("等待授权")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "批准" })).not.toBeInTheDocument();
+    expect(screen.queryByText("已用过程")).not.toBeInTheDocument();
+  });
+
   it("renders a plan-confirm bar on a completed plan-mode turn", () => {
     useChatStore.setState({
       turns: [{
@@ -296,29 +336,10 @@ describe("Conversation", () => {
     expect(screen.queryByText("已生成计划，请选择：")).not.toBeInTheDocument();
   });
 
-  it("shows a resume banner for an interrupted run and resumes on click", () => {
+  it("does not expose SDK checkpoint recovery in the conversation UI", () => {
     seedAssistant([{ id: "f", kind: "text", content: "之前完成", final: true }]);
-    useChatStore.setState({
-      resumableCheckpoint: { checkpoint_id: "cp-1", status: "running", iteration: 3, created_at: "t" },
-    });
     render(<Conversation />);
-
-    expect(screen.getByText(/未完成的任务/)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "恢复执行" }));
-    // resume() consumes the offer immediately.
-    expect(useChatStore.getState().resumableCheckpoint).toBeNull();
-  });
-
-  it("hides the resume banner while streaming", () => {
-    seedAssistant(
-      [{ id: "t", kind: "thinking", content: "思考" }],
-      false,
-      true, // streaming
-    );
-    useChatStore.setState({
-      resumableCheckpoint: { checkpoint_id: "cp-1", status: "running", iteration: 3, created_at: "t" },
-    });
-    render(<Conversation />);
-    expect(screen.queryByText(/未完成的任务/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/检测到未完成的任务/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "恢复执行" })).not.toBeInTheDocument();
   });
 });

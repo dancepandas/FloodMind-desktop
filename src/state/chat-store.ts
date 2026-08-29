@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { getBaseUrl } from "../lib/sidecar-client";
-import { streamChat, streamResume, appendInstruction as postAppendInstruction, pauseChat, respondToPermissionAsk, type ArtifactSource, type ChatEvent, type ChatMessage, type ImageAttachmentWire } from "../lib/chat-stream";
+import { streamChat, appendInstruction as postAppendInstruction, pauseChat, respondToPermissionAsk, type ArtifactSource, type ChatEvent, type ChatMessage, type ImageAttachmentWire } from "../lib/chat-stream";
 import { looksLikeFsPath } from "../lib/file-refs";
 import { useConversationStore, type Conversation } from "./conversation-store";
 import { useConfigStore } from "./config-store";
@@ -107,17 +107,6 @@ interface ChatState {
   appendInstruction: (text: string) => Promise<void>;
   pause: () => Promise<void>;
   respondToPermission: (askId: string, approved: boolean) => Promise<void>;
-  /** Latest resumable checkpoint for the active conversation (断点续跑). */
-  resumableCheckpoint: {
-    checkpoint_id: string;
-    status: string;
-    iteration: number;
-    created_at: string;
-  } | null;
-  /** Fetch + refresh `resumableCheckpoint` for a conversation. */
-  loadCheckpoints: (conversationId: string) => Promise<void>;
-  /** Resume an interrupted run from a checkpoint, streaming into a new turn. */
-  resume: (checkpointId: string, userMessage?: string) => Promise<void>;
   /** Confirm a plan-mode proposal: re-send the original request in craft mode. */
   confirmPlan: (turnId: string) => Promise<void>;
   /** Dismiss a plan proposal without executing (for 补充/讨论 — the plan stays visible). */
@@ -327,7 +316,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
   abortController: null,
   conversationId: null,
   title: "新会话",
-  resumableCheckpoint: null,
 
   async send(
     text: string,
@@ -550,6 +538,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
     } catch {
       // best-effort — still abort the client stream below
     }
+    // Permission requests cease to be actionable once this stream is stopped.
+    // Remove the transient cards before send() finalizes the turn.
+    set((s) => ({
+      turns: s.turns.map((t) =>
+        t.role === "assistant"
+          ? {
+              ...t,
+              blocks: t.blocks.filter(
+                (b) => !(b.kind === "permission" && b.approved === undefined)
+              ),
+            }
+          : t
+      ),
+    }));
     // Stop reading the stream; the in-flight send()'s finally finalizes the
     // turn (aborted → not final, done). The next send() resumes from memory.
     ctl.abort();
@@ -559,18 +561,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
     try {
       const baseUrl = await getBaseUrl();
       await respondToPermissionAsk(baseUrl, askId, approved);
-      // Optimistically reflect the user's choice in the UI; the SDK emits
-      // permission_resolved after the fact, but translate_event currently drops
-      // it. Search EVERY assistant turn (not just the last) — in a multi-turn
-      // session the ask may live on an earlier turn, and only updating the last
-      // would leave a stale "waiting for authorization" block behind.
+      // Permission cards are transient UI. Once the sidecar accepts the
+      // decision, remove the matching card from every assistant turn instead
+      // of persisting it in the conversation history.
       set((s) => ({
         turns: s.turns.map((t) =>
           t.role === "assistant"
             ? {
                 ...t,
-                blocks: t.blocks.map((b) =>
-                  b.kind === "permission" && b.ask_id === askId ? { ...b, approved } : b
+                blocks: t.blocks.filter(
+                  (b) => !(b.kind === "permission" && b.ask_id === askId)
                 ),
               }
             : t
@@ -588,109 +588,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
         }
         return { turns };
       });
-    }
-  },
-
-  async loadCheckpoints(conversationId: string) {
-    // Best-effort: any failure just clears the resume offer — a non-resumable
-    // conversation must never block loading.
-    try {
-      const baseUrl = await getBaseUrl();
-      const r = await fetch(`${baseUrl}/api/conversations/${conversationId}/checkpoints`);
-      if (!r.ok) {
-        set({ resumableCheckpoint: null });
-        return;
-      }
-      const data = (await r.json().catch(() => ({}))) as { checkpoints?: any[] };
-      const cps = data.checkpoints ?? [];
-      // The latest non-terminal checkpoint is the interrupted run worth resuming.
-      const terminal = new Set(["completed", "failed"]);
-      const resumable = cps.find((cp) => !terminal.has(cp?.status)) ?? null;
-      set({
-        resumableCheckpoint: resumable
-          ? {
-              checkpoint_id: resumable.checkpoint_id,
-              status: resumable.status,
-              iteration: resumable.iteration,
-              created_at: resumable.created_at,
-            }
-          : null,
-      });
-    } catch {
-      set({ resumableCheckpoint: null });
-    }
-  },
-
-  async resume(checkpointId: string, userMessage?: string) {
-    if (get().streaming) return; // serialize: one active run at a time
-    const controller = new AbortController();
-    const startLen = get().turns.length;
-    set((s) => ({
-      turns: [
-        ...s.turns,
-        { id: nextTurnId(), role: "assistant", blocks: [], usage: null, done: false },
-      ],
-      streaming: true,
-      abortController: controller,
-      resumableCheckpoint: null, // consuming the offer
-    }));
-
-    let errored = false;
-    try {
-      const baseUrl = await getBaseUrl();
-      for await (const ev of streamResume(baseUrl, checkpointId, userMessage, controller.signal)) {
-        if (ev.type === "done") continue;
-        set((s) => {
-          const turns = s.turns.slice();
-          const last = turns[turns.length - 1];
-          if (last && last.role === "assistant") turns[turns.length - 1] = reduceEvent(last, ev);
-          return { turns };
-        });
-      }
-    } catch (e) {
-      if (controller.signal.aborted) return; // pause/reset aborted it
-      errored = true;
-      set((s) => {
-        const turns = s.turns.slice();
-        const last = turns[turns.length - 1];
-        if (last && last.role === "assistant") {
-          turns[turns.length - 1] = {
-            ...last,
-            blocks: [...last.blocks, { id: nextId(), kind: "error", content: `⚠️ ${(e as Error).message}` }],
-          };
-        }
-        return { turns };
-      });
-    } finally {
-      const finalize = !controller.signal.aborted && !errored;
-      set((s) => {
-        const turns = s.turns.slice();
-        const last = turns[turns.length - 1];
-        if (last && last.role === "assistant") {
-          turns[turns.length - 1] = {
-            ...last,
-            blocks: finalize ? markFinal(last.blocks) : last.blocks,
-            done: true,
-          };
-        }
-        return { turns, streaming: false, abortController: null };
-      });
-      // Persist the resumed assistant turn so a reload shows the continuation.
-      if (finalize) {
-        const cid = get().conversationId;
-        const turn = get().turns.slice(startLen).pop();
-        if (cid && turn && turn.role === "assistant") {
-          getBaseUrl()
-            .then((b) =>
-              fetch(`${b}/api/conversations/${cid}/turns`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ turns: [turn] }),
-              })
-            )
-            .catch(() => {});
-        }
-      }
     }
   },
 
@@ -800,7 +697,5 @@ export const useChatStore = create<ChatState>((set, get) => ({
     } catch {
       /* 模型恢复失败不阻断会话加载 */
     }
-    // 断点续跑：非阻塞查询该会话是否有可恢复的中断任务。
-    get().loadCheckpoints(id).catch(() => {});
   },
 }));

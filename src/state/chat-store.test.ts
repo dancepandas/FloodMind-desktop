@@ -8,7 +8,6 @@ vi.mock("../lib/sidecar-client", () => ({
 }));
 vi.mock("../lib/chat-stream", () => ({
   streamChat: vi.fn(),
-  streamResume: vi.fn(),
   appendInstruction: vi.fn(async () => {}),
   pauseChat: vi.fn(async () => {}),
   respondToPermissionAsk: vi.fn(async () => {}),
@@ -40,7 +39,7 @@ vi.mock("./conversation-store", () => ({
 }));
 
 // Import after mocks are registered.
-import { streamChat, streamResume, appendInstruction as postAppendInstruction, pauseChat, respondToPermissionAsk } from "../lib/chat-stream";
+import { streamChat, appendInstruction as postAppendInstruction, pauseChat, respondToPermissionAsk } from "../lib/chat-stream";
 import { useConversationStore } from "./conversation-store";
 import { useConfigStore } from "./config-store";
 
@@ -231,12 +230,30 @@ describe("chat-store.send", () => {
     expect(turns[1].role).toBe("assistant");
   });
 
-  it("pause posts /api/chat/pause and aborts the active stream", async () => {
+  it("pause posts /api/chat/pause, removes pending permission cards, and aborts the active stream", async () => {
     const ctl = new AbortController();
-    useChatStore.setState({ streaming: true, abortController: ctl });
+    useChatStore.setState({
+      streaming: true,
+      abortController: ctl,
+      turns: [{
+        id: "a1",
+        role: "assistant",
+        done: false,
+        usage: null,
+        blocks: [
+          { id: "p1", kind: "permission", ask_id: "ask-1", call_id: "c1", tool_name: "Bash", reason: "r" },
+          { id: "t1", kind: "text", content: "partial" },
+        ],
+      }],
+    });
+
     await useChatStore.getState().pause();
+
     expect(pauseChat).toHaveBeenCalledWith("http://test");
     expect(ctl.signal.aborted).toBe(true);
+    const blocks = (useChatStore.getState().turns[0] as AssistantTurn).blocks;
+    expect(blocks.some((b) => b.kind === "permission")).toBe(false);
+    expect(blocks.some((b) => b.kind === "text" && b.content === "partial")).toBe(true);
   });
 
   it("surfaces a stream error as an error block", async () => {
@@ -626,24 +643,42 @@ describe("respondToPermission", () => {
     vi.clearAllMocks();
   });
 
-  it("optimistically marks the matching permission block approved", async () => {
+  it("removes the matching permission block after approval", async () => {
     (respondToPermissionAsk as any).mockResolvedValue(undefined);
     useChatStore.setState({
       turns: [
-        { id: "t1", role: "assistant", done: true, usage: null, blocks: [
+        { id: "t1", role: "assistant", done: false, usage: null, blocks: [
           { id: "p1", kind: "permission", ask_id: "ask-1", call_id: "c1", tool_name: "Bash", reason: "r", approved: undefined },
         ] },
       ],
-      streaming: false,
+      streaming: true,
       conversationId: "c1",
     });
 
     await useChatStore.getState().respondToPermission("ask-1", true);
 
     expect(respondToPermissionAsk).toHaveBeenCalledWith("http://test", "ask-1", true);
-    const block = (useChatStore.getState().turns[0] as AssistantTurn).blocks[0];
-    expect(block.kind).toBe("permission");
-    expect((block as any).approved).toBe(true);
+    const blocks = (useChatStore.getState().turns[0] as AssistantTurn).blocks;
+    expect(blocks.some((b) => b.kind === "permission" && b.ask_id === "ask-1")).toBe(false);
+  });
+
+  it("removes the matching permission block after rejection", async () => {
+    (respondToPermissionAsk as any).mockResolvedValue(undefined);
+    useChatStore.setState({
+      turns: [
+        { id: "t1", role: "assistant", done: false, usage: null, blocks: [
+          { id: "p1", kind: "permission", ask_id: "ask-1", call_id: "c1", tool_name: "Bash", reason: "r", approved: undefined },
+        ] },
+      ],
+      streaming: true,
+      conversationId: "c1",
+    });
+
+    await useChatStore.getState().respondToPermission("ask-1", false);
+
+    expect(respondToPermissionAsk).toHaveBeenCalledWith("http://test", "ask-1", false);
+    const blocks = (useChatStore.getState().turns[0] as AssistantTurn).blocks;
+    expect(blocks.some((b) => b.kind === "permission" && b.ask_id === "ask-1")).toBe(false);
   });
 
   it("appends an error block when the respond request fails", async () => {
@@ -662,11 +697,11 @@ describe("respondToPermission", () => {
 
     const blocks = (useChatStore.getState().turns[0] as AssistantTurn).blocks;
     expect(blocks.some((b) => b.kind === "error" && (b as any).content.includes("network down"))).toBe(true);
-    // The original permission block is left untouched (still waiting).
-    expect((blocks[0] as any).approved).toBeUndefined();
+    // The original permission block is left untouched so the user can retry.
+    expect(blocks.some((b) => b.kind === "permission" && b.ask_id === "ask-1")).toBe(true);
   });
 
-  it("updates a permission block on an earlier (non-last) assistant turn", async () => {
+  it("removes a permission block from an earlier (non-last) assistant turn", async () => {
     (respondToPermissionAsk as any).mockResolvedValue(undefined);
     useChatStore.setState({
       turns: [
@@ -683,7 +718,7 @@ describe("respondToPermission", () => {
     await useChatStore.getState().respondToPermission("ask-1", true);
 
     const first = useChatStore.getState().turns[0] as AssistantTurn;
-    expect((first.blocks[0] as any).approved).toBe(true);
+    expect(first.blocks.some((b) => b.kind === "permission" && b.ask_id === "ask-1")).toBe(false);
   });
 });
 
@@ -769,63 +804,14 @@ describe("loadConversation sticky model restore", () => {
 
     // Must not throw — turns are still hydrated from the conversation-store mock.
     await useChatStore.getState().loadConversation("conv-broken");
+    await new Promise((resolve) => setTimeout(resolve, 0));
     expect(useChatStore.getState().conversationId).toBe("conv-broken");
+    expect(
+      fetchMock.mock.calls.some((c) => String(c[0]).includes("/checkpoints")),
+    ).toBe(false);
     expect(
       fetchMock.mock.calls.some((c) => (c[0] as string).endsWith("/api/config/active-model")),
     ).toBe(false);
     vi.unstubAllGlobals();
-  });
-});
-
-describe("chat-store.resume (断点续跑)", () => {
-  it("streams a checkpoint continuation into a new assistant turn and persists it", async () => {
-    (streamResume as any).mockImplementation(async function* () {
-      yield { type: "text", content: "续接输出" };
-      yield { type: "done" };
-    });
-    const fetchMock = vi.fn(async (_url: unknown, _init?: RequestInit) => new Response("{}", { status: 200 }));
-    vi.stubGlobal("fetch", fetchMock);
-    useChatStore.setState({
-      turns: [],
-      streaming: false,
-      conversationId: "c1",
-      resumableCheckpoint: { checkpoint_id: "cp-1", status: "running", iteration: 3, created_at: "t" },
-    });
-    _resetBlockIdsForTest();
-
-    await useChatStore.getState().resume("cp-1");
-
-    const st = useChatStore.getState();
-    expect(st.turns).toHaveLength(1);
-    expect(st.turns[0]).toMatchObject({ role: "assistant", done: true });
-    const textBlocks = (st.turns[0] as any).blocks.filter((b: any) => b.kind === "text");
-    expect(textBlocks[0]).toMatchObject({ content: "续接输出", final: true });
-    // The offer is consumed and streaming ends.
-    expect(st.resumableCheckpoint).toBeNull();
-    expect(st.streaming).toBe(false);
-    // The resumed assistant turn is persisted for reload.
-    const posted = fetchMock.mock.calls.find(
-      (c) => String(c[0]).includes("/api/conversations/c1/turns")
-    );
-    expect(posted).toBeTruthy();
-    const body = JSON.parse((posted![1] as RequestInit).body as string);
-    expect(body.turns).toHaveLength(1);
-    expect(body.turns[0].role).toBe("assistant");
-    vi.unstubAllGlobals();
-  });
-
-  it("surfaces a resume failure as an error block and still finalizes", async () => {
-    (streamResume as any).mockRejectedValue(new Error("checkpoint gone"));
-    useChatStore.setState({ turns: [], streaming: false, conversationId: "c1", resumableCheckpoint: null });
-    _resetBlockIdsForTest();
-
-    await useChatStore.getState().resume("cp-missing");
-
-    const st = useChatStore.getState();
-    expect(st.turns).toHaveLength(1);
-    const errBlocks = (st.turns[0] as any).blocks.filter((b: any) => b.kind === "error");
-    expect(errBlocks.length).toBeGreaterThan(0);
-    expect(st.streaming).toBe(false);
-    expect((st.turns[0] as any).done).toBe(true);
   });
 });
