@@ -1,8 +1,9 @@
 import { describe, it, expect, afterEach, beforeAll, vi } from "vitest";
 import { render, screen, cleanup, fireEvent } from "@testing-library/react";
 import Conversation from "./Conversation";
-import { useChatStore, _resetBlockIdsForTest, type ArtifactBlock, type Block } from "../state/chat-store";
+import { useChatStore, _resetBlockIdsForTest, type ArtifactBlock, type Block, type AssistantTurn } from "../state/chat-store";
 import { useUiStore } from "../state/ui-store";
+import { useTurnCollapseStore } from "../state/turn-collapse-store";
 import { openFileInSystem } from "../lib/open-file";
 
 vi.mock("../lib/open-file", () => ({
@@ -25,6 +26,7 @@ afterEach(() => {
   // Reset the store + id counter between tests so seeding is order-independent.
   useChatStore.setState({ turns: [], streaming: false });
   useUiStore.setState({ previewPath: null, lightboxImage: null });
+  useTurnCollapseStore.setState({ overrides: {} });
   _resetBlockIdsForTest();
   vi.clearAllMocks();
 });
@@ -42,9 +44,14 @@ function artifact(id: string, overrides: Partial<ArtifactBlock> = {}): ArtifactB
   };
 }
 
-function seedAssistant(blocks: Block[], done = true, streaming = false) {
+function seedAssistant(
+  blocks: Block[],
+  done = true,
+  streaming = false,
+  extra: Partial<AssistantTurn> = {},
+) {
   useChatStore.setState({
-    turns: [{ id: "a1", role: "assistant", blocks, usage: null, done }],
+    turns: [{ id: "a1", role: "assistant", blocks, usage: null, done, ...extra }],
     streaming,
   });
 }
@@ -132,21 +139,120 @@ describe("Conversation", () => {
     expect(screen.getAllByText("report.txt")).toHaveLength(1);
   });
 
-  it("completed turn keeps a collapsed 已用过程 trace that expands on click", () => {
+  it("places the completed execution disclosure immediately before the final answer", () => {
     seedAssistant([
       { id: "t", kind: "thinking", content: "推理过程" },
       { id: "tool", kind: "tool", call_id: "c1", tool_name: "Read", status: "completed", input: "a.txt" },
       { id: "final", kind: "text", content: "完成", final: true },
-    ]);
+    ], true, false, {
+      finishReason: "stop",
+      finalNodeId: "final",
+      startedAt: 1_000,
+      completedAt: 3_000,
+      usage: { prompt: 1_200, completion: 80, total: 1_280 },
+    });
     render(<Conversation />);
-    // 默认折叠：不渲染过程块内容，但有「已用过程」入口
-    expect(screen.getByText("已用过程")).toBeInTheDocument();
+
+    const disclosure = screen.getByRole("button", { name: /展开执行过程/ });
+    const finalAnswer = screen.getByText("完成");
+    expect(disclosure).toHaveAttribute("aria-expanded", "false");
+    expect(disclosure).toHaveAttribute("aria-controls");
+    expect(disclosure.compareDocumentPosition(finalAnswer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(disclosure).toHaveTextContent("耗时 2s");
+    expect(disclosure).toHaveTextContent("1 次工具调用");
+    expect(disclosure).toHaveTextContent("1.2k 输入 tokens");
+    expect(disclosure).toHaveTextContent("80 输出 tokens");
     expect(screen.queryByText("推理过程")).not.toBeInTheDocument();
-    // 点击展开可复盘：工具名可见，思考块以折叠 chip 呈现（内容需再点开）
-    fireEvent.click(screen.getByText("已用过程"));
-    expect(screen.getByText("Read")).toBeInTheDocument();
+  });
+
+  it("uses native activity renderers inside the completed disclosure", () => {
+    seedAssistant([
+      { id: "t", kind: "thinking", content: "推理过程" },
+      { id: "mid", kind: "text", content: "我先查一下" },
+      { id: "tool", kind: "tool", call_id: "c1", tool_name: "Read", status: "completed", input: "a.txt" },
+      { id: "final", kind: "text", content: "完成", final: true },
+    ], true, false, { finishReason: "stop", finalNodeId: "final" });
+    render(<Conversation />);
+
+    fireEvent.click(screen.getByRole("button", { name: /展开执行过程/ }));
     expect(screen.getByText("思考过程")).toBeInTheDocument();
-    expect(screen.queryByText("推理过程")).not.toBeInTheDocument();
+    expect(screen.getByText("我先查一下")).toBeInTheDocument();
+    expect(screen.getByText(/工具调用 Read/)).toBeInTheDocument();
+  });
+
+  it("renders completed process blocks directly through native renderers", () => {
+    seedAssistant([
+      { id: "single", kind: "thinking", content: "第一段思考" },
+      { id: "boundary", kind: "text", content: "先说明一下" },
+      { id: "context", kind: "context", label: "项目上下文", content: "context" },
+      { id: "tool", kind: "tool", call_id: "c1", tool_name: "Read", status: "completed", input: "a.txt" },
+      { id: "final", kind: "text", content: "完成", final: true },
+    ], true, false, { finishReason: "stop", finalNodeId: "final" });
+    render(<Conversation />);
+
+    fireEvent.click(screen.getByRole("button", { name: /展开执行过程/ }));
+    expect(screen.getByText("思考过程")).toBeInTheDocument();
+    expect(screen.getByText("先说明一下")).toBeInTheDocument();
+    expect(screen.getByText("项目上下文")).toBeInTheDocument();
+    expect(screen.getByText(/工具调用 Read a\.txt/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /活动组/ })).not.toBeInTheDocument();
+  });
+
+  it("renders the live summary before the current round's two status rows", () => {
+    seedAssistant([
+      { id: "t", kind: "thinking", content: "先算一下", round: 0 },
+      { id: "tool", kind: "tool", call_id: "c1", tool_name: "Read", status: "running", input: "a.txt", round: 0 },
+    ], false, true, { startedAt: Date.now() - 2_000, activeRound: 0 });
+    render(<Conversation />);
+
+    const summary = screen.getByRole("status", { name: /已工作/ });
+    const thinking = screen.getByText(/正在思考/);
+    const tool = screen.getByText(/工具调用 Read a\.txt/);
+    expect(summary.compareDocumentPosition(thinking) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(thinking.compareDocumentPosition(tool) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(summary).not.toHaveAttribute("aria-expanded");
+    expect(screen.queryByText("先算一下")).not.toBeInTheDocument();
+  });
+
+  it("keeps only the latest thinking and latest tool visible in the current round", () => {
+    seedAssistant(
+      [
+        { id: "t1", kind: "thinking", content: "旧思考", round: 0 },
+        { id: "tool-1", kind: "tool", call_id: "c1", tool_name: "Read", status: "completed", input: "a.txt", round: 0 },
+        { id: "t2", kind: "thinking", content: "当前思考", round: 0 },
+        { id: "tool-2", kind: "tool", call_id: "c2", tool_name: "Bash", status: "running", input: "pwd", round: 0 },
+      ],
+      false,
+      true,
+      { startedAt: Date.now() - 2_000, activeRound: 0 },
+    );
+    render(<Conversation />);
+
+    expect(screen.getAllByText(/正在思考/)).toHaveLength(1);
+    expect(screen.getByText(/工具调用 Bash pwd/)).toBeInTheDocument();
+    expect(screen.queryByText(/工具调用 Read a\.txt/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText(/正在思考/));
+    expect(screen.getByText("当前思考")).toBeInTheDocument();
+    expect(screen.queryByText("旧思考")).not.toBeInTheDocument();
+  });
+
+  it("renders all settled process directly inside the execution disclosure", () => {
+    seedAssistant(
+      [
+        { id: "tool-1", kind: "tool", call_id: "c1", tool_name: "Read", status: "completed", input: "a.txt" },
+        { id: "tool-2", kind: "tool", call_id: "c2", tool_name: "Bash", status: "completed", input: "pwd" },
+        { id: "final", kind: "text", content: "完成", final: true },
+      ],
+      true,
+      false,
+      { finishReason: "stop", finalNodeId: "final", startedAt: 1_000, completedAt: 3_000 },
+    );
+    render(<Conversation />);
+
+    fireEvent.click(screen.getByRole("button", { name: /展开执行过程/ }));
+    expect(screen.getByText(/工具调用 Read a\.txt/)).toBeInTheDocument();
+    expect(screen.getByText(/工具调用 Bash pwd/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /活动组/ })).not.toBeInTheDocument();
   });
 
   it("routes artifact preview and folder actions through existing integrations", () => {
@@ -172,44 +278,91 @@ describe("Conversation", () => {
     expect(screen.queryByRole("button", { name: /最终产物/ })).not.toBeInTheDocument();
   });
 
-  it("shows 正在思考 status while reasoning and expands the current thinking on click", () => {
+  it("shows one collapsed thinking row for a live singleton", () => {
     seedAssistant(
-      [{ id: "t", kind: "thinking", content: "先算一下" }],
+      [{ id: "t", kind: "thinking", content: "先算一下", round: 0 }],
       false,
       true,
+      { startedAt: Date.now() - 1_000, activeRound: 0 },
     );
     render(<Conversation />);
-    // 执行中：当前步骤动态指示 = 正在思考，默认不显示思考内容
-    expect(screen.getByText(/正在思考/)).toBeInTheDocument();
+    expect(screen.getByRole("status", { name: /已工作/ })).toBeInTheDocument();
+    expect(screen.getAllByText(/正在思考/)).toHaveLength(1);
     expect(screen.queryByText("先算一下")).not.toBeInTheDocument();
-    // 点击展开当前思考内容
     fireEvent.click(screen.getByText(/正在思考/));
     expect(screen.getByText("先算一下")).toBeInTheDocument();
   });
 
-  it("shows 正在调用工具 status and expands tool name + truncated params on click", () => {
+  it("moves previous rounds directly into the live summary fold", () => {
+    seedAssistant(
+      [
+        { id: "old-think", kind: "thinking", content: "第一轮思考", round: 0 },
+        { id: "old-tool", kind: "tool", call_id: "c1", tool_name: "Read", status: "completed", input: "old.txt", round: 0 },
+        { id: "old-text", kind: "text", content: "第一轮说明", final: false, round: 0 },
+        { id: "cur-think", kind: "thinking", content: "第二轮思考", round: 1 },
+        { id: "cur-tool", kind: "tool", call_id: "c2", tool_name: "Bash", status: "running", input: "pwd", round: 1 },
+        { id: "cur-text", kind: "text", content: "第二轮说明", final: false, round: 1 },
+      ],
+      false,
+      true,
+      { startedAt: Date.now() - 2_000, activeRound: 1 },
+    );
+    render(<Conversation />);
+
+    const fold = screen.getByRole("button", { name: /展开执行过程/ });
+    expect(fold).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText("第一轮思考")).not.toBeInTheDocument();
+    expect(screen.queryByText("第一轮说明")).not.toBeInTheDocument();
+    expect(screen.getByText(/工具调用 Bash pwd/)).toBeInTheDocument();
+    expect(screen.getByText("第二轮说明")).toBeInTheDocument();
+    expect(screen.queryByText(/上一轮|历史记录/)).not.toBeInTheDocument();
+
+    fireEvent.click(fold);
+    expect(screen.getByText("第一轮说明")).toBeInTheDocument();
+    expect(screen.getByText(/工具调用 Read old\.txt/)).toBeInTheDocument();
+    expect(screen.getByText(/正在思考/)).toBeInTheDocument();
+    expect(screen.getByText("第二轮说明")).toBeInTheDocument();
+  });
+
+  it("keeps current-round prose visible while hiding current context", () => {
+    seedAssistant(
+      [
+        { id: "ctx", kind: "context", label: "项目上下文", content: "context", round: 2 },
+        { id: "mid", kind: "text", content: "当前说明", final: false, round: 2 },
+      ],
+      false,
+      true,
+      { activeRound: 2 },
+    );
+    render(<Conversation />);
+    expect(screen.getByText("当前说明")).toBeInTheDocument();
+    expect(screen.queryByText("项目上下文")).not.toBeInTheDocument();
+  });
+
+  it("shows a running tool through its native renderer", () => {
     seedAssistant(
       [{ id: "tool", kind: "tool", call_id: "c1", tool_name: "Read", status: "running", input: "读取 E:\\very\\long\\path\\file.txt" }],
       false,
       true,
+      { startedAt: Date.now() - 1_000 },
     );
     render(<Conversation />);
-    expect(screen.getByText(/正在调用/)).toBeInTheDocument();
-    // 默认不显示工具名
-    expect(screen.queryByText("Read")).not.toBeInTheDocument();
-    // 点击展开工具名 + 参数
-    fireEvent.click(screen.getByText(/正在调用/));
-    expect(screen.getByText("Read")).toBeInTheDocument();
+    expect(screen.getByRole("status", { name: /已工作/ })).toBeInTheDocument();
+    // 单行「工具调用 + 工具名 + 参数」，详情默认折叠
+    expect(screen.getByText(/工具调用 Read 读取/)).toBeInTheDocument();
+    expect(screen.queryByText(/→ 读取/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText(/工具调用 Read 读取/));
+    expect(screen.getByText(/→ 读取/)).toBeInTheDocument();
   });
 
-  it("shows 正在生成回答 status while the model writes", () => {
-    seedAssistant([{ id: "a", kind: "text", content: "答案" }], false, true);
+  it("shows the live summary while the model writes", () => {
+    seedAssistant([{ id: "a", kind: "text", content: "答案" }], false, true, { startedAt: Date.now() - 1_000 });
     render(<Conversation />);
-    expect(screen.getByText(/正在生成回答/)).toBeInTheDocument();
+    expect(screen.getByRole("status", { name: /已工作/ })).toBeInTheDocument();
     expect(screen.getByText("答案")).toBeInTheDocument();
   });
 
-  it("during execution shows only the last text block, intermediate hidden", () => {
+  it("during execution keeps earlier visible prose as an activity boundary", () => {
     seedAssistant(
       [
         { id: "mid", kind: "text", content: "中间回答", final: false },
@@ -220,22 +373,22 @@ describe("Conversation", () => {
       true,
     );
     render(<Conversation />);
-    // 只流式展示最后一个 text 块；中间回答不占对话流（追加形式消除）
+    // 参考实现保留可见叙述；文本会中断相邻活动的紧凑合并。
     expect(screen.getByText("正在生成的答案")).toBeInTheDocument();
-    expect(screen.queryByText("中间回答")).not.toBeInTheDocument();
+    expect(screen.getByText("中间回答")).toBeInTheDocument();
   });
 
-  it("folds intermediate answers into the 已用过程 trace on completion", () => {
+  it("folds intermediate answers into the 过程 trace on completion", () => {
     seedAssistant([
       { id: "mid", kind: "text", content: "我先查一下资料", final: false },
       { id: "final", kind: "text", content: "最终结论", final: true },
-    ]);
+    ], true, false, { finishReason: "stop", finalNodeId: "final" });
     render(<Conversation />);
     // 完成态：只显示最终回答；中间 text 默认不可见
     expect(screen.getByText("最终结论")).toBeInTheDocument();
     expect(screen.queryByText("我先查一下资料")).not.toBeInTheDocument();
-    // 展开「已用过程」可复盘中间回答（折叠摘要）
-    fireEvent.click(screen.getByText("已用过程"));
+    // 展开执行过程可复盘中间回答（折叠摘要）
+    fireEvent.click(screen.getByRole("button", { name: /展开执行过程/ }));
     expect(screen.getByText("我先查一下资料")).toBeInTheDocument();
   });
 
@@ -247,16 +400,17 @@ describe("Conversation", () => {
       ],
       true,
       false,
+      { finishReason: "aborted" },
     );
     render(<Conversation />);
-    expect(screen.getByText("已停止")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /展开执行过程.*已停止/ })).toBeInTheDocument();
     expect(screen.getByText("写了一半的回答")).toBeInTheDocument();
   });
 
-  it("shows 已停止 for an aborted (stopped) turn", () => {
+  it("shows 已中断 for a non-streaming unfinished turn", () => {
     seedAssistant([{ id: "t", kind: "thinking", content: "思考" }], false, false);
     render(<Conversation />);
-    expect(screen.getByText("已停止")).toBeInTheDocument();
+    expect(screen.getByText("已中断")).toBeInTheDocument();
   });
 
   it("shows a pending permission card while the turn is executing", () => {

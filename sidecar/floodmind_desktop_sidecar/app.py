@@ -256,6 +256,24 @@ def create_app(agent: Agent, workspace_manager=None, conversation_store=None,
             return jsonify({"error": str(e)}), 500
         return jsonify({"ok": True, "work_mode": snapshot})
 
+    @app.get("/api/turn-metrics")
+    def turn_metrics_get():
+        from .config_api import read_turn_metrics_config
+        try:
+            return jsonify(read_turn_metrics_config())
+        except Exception as e:  # pragma: no cover - defensive
+            return jsonify({"error": str(e)}), 500
+
+    @app.post("/api/turn-metrics")
+    def turn_metrics_set():
+        from .config_api import write_turn_metrics_config
+        body = request.get_json(silent=True) or {}
+        try:
+            snapshot = write_turn_metrics_config(body)
+        except Exception as e:  # pragma: no cover - defensive
+            return jsonify({"error": str(e)}), 500
+        return jsonify({"ok": True, "turn_metrics": snapshot})
+
     @app.post("/api/permission/respond")
     def permission_respond():
         body = request.get_json(silent=True) or {}

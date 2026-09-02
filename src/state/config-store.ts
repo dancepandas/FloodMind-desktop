@@ -62,6 +62,18 @@ export function isWorkMode(v: unknown): v is WorkMode {
   return typeof v === "string" && (WORK_MODES as string[]).includes(v);
 }
 
+/** Turn-fold summary-bar metric visibility (persisted in desktop.turnMetrics). */
+export interface TurnMetrics {
+  showDuration: boolean;
+  showToolCount: boolean;
+  showTokens: boolean;
+}
+export const DEFAULT_TURN_METRICS: TurnMetrics = {
+  showDuration: true,
+  showToolCount: true,
+  showTokens: true,
+};
+
 /** Merge providers returned by the backend with the curated provider list.
  *  Authoritative: saved model list wins (this is what makes "delete a model"
  *  stick); curated defaults are seeded only when a provider is absent from
@@ -131,6 +143,13 @@ interface ConfigState {
   workModeSaving: boolean;
   workModeSavedAt: number | null;
   workModeError: string | null;
+  // turn-metrics slice (summary-bar metric visibility)
+  turnMetrics: TurnMetrics;
+  turnMetricsLoading: boolean;
+  turnMetricsSaving: boolean;
+  turnMetricsError: string | null;
+  loadTurnMetrics: () => Promise<void>;
+  saveTurnMetrics: (metrics: TurnMetrics) => Promise<boolean>;
   load: () => Promise<void>;
   save: (form: ModelForm) => Promise<boolean>;
   clearSaved: () => void;
@@ -180,6 +199,11 @@ export const useConfigStore = create<ConfigState>((set) => ({
   workModeSaving: false,
   workModeSavedAt: null,
   workModeError: null,
+  // turn-metrics slice
+  turnMetrics: DEFAULT_TURN_METRICS,
+  turnMetricsLoading: false,
+  turnMetricsSaving: false,
+  turnMetricsError: null,
 
   async load() {
     set({ loading: true, error: null });
@@ -504,6 +528,63 @@ export const useConfigStore = create<ConfigState>((set) => ({
       return true;
     } catch {
       set({ workModeSaving: false, workModeError: "无法连接到 sidecar" });
+      return false;
+    }
+  },
+
+  async loadTurnMetrics() {
+    set({ turnMetricsLoading: true, turnMetricsError: null });
+    try {
+      const b = await getBaseUrl();
+      const r = await fetch(`${b}/api/turn-metrics`);
+      if (!r.ok) {
+        set({ turnMetricsLoading: false, turnMetricsError: "加载显示设置失败" });
+        return;
+      }
+      const data = await r.json();
+      set({
+        turnMetrics: {
+          showDuration: data.show_duration !== false,
+          showToolCount: data.show_tool_count !== false,
+          showTokens: data.show_tokens !== false,
+        },
+        turnMetricsLoading: false,
+      });
+    } catch {
+      set({ turnMetricsLoading: false, turnMetricsError: "无法连接到 sidecar" });
+    }
+  },
+
+  async saveTurnMetrics(metrics: TurnMetrics) {
+    set({ turnMetricsSaving: true, turnMetricsError: null });
+    try {
+      const b = await getBaseUrl();
+      const r = await fetch(`${b}/api/turn-metrics`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          show_duration: metrics.showDuration,
+          show_tool_count: metrics.showToolCount,
+          show_tokens: metrics.showTokens,
+        }),
+      });
+      if (!r.ok) {
+        set({ turnMetricsSaving: false, turnMetricsError: "保存失败" });
+        return false;
+      }
+      const data = await r.json();
+      const snap = data.turn_metrics ?? {};
+      set({
+        turnMetrics: {
+          showDuration: snap.show_duration !== false,
+          showToolCount: snap.show_tool_count !== false,
+          showTokens: snap.show_tokens !== false,
+        },
+        turnMetricsSaving: false,
+      });
+      return true;
+    } catch {
+      set({ turnMetricsSaving: false, turnMetricsError: "无法连接到 sidecar" });
       return false;
     }
   },

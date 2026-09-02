@@ -313,6 +313,31 @@ def _set_skill_status(skill_md: str, status: str) -> str:
     return "\n".join(lines) if changed else skill_md
 
 
+def _context_preview(s: str, max_len: int = 120) -> str:
+    """Short single-line preview of a context payload for the fold bar."""
+    text = (s or "").replace("\n", " ").strip()
+    return text[:max_len] + "…" if len(text) > max_len else text
+
+
+def _context_event(t: str, raw: dict) -> dict:
+    """Map SDK context-injection events to a single ``context`` block type.
+
+    context_compress* = history compaction; attachment_context = image
+    attachment injection. ``label`` is human-readable; ``content`` is a short
+    preview the fold bar can surface without rendering the full payload.
+    """
+    if t == "attachment_context":
+        images = raw.get("images") or []
+        count = len(images) if isinstance(images, list) else 0
+        return {"type": "context", "label": "上下文注入",
+                "content": f"附图片 {count} 张" if count else "注入附件上下文"}
+    label = "上下文压缩"
+    content = _context_preview(
+        raw.get("summary_preview") or raw.get("summary") or raw.get("content") or ""
+    )
+    return {"type": "context", "label": label, "content": content}
+
+
 def translate_event(raw: dict) -> list[dict]:
     """Map one raw SDK event to zero-or-more sidecar-schema events.
 
@@ -365,13 +390,25 @@ def translate_event(raw: dict) -> list[dict]:
         # llm_token_error fires on out-of-balance LLM accounts; artifact_warning
         # on artifact problems. Surface both as user-visible errors.
         return [{"type": "error", "content": raw.get("content", "")}]
+    if t == "llm_step_start":
+        # Preserve the SDK's exact internal LLM-iteration boundary. The frontend
+        # uses this to move the previous round into the turn summary fold.
+        return [{"type": "round_start", "iteration": raw.get("iteration", 0)}]
+    if t == "llm_step_end":
+        # Forward the step's finish_reason so the frontend can locate the final
+        # answer (reason="stop") and label the turn (aborted / max_tokens / error
+        # / timeout / filtered / refused / unknown). reason="tool_calls" is an
+        # intermediate step the reducer ignores.
+        return [{"type": "finish", "reason": raw.get("finish_reason", "")}]
+    if t in ("context_compress", "context_compress_start", "context_compress_done",
+             "attachment_context"):
+        return [_context_event(t, raw)]
 
-    # Noisy or redundant events we intentionally drop. context_compress is the
-    # type the agent actually emits (the *_start/*_done variants are defined
-    # but never called).
-    if t in ("heartbeat", "final_text", "llm_step_start", "llm_step_end",
-             "context_compress", "context_compress_start", "context_compress_done",
-             "permission_resolved", "retry_attempt", "system", "attachment_context",
+    # Noisy or redundant events we intentionally drop. final_text re-sends the
+    # accumulated answer_delta content (the frontend already streamed it), so
+    # final-answer location is driven by llm_step_end's finish_reason instead.
+    if t in ("heartbeat", "final_text",
+             "permission_resolved", "retry_attempt", "system",
              "memory_status"):
         return []
 
@@ -392,7 +429,7 @@ class FloodMindAgent:
         # The desktop can start before the user has configured an API key.
         # Degrade gracefully: the agent stays unbuilt until reload_model() succeeds
         # (e.g. after the user fills in the Settings GUI and saves).
-        self._resolved_context_window = 32768  # safe fallback, updated by _resolve_llm
+        self._resolved_context_window = 256000  # safe fallback, updated by _resolve_llm
         try:
             self._llm = self._resolve_llm()
         except Exception as e:
@@ -1367,13 +1404,14 @@ class FloodMindAgent:
     # ── main entry ─────────────────────────────────────────────
     # ── 诊断 (诊断与透明) ─────────────────────────────────────
     def diagnostics(self) -> dict:
-        """聚合诊断信息：模型 codec 路由 + 工具目录(已加载/只读/破坏) + 上下文块/token。
+        """聚合诊断摘要：模型 codec 路由 + 工具加载统计 + 上下文块/token。
 
         只读，访问 agent 私有成员（既有外层壳模式），失败时返回空结构，绝不 500。
+        工具定义的描述、参数和风险属性属于按需详情，不进入默认诊断响应。
         """
         out = {
             "model": {"codec": "", "conservative": False, "model": "", "provider": "", "base_url": ""},
-            "tools": {"mode": "", "max_loaded": 0, "total": 0, "loaded": 0, "items": []},
+            "tools": {"mode": "", "max_loaded": 0, "total": 0, "loaded": 0},
             "context": {"estimated_tokens": 0, "blocks": []},
         }
         try:
@@ -1393,27 +1431,18 @@ class FloodMindAgent:
                 "provider": provider,
                 "base_url": base_url,
             }
-            # 工具目录 + 渐进加载状态
+            # 工具渐进加载摘要。完整定义由 GetTool 按需提供，不在设置页传输。
             registry = getattr(raw, "_orchestrator_registry", None)
             loader = getattr(raw, "_orchestrator_tool_loader", None)
             if registry is not None:
+                tools = list(registry.all())
+                registered_names = {tool.name for tool in tools}
                 loaded = set(getattr(loader, "loaded_tools", set())) if loader else set()
-                items = []
-                for t in registry.all():
-                    items.append({
-                        "name": t.name,
-                        "description": (t.description or "")[:120],
-                        "is_readonly": bool(getattr(t, "is_readonly", True)),
-                        "is_destructive": bool(getattr(t, "is_destructive", False)),
-                        "loaded": t.name in loaded,
-                    })
-                items.sort(key=lambda x: (not x["loaded"], x["name"]))
                 out["tools"] = {
                     "mode": getattr(loader, "mode", "") if loader else "",
                     "max_loaded": int(getattr(getattr(loader, "config", None), "max_loaded_tools", 0)) if loader else 0,
-                    "total": len(items),
-                    "loaded": len(loaded),
-                    "items": items,
+                    "total": len(tools),
+                    "loaded": len(loaded & registered_names),
                 }
             # 上下文块 + token 估算
             ctx = getattr(raw, "_context_runtime", None)

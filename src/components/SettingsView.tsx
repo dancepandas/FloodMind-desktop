@@ -16,14 +16,16 @@ export default function SettingsView() {
   return (
     <div className="page">
       <PageHeader title="设置" />
-      <div className="page-body settings-layout">
+      <div className={`page-body settings-layout${tab === "model" ? " model-settings-layout" : ""}`}>
         <SettingsNav active={tab} onChange={setTab} />
-        <div className="settings-content">
+        <div className={`settings-content${tab === "model" ? " model-settings-content" : ""}`}>
           {tab === "model" && <ModelTab />}
           {tab === "identity" && <IdentityTab />}
           {tab === "rules" && <RulesTab />}
           {tab === "permissions" && <PermissionsTab />}
+          {tab === "display" && <DisplayTab />}
           {tab === "feedback" && <FeedbackTab />}
+          {tab === "plugins" && <PluginsTab />}
           {tab === "diagnostics" && <DiagnosticsTab />}
         </div>
       </div>
@@ -46,7 +48,6 @@ function ModelTab() {
   const error = useConfigStore((s) => s.error);
   const load = useConfigStore((s) => s.load);
   const save = useConfigStore((s) => s.save);
-  const switchActive = useConfigStore((s) => s.switchActive);
   const testConnection = useConfigStore((s) => s.testConnection);
   const fetchRemoteModels = useConfigStore((s) => s.fetchRemoteModels);
   const clearSaved = useConfigStore((s) => s.clearSaved);
@@ -54,6 +55,7 @@ function ModelTab() {
 
   const [form, setForm] = useState<Record<string, ProviderFormEntry>>({});
   const [order, setOrder] = useState<string[]>([]);
+  const [draftDefault, setDraftDefault] = useState<{ provider: string; model: string } | null>(null);
   const [selectedId, setSelectedId] = useState<string>("");
   const [testing, setTesting] = useState<Record<string, boolean>>({});
   const [testResult, setTestResult] = useState<Record<string, { ok: boolean; error: string | null } | null>>({});
@@ -93,7 +95,8 @@ function ModelTab() {
       nextOrder.push(saved.id);
     }
     setForm(next); setOrder(nextOrder);
-  }, [model, providers, clearSaved]);
+    setDraftDefault(model.provider && model.model ? { provider: model.provider, model: model.model } : null);
+  }, [providers, clearSaved]);
 
   useEffect(() => {
     if (selectedId && form[selectedId]) return;
@@ -114,6 +117,7 @@ function ModelTab() {
   function removeModel(id: string, name: string) {
     clearSaved();
     setForm((f) => { const p = f[id]; if (!p) return f; return { ...f, [id]: { ...p, models: p.models.filter((m) => m.name !== name) } }; });
+    setDraftDefault((current) => current?.provider === id && current.model === name ? null : current);
   }
 
   async function onTest(id: string) {
@@ -139,6 +143,7 @@ function ModelTab() {
       // 覆盖语义：该地址返回空列表 → 清空旧的（旧列表来自其他地址，留着会误导）。
       clearSaved();
       setForm((f) => { const pp = f[id]; if (!pp) return f; return { ...f, [id]: { ...pp, models: [] } }; });
+      setDraftDefault((current) => current?.provider === id ? null : current);
       setFetchResult({ ok: false, message: "该服务商未返回可用模型（列表已清空）" });
       return;
     }
@@ -152,25 +157,39 @@ function ModelTab() {
       const pp = f[id]; if (!pp) return f;
       return { ...f, [id]: { ...pp, models: fresh } };
     });
+    setDraftDefault((current) =>
+      current?.provider === id && !fresh.some((m) => m.name === current.model) ? null : current
+    );
     setFetchResult({ ok: true, message: `已拉取 ${fresh.length} 个模型` });
   }
 
-  async function onSetDefault(id: string, name: string) {
-    const ok = await switchActive(id, name);
-    if (!ok) showToast("设置默认模型失败");
+  function onSetDefault(id: string, name: string) {
+    clearSaved();
+    setDraftDefault({ provider: id, model: name });
   }
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (!draftDefault) {
+      showToast("请先选择默认模型");
+      return;
+    }
+    const selectedProvider = form[draftDefault.provider];
+    const defaultExists = selectedProvider?.models.some((m) => m.name === draftDefault.model) ?? false;
+    const savedProvider = providers.find((p) => p.id === draftDefault.provider);
+    const defaultEligible = draftDefault.provider === "ollama" || !!savedProvider?.apiKeyPresent || !!selectedProvider?.apiKey.trim();
+    if (!defaultExists || !defaultEligible) {
+      showToast(defaultExists ? "请先配置默认模型的 API Key" : "请重新选择默认模型");
+      return;
+    }
     const enabledList: { provider: string; model: string }[] = [];
     for (const id of order) { const p = form[id]; if (!p) continue; for (const m of p.models) enabledList.push({ provider: id, model: m.name }); }
-    const resolved = useConfigStore.getState().resolveActiveModel(null);
     const providerList = order.map((id) => form[id]).filter((p): p is ProviderFormEntry => !!p && !!p.id);
-    await save({ provider: resolved?.provider ?? "", model: resolved?.model ?? "", enabledModels: enabledList, providers: providerList });
+    await save({ provider: draftDefault.provider, model: draftDefault.model, enabledModels: enabledList, providers: providerList });
   }
 
   return (
-    <>
+    <div className="model-tab">
       {envOverrides.length > 0 && <div className="env-warn">⚠ 以下环境变量正在覆盖配置文件，GUI 修改不会生效：{envOverrides.join(", ")}</div>}
       {error && <div className="env-warn error">{error}</div>}
       {savedAt && <div className={reloadFailed ? "env-warn" : "save-ok"}>{reloadFailed ? "⚠ 已保存，但热重载失败——重启后生效" : "✓ 已保存并重载模型"}</div>}
@@ -244,9 +263,9 @@ function ModelTab() {
                     <>
                       <div className="model-rows">
                         {(modelShowAll ? selected.models : selected.models.slice(0, MODEL_VISIBLE_LIMIT)).map((m) => {
-                          const isDefault = model?.provider === selectedId && model?.model === m.name;
+                          const isDefault = draftDefault?.provider === selectedId && draftDefault.model === m.name;
                           const isLocal = selectedId === "ollama";
-                          const canDefault = selectedKeyPresent || isLocal;
+                          const canDefault = selectedKeyPresent || !!selected.apiKey.trim() || isLocal;
                           return (
                             <div key={m.name} className={`model-row${isDefault ? " default" : ""}`}>
                               <span className="model-name">{m.name}</span>
@@ -277,7 +296,7 @@ function ModelTab() {
           <button className="save-btn" type="submit" disabled={saving}>{saving ? "保存中…" : "保存并重载"}</button>
         </div>
       </form>
-    </>
+    </div>
   );
 }
 
@@ -473,6 +492,61 @@ function ExternalPathsSection() {
   );
 }
 
+/* ── 显示 tab：回合折叠摘要指标开关 ──────────────────────────── */
+function DisplayTab() {
+  const metrics = useConfigStore((s) => s.turnMetrics);
+  const loading = useConfigStore((s) => s.turnMetricsLoading);
+  const saving = useConfigStore((s) => s.turnMetricsSaving);
+  const error = useConfigStore((s) => s.turnMetricsError);
+  const loadTurnMetrics = useConfigStore((s) => s.loadTurnMetrics);
+  const saveTurnMetrics = useConfigStore((s) => s.saveTurnMetrics);
+  const [draft, setDraft] = useState(metrics);
+
+  useEffect(() => { loadTurnMetrics(); }, [loadTurnMetrics]);
+  useEffect(() => { setDraft(metrics); }, [metrics]);
+
+  const dirty =
+    draft.showDuration !== metrics.showDuration ||
+    draft.showToolCount !== metrics.showToolCount ||
+    draft.showTokens !== metrics.showTokens;
+  const patch = (p: Partial<typeof draft>) => setDraft((d) => ({ ...d, ...p }));
+
+  if (loading) return <div className="cat-empty">加载中…</div>;
+  return (
+    <div className="settings-form">
+      <p className="persona-hint">回合完成后折叠栏上展示哪些摘要指标。仅在有足够数据可计算时才显示对应项。</p>
+      {error && <div className="env-warn error">{error}</div>}
+      <div className="field">
+        <span className="field-label">回合摘要指标</span>
+        <label className="toggle" style={{ marginBottom: "0.35rem" }}>
+          <input type="checkbox" checked={draft.showDuration} onChange={(e) => patch({ showDuration: e.target.checked })} disabled={saving} />
+          <span>
+            <strong>耗时</strong>
+            <span style={{ display: "block", fontSize: "12px", color: "var(--muted)", marginTop: "0.1rem" }}>回合开始到结束的经过时间</span>
+          </span>
+        </label>
+        <label className="toggle" style={{ marginBottom: "0.35rem" }}>
+          <input type="checkbox" checked={draft.showToolCount} onChange={(e) => patch({ showToolCount: e.target.checked })} disabled={saving} />
+          <span>
+            <strong>工具调用次数</strong>
+            <span style={{ display: "block", fontSize: "12px", color: "var(--muted)", marginTop: "0.1rem" }}>本回合调用工具的总次数</span>
+          </span>
+        </label>
+        <label className="toggle">
+          <input type="checkbox" checked={draft.showTokens} onChange={(e) => patch({ showTokens: e.target.checked })} disabled={saving} />
+          <span>
+            <strong>输入 / 输出 token</strong>
+            <span style={{ display: "block", fontSize: "12px", color: "var(--muted)", marginTop: "0.1rem" }}>提示与补全的 token 用量</span>
+          </span>
+        </label>
+      </div>
+      <button className="save-btn" type="button" disabled={!dirty || saving} onClick={() => saveTurnMetrics(draft)}>
+        {saving ? "保存中…" : "保存"}
+      </button>
+    </div>
+  );
+}
+
 /* ── 规则 tab：全局 AGENTS.md ────────────────────────────────── */
 function RulesTab() {
   const agents = useConfigStore((s) => s.agents);
@@ -611,10 +685,101 @@ function FeedbackTab() {
   );
 }
 
-/* ── 诊断 tab：模型 codec + 工具目录 + 上下文块/token ── */
+/* ── 插件 tab：Python 原生扩展管理（高级功能，从工作台移入） ── */
+interface PluginInfo {
+  name: string;
+  version: string;
+  description: string;
+  source: string;
+  kind: "file" | "dir";
+  disabled: boolean;
+}
+
+function PluginsTab() {
+  const [plugins, setPlugins] = useState<PluginInfo[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  const load = async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const base = await getBaseUrl();
+      const r = await fetch(`${base}/api/plugins`);
+      if (!r.ok) throw new Error(`status ${r.status}`);
+      setPlugins((await r.json()).plugins ?? []);
+    } catch (e) {
+      setError(`加载插件失败：${(e as Error).message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { void load(); }, []);
+
+  const toggle = async (p: PluginInfo) => {
+    try {
+      const base = await getBaseUrl();
+      const r = await fetch(`${base}/api/plugins/disabled`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ source: p.source, disabled: !p.disabled }),
+      });
+      if (r.ok) await load();
+    } catch (e) {
+      setError(`操作失败：${(e as Error).message}`);
+    }
+  };
+
+  return (
+    <div className="settings-form plugins-tab">
+      <p className="persona-hint">
+        插件是 Python 原生扩展，引擎启动时自动加载，可注册新工具和事件 hook。
+        将插件放入 <code>~/.floodmind/plugins/</code>（单文件 .py 或含 plugin.json 的目录）即可被识别。
+      </p>
+
+      <div className="plugin-warning">
+        ⚠️ 插件是<b>受信代码</b>——加载时会执行任意 Python。请只安装你信任来源的插件。
+        启用/禁用会在下次发送任务时生效。
+      </div>
+
+      {error && <div className="blk blk-error">⚠️ {error}</div>}
+      {loading && <div className="empty-hint">加载中…</div>}
+      {!loading && plugins.length === 0 && <div className="empty-hint">暂无插件。</div>}
+
+      <div className="plugin-list">
+        {plugins.map((p) => (
+          <div className={`plugin-card ${p.disabled ? "disabled" : ""}`} key={p.source}>
+            <div className="plugin-card-head">
+              <span className="plugin-name">{p.name}</span>
+              {p.version && <span className="cat-tag">v{p.version}</span>}
+              <span className="plugin-kind">{p.kind === "dir" ? "目录插件" : "单文件"}</span>
+              <span className={`plugin-state ${p.disabled ? "off" : "on"}`}>
+                {p.disabled ? "已禁用" : "已启用"}
+              </span>
+            </div>
+            {p.description && <div className="plugin-desc">{p.description}</div>}
+            <div className="plugin-source" title={p.source}>{p.source}</div>
+            <div className="plugin-actions">
+              <button
+                className={p.disabled ? "btn-primary" : "btn-secondary"}
+                onClick={() => toggle(p)}
+                type="button"
+              >
+                {p.disabled ? "启用" : "禁用"}
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ── 诊断 tab：模型 codec + 工具加载摘要 + 上下文块/token ── */
 interface DiagnosticsData {
   model: { codec: string; conservative: boolean; model: string; provider: string; base_url: string };
-  tools: { mode: string; max_loaded: number; total: number; loaded: number; items: { name: string; description: string; is_readonly: boolean; is_destructive: boolean; loaded: boolean }[] };
+  tools: { mode: string; max_loaded: number; total: number; loaded: number };
   context: { estimated_tokens: number; blocks: { label: string; priority: number; chars: number }[] };
 }
 
@@ -662,18 +827,10 @@ function DiagnosticsTab() {
       </section>
 
       <section>
-        <h3>工具目录（已加载 {tools.loaded}/{tools.total} · 模式 {tools.mode}）</h3>
-        {tools.items.length === 0 && <div className="empty-hint">无工具</div>}
-        <ul className="diag-tools">
-          {tools.items.map((t) => (
-            <li key={t.name} className={t.loaded ? "loaded" : ""}>
-              <span className="diag-tool-name">{t.name}</span>
-              {t.is_destructive ? <span className="diag-badge danger">破坏性</span> : t.is_readonly ? <span className="diag-badge ro">只读</span> : <span className="diag-badge">写</span>}
-              {!t.loaded && <span className="diag-badge off">未加载</span>}
-              <span className="diag-tool-desc">{t.description}</span>
-            </li>
-          ))}
-        </ul>
+        <h3>工具运行</h3>
+        <div className="diag-row"><span className="diag-key">加载状态</span><span>{tools.loaded}/{tools.total}</span></div>
+        <div className="diag-row"><span className="diag-key">加载模式</span><span>{tools.mode || "—"}</span></div>
+        <div className="diag-row"><span className="diag-key">加载上限</span><span>{tools.max_loaded || "—"}</span></div>
       </section>
 
       <section>

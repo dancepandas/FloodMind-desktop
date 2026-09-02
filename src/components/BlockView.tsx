@@ -53,10 +53,18 @@ function firstLine(s: string, max = 80): string {
 }
 
 /* ── Thinking ────────────────────────────────────────────── */
-function ThinkingBlock({ block, isLive }: { block: Extract<Block, { kind: "thinking" }>; isLive: boolean }) {
+function ThinkingBlock({
+  block,
+  isLive,
+  forceExpanded = false,
+}: {
+  block: Extract<Block, { kind: "thinking" }>;
+  isLive: boolean;
+  forceExpanded?: boolean;
+}) {
   // 思考过程默认折叠（streaming 时也折叠）；折叠态用动态「正在思考…」指示，
-  // 点击展开查看具体思考内容。
-  const [collapsed, toggle] = useCollapse(true, false);
+  // 点击展开查看具体思考内容。历史过程可按调用方需要强制展开。
+  const [collapsed, toggle] = useCollapse(true, forceExpanded);
   return (
     <div className="blk blk-thinking">
       <button className="blk-chip" onClick={toggle} type="button" aria-expanded={!collapsed}>
@@ -74,8 +82,8 @@ function ThinkingBlock({ block, isLive }: { block: Extract<Block, { kind: "think
 
 /* ── Tool ────────────────────────────────────────────────── */
 function ToolBlock({ block, isLive }: { block: Extract<Block, { kind: "tool" }>; isLive: boolean }) {
-  // 工具调用默认折叠：只显示「调用工具…」指示（运行中省略号动画），
-  // 点击展开才显示具体工具名/参数/输出。
+  // 工具行固定为「工具调用 + 工具名 + 参数」一行，放不下自动省略号；
+  // 点击展开才显示完整参数/输出。
   const [collapsed, toggle] = useCollapse(true, false);
   const args = (block.input || "").replace(/\s+/g, " ").trim();
   const hasDetail = !!(block.input || block.output);
@@ -95,20 +103,15 @@ function ToolBlock({ block, isLive }: { block: Extract<Block, { kind: "tool" }>;
             toggle();
           }
         }}
-        style={{ cursor: "pointer" }}
+        style={{ cursor: hasDetail ? "pointer" : "default" }}
       >
         <span className={`sdot sdot-${dot}`} />
-        {collapsed ? (
-          <span className={running ? "live-label" : undefined}>
-            调用工具{running && <span className="live-dots" />}
-          </span>
-        ) : (
-          <>
-            <span className="tname">{block.tool_name}</span>
-            {args && <span className="targs">{args.length > 60 ? args.slice(0, 60) + "…" : args}</span>}
-            <span className="tstat">{block.status}</span>
-          </>
-        )}
+        <span className="tool-line">
+          工具调用 {block.tool_name}
+          {args ? ` ${args}` : ""}
+          {running && <span className="live-dots" aria-hidden="true" />}
+        </span>
+        {!collapsed && <span className="tstat">{block.status}</span>}
       </div>
       {!collapsed && hasDetail && (
         <div className="tool-detail">
@@ -324,6 +327,16 @@ function PermissionBlock({ block }: { block: Extract<Block, { kind: "permission"
   );
 }
 
+/* ── Context (history compaction / attachment injection) ──── */
+function ContextBlock({ block }: { block: Extract<Block, { kind: "context" }> }) {
+  return (
+    <div className="blk blk-context">
+      <span className="context-label">{block.label}</span>
+      {block.content && <span className="context-content">{block.content}</span>}
+    </div>
+  );
+}
+
 function ErrorBlock({ block }: { block: Extract<Block, { kind: "error" }> }) {
   return <div className="blk blk-error">✗ {block.content}</div>;
 }
@@ -331,13 +344,16 @@ function ErrorBlock({ block }: { block: Extract<Block, { kind: "error" }> }) {
 export default function BlockView({
   block,
   isLive,
+  forceExpanded = false,
 }: {
   block: Block;
   isLive: boolean;
+  /** Allow a parent disclosure to reveal thinking detail immediately. */
+  forceExpanded?: boolean;
 }) {
   switch (block.kind) {
     case "thinking":
-      return <ThinkingBlock block={block} isLive={isLive} />;
+      return <ThinkingBlock block={block} isLive={isLive} forceExpanded={forceExpanded} />;
     case "tool":
       return <ToolBlock block={block} isLive={isLive} />;
     case "text":
@@ -348,6 +364,8 @@ export default function BlockView({
       return <ArtifactBlock block={block} />;
     case "permission":
       return <PermissionBlock block={block} />;
+    case "context":
+      return <ContextBlock block={block} />;
     case "error":
       return <ErrorBlock block={block} />;
   }

@@ -22,7 +22,7 @@ export default function ContextRing() {
   const prompt =
     last?.role === "assistant" ? (last.usage?.prompt ?? 0) : 0;
 
-  const max = contextSize && contextSize > 0 ? contextSize : 128_000;
+  const max = contextSize && contextSize > 0 ? contextSize : 256_000;
   const pct = Math.min(prompt / max, 1);
 
   const dashOffset = CIRCUMFERENCE * (1 - pct);

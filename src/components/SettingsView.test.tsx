@@ -10,6 +10,10 @@ vi.mock("../state/chat-store", () => ({
   useChatStore: (selector: (s: any) => any) => selector({ streaming: false }),
 }));
 
+vi.mock("../lib/sidecar-client", () => ({
+  getBaseUrl: vi.fn(async () => "http://sidecar.test"),
+}));
+
 vi.mock("../lib/log-capture", () => ({
   getRecentLogs: vi.fn(() => []),
 }));
@@ -63,6 +67,7 @@ describe("SettingsView tabs", () => {
     expect(html).toContain("规则");
     expect(html).toContain("权限");
     expect(html).toContain("问题反馈");
+    expect(html).toContain("插件");
   });
 
   it("switches tabs via left navigation", () => {
@@ -77,6 +82,84 @@ describe("SettingsView tabs", () => {
     fireEvent.click(tabs[0]);
     expect(screen.getByLabelText("问题描述")).toBeInTheDocument();
     expect(screen.getByText(/附带近期运行日志/)).toBeInTheDocument();
+  });
+});
+
+describe("SettingsView plugins tab", () => {
+  const fetchStub = vi.fn(async (url: string, _init?: RequestInit) => {
+    if (typeof url === "string" && url.endsWith("/api/plugins/disabled")) {
+      return { ok: true, json: async () => ({ ok: true }) } as Response;
+    }
+    return {
+      ok: true,
+      json: async () => ({
+        plugins: [{
+          name: "demo", version: "1.0", description: "演示插件",
+          source: "C:/plugins/demo.py", kind: "file", disabled: false,
+        }],
+      }),
+    } as Response;
+  });
+
+  beforeEach(() => {
+    fetchStub.mockClear();
+    vi.stubGlobal("fetch", fetchStub);
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    cleanup();
+  });
+
+  it("lists discovered plugins and disables them in place", async () => {
+    render(<SettingsView />);
+    fireEvent.click(screen.getByRole("tab", { name: /插件/ }));
+
+    expect(await screen.findByText("demo")).toBeInTheDocument();
+    expect(screen.getByText("演示插件")).toBeInTheDocument();
+    expect(screen.getByText("已启用")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "禁用" }));
+    await waitFor(() =>
+      expect(fetchStub).toHaveBeenCalledWith(
+        expect.stringContaining("/api/plugins/disabled"),
+        expect.objectContaining({ method: "POST" }),
+      ),
+    );
+  });
+});
+
+describe("SettingsView diagnostics summary", () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        model: { codec: "OpenAI", conservative: false, model: "m", provider: "p", base_url: "https://example.com" },
+        tools: {
+          mode: "progressive", max_loaded: 6, total: 50, loaded: 6,
+          items: [
+            { name: "Bash", description: "[必填] command: 不应该展示的长说明", is_readonly: false, is_destructive: true, loaded: true },
+            { name: "mcp_secret", description: "[MCP:demo] 不应该展示的工具详情", is_readonly: false, is_destructive: true, loaded: false },
+          ],
+        },
+        context: { estimated_tokens: 154, blocks: [{ label: "system_env", priority: 1, chars: 120 }] },
+      }),
+    })));
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    cleanup();
+  });
+
+  it("shows aggregate tool health without rendering the tool catalog", async () => {
+    render(<SettingsView />);
+    fireEvent.click(screen.getByRole("tab", { name: /诊断/ }));
+
+    expect(await screen.findByText("工具运行")).toBeInTheDocument();
+    expect(screen.getByText("6/50")).toBeInTheDocument();
+    expect(screen.getByText("progressive")).toBeInTheDocument();
+    expect(screen.getByText("154 tokens", { exact: false })).toBeInTheDocument();
+    expect(screen.queryByText("Bash")).toBeNull();
+    expect(screen.queryByText(/不应该展示/)).toBeNull();
   });
 });
 
@@ -228,6 +311,66 @@ describe("SettingsView model fetch overwrites instead of appending", () => {
   });
   afterEach(() => cleanup());
 
+  it("lets draft credentials select a fetched default before the first save", async () => {
+    const save = vi.fn(async () => true);
+    const switchActive = vi.fn(async () => true);
+    useConfigStore.setState({
+      model: { provider: "qwen", model: "qwen-old", temperature: 0.3, maxTokens: 4096, enableReasoning: false, enableSearch: false, supportsVision: false },
+      providers: [{
+        id: "openai", name: "OpenAI 兼容", baseURL: "", apiKeyPresent: false, models: [],
+      }],
+      load: vi.fn(), save, clearSaved: vi.fn(), switchActive,
+      testConnection: vi.fn(async () => ({ ok: true, error: null })),
+      fetchRemoteModels: vi.fn(async () => ({ ok: true, models: ["draft-model"], error: null })),
+    } as any);
+
+    render(<SettingsView />);
+    fireEvent.click(screen.getByRole("button", { name: /OpenAI 兼容/ }));
+    fireEvent.change(screen.getByPlaceholderText("https://api.example.com/v1"), {
+      target: { value: "https://draft.example.com/v1" },
+    });
+    fireEvent.change(screen.getByPlaceholderText("输入 API Key"), {
+      target: { value: "draft-secret" },
+    });
+    fireEvent.click(screen.getByText("↻ 拉取模型"));
+
+    const defaultButton = await screen.findByRole("button", { name: "设为默认" });
+    expect(defaultButton).toBeEnabled();
+    fireEvent.click(defaultButton);
+    expect(screen.getByText("默认")).toBeInTheDocument();
+    expect(switchActive).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: /保存并重载/ }));
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+    const payload = (save.mock.calls as any[][])[0][0];
+    expect(payload).toMatchObject({ provider: "openai", model: "draft-model" });
+    expect(payload.enabledModels).toContainEqual({ provider: "openai", model: "draft-model" });
+    expect(payload.providers.find((p: any) => p.id === "openai")).toMatchObject({
+      baseURL: "https://draft.example.com/v1", apiKey: "draft-secret",
+      models: [expect.objectContaining({ name: "draft-model" })],
+    });
+  });
+
+  it("invalidates a draft default removed by a successful fetch overwrite", async () => {
+    const fetchRemoteModels = vi.fn()
+      .mockResolvedValueOnce({ ok: true, models: ["replacement"], error: null })
+      .mockResolvedValueOnce({ ok: true, models: ["newer"], error: null });
+    useConfigStore.setState({
+      fetchRemoteModels,
+      save: vi.fn(async () => true),
+    } as any);
+    render(<SettingsView />);
+    fireEvent.click(screen.getByRole("button", { name: /OpenAI 兼容/ }));
+    fireEvent.click(screen.getByText("↻ 拉取模型"));
+    await screen.findByText("replacement");
+    fireEvent.click(screen.getByRole("button", { name: "设为默认" }));
+    expect(screen.getByText("默认")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("↻ 拉取模型"));
+    await screen.findByText("newer");
+    expect(screen.queryByText("默认")).toBeNull();
+  });
+
   it("replaces the provider's model list with the fetched list (deduped)", async () => {
     render(<SettingsView />);
     fireEvent.click(screen.getByRole("button", { name: /OpenAI 兼容/ }));
@@ -254,6 +397,11 @@ describe("SettingsView model fetch overwrites instead of appending", () => {
     // Only the first 80 render by default; the rest are behind a toggle.
     expect(screen.getAllByRole("button", { name: /设为默认/ })).toHaveLength(80);
     expect(screen.getByText(/显示全部 200 个模型/)).toBeInTheDocument();
+    const saveBar = screen.getByRole("button", { name: /保存并重载/ }).closest(".model-save-bar");
+    const detail = screen.getByText(/显示全部 200 个模型/).closest(".provider-detail");
+    expect(saveBar).not.toBeNull();
+    expect(detail).not.toBeNull();
+    expect(detail?.contains(saveBar)).toBe(false);
   });
 
   it("clears the list when the endpoint returns no models (stale must not persist)", async () => {

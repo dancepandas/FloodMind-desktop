@@ -28,7 +28,7 @@ import os
 from typing import Any
 
 # Sensible fallbacks for unknown / custom / local models.
-_DEFAULT_CONTEXT_WINDOW = 32_768
+_DEFAULT_CONTEXT_WINDOW = 256_000
 _DEFAULT_MAX_OUTPUT = 65_536
 
 # ── Load the metadata table from JSON ─────────────────────────

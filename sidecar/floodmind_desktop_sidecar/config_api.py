@@ -47,7 +47,7 @@ _ENV_VARS = [
 # default_max_tokens whenever it is present.
 DEFAULT_TEMPERATURE = 0.3
 DEFAULT_MAX_TOKENS = 65_536
-DEFAULT_CONTEXT_WINDOW = 32_768
+DEFAULT_CONTEXT_WINDOW = 256_000
 
 
 # ── Paths & raw load ─────────────────────────────────────────
@@ -566,6 +566,34 @@ def write_work_mode_config(body: dict[str, Any]) -> dict:
     raw["desktop"] = desktop
     save_config(raw)
     return read_work_mode_config()
+
+
+_TURN_METRIC_KEYS = ("show_duration", "show_tool_count", "show_tokens")
+
+
+def read_turn_metrics_config() -> dict:
+    """Return the desktop turn-metrics display prefs (all default True)."""
+    raw = _load_raw_settings()
+    desktop = raw.get("desktop") if isinstance(raw.get("desktop"), dict) else {}
+    metrics = desktop.get("turnMetrics") if isinstance(desktop.get("turnMetrics"), dict) else {}
+    return {k: bool(metrics.get(k, True)) for k in _TURN_METRIC_KEYS}
+
+
+def write_turn_metrics_config(body: dict[str, Any]) -> dict:
+    """Persist the turn-metrics display prefs and return the new snapshot."""
+    from floodmind.config.settings import save_config
+
+    raw = _load_raw_settings()
+    desktop = raw.get("desktop") if isinstance(raw.get("desktop"), dict) else {}
+    desktop = dict(desktop)
+    metrics = dict(desktop.get("turnMetrics") or {})
+    for k in _TURN_METRIC_KEYS:
+        if k in body:
+            metrics[k] = bool(body[k])
+    desktop["turnMetrics"] = metrics
+    raw["desktop"] = desktop
+    save_config(raw)
+    return read_turn_metrics_config()
 
 
 # ── Connection probe & remote model listing ─────────────────

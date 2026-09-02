@@ -55,7 +55,8 @@ button:focus-visible,
 .composer .send:focus-visible,
 .ctx-pill:focus-visible,
 .permission-dismiss:focus-visible,
-.topbar-actions .icon-btn:focus-visible {
+.topbar-actions .icon-btn:focus-visible,
+.turn-fold-header:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
@@ -646,19 +647,6 @@ button:focus-visible,
   color: var(--accent);
 }
 
-.topbar-status-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.35rem;
-  padding: 0.18rem 0.55rem;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: var(--surface);
-  color: var(--fg-secondary);
-  font-size: 11.5px;
-  animation: status-pulse 1.5s ease-in-out infinite;
-}
-
 /* ── Conversation ───────────────────────────────────────── */
 .conversation {
   flex: 1;
@@ -781,19 +769,6 @@ button:focus-visible,
   font-size: 12px;
   font-weight: 600;
   color: var(--fg-secondary);
-}
-
-.assistant-status {
-  font-size: 11px;
-  color: var(--muted);
-  margin-left: 0.5rem;
-  font-weight: 400;
-  animation: status-pulse 1.5s ease-in-out infinite;
-}
-
-@keyframes status-pulse {
-  0%, 100% { opacity: 0.5; }
-  50% { opacity: 1; }
 }
 
 .stream-cursor {
@@ -1324,22 +1299,160 @@ button:focus-visible,
   gap: 0.2rem;
 }
 
-.show-process {
-  display: inline-block;
-  margin-top: 0.35rem;
-  background: transparent;
-  border: 1px dashed var(--border);
+/* ── 回合状态标签（完成态最终答复上方的「已停止 / 失败 / 达到最大 token」） ── */
+.turn-status-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  margin: 0 0 0.45rem;
+  padding: 0.15rem 0.6rem;
+  border: 1px solid var(--border);
   border-radius: 6px;
-  padding: 0.2rem 0.55rem;
-  color: var(--muted);
+  background: var(--surface-2);
+  color: var(--fg-secondary);
   font-family: var(--font-sans);
-  font-size: 11.5px;
+  font-size: 12px;
+}
+
+/* ── 回合折叠：与 dsh-turn-fold 一致的扁平摘要行 ── */
+.turn-fold {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  margin: 1px 0 2px;
+  box-sizing: border-box;
+  animation: turn-fold-enter 0.18s ease both;
+}
+
+.turn-fold-header {
+  display: block;
+  width: 100%;
+  min-height: 28px;
+  padding: 3px 4px;
+  box-sizing: border-box;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--fg-secondary);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 20px;
+  text-align: left;
+}
+
+button.turn-fold-header {
   cursor: pointer;
 }
 
-.show-process:hover {
-  color: var(--fg-secondary);
-  border-color: var(--muted);
+.turn-fold-label {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  min-width: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.turn-fold-metric {
+  display: inline-flex;
+  align-items: center;
+  white-space: nowrap;
+}
+
+.turn-fold-separator {
+  width: 1px;
+  height: 10px;
+  margin: 0 7px;
+  flex: 0 0 auto;
+  background: var(--border);
+}
+
+.turn-fold-chevron {
+  display: inline-flex;
+  width: 12px;
+  height: 12px;
+  margin-left: 5px;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  line-height: 1;
+  transform: rotate(-90deg);
+  transition: transform 0.16s ease;
+}
+
+.turn-fold.is-open .turn-fold-chevron {
+  transform: rotate(0deg);
+}
+
+.turn-fold-rule {
+  width: 100%;
+  height: 1px;
+  background: var(--border-soft, var(--border));
+}
+
+.turn-fold-clip {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition: grid-template-rows 0.18s ease, opacity 0.14s ease;
+}
+
+.turn-fold-clip.is-open {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+
+.turn-fold-body-wrap {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.turn-fold-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin-top: 12px;
+}
+
+/* 当前内部 LLM 回合：最多一条思考、一条最新工具和当前说明。 */
+.turn-current-round {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+  min-width: 0;
+}
+
+.live-placeholder {
+  cursor: default;
+}
+
+/* 工具行内容：单行显示，放不下自动省略号 */
+.tool-row .tool-line {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@keyframes turn-fold-enter {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (max-width: 520px) {
+  .turn-fold-label { line-height: 18px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .turn-fold {
+    animation: none;
+  }
+
+  .turn-fold-chevron,
+  .turn-fold-clip {
+    transition: none;
+  }
 }
 
 .empty-hint {
@@ -1982,10 +2095,16 @@ button:focus-visible,
 /* ── Settings form ───────────────────────────────────────── */
 .settings-layout {
   display: flex;
+  align-items: flex-start;
   gap: 1.5rem;
+  width: 100%;
   max-width: 900px;
   margin: 0 auto;
   padding-top: 1rem;
+}
+.settings-layout.model-settings-layout {
+  align-items: stretch;
+  overflow: hidden;
 }
 .settings-nav {
   width: 180px;
@@ -2016,6 +2135,21 @@ button:focus-visible,
 .settings-content {
   flex: 1;
   min-width: 0;
+}
+.model-settings-content,
+.model-tab,
+.model-providers {
+  min-height: 0;
+  height: 100%;
+}
+.model-settings-content,
+.model-tab {
+  display: flex;
+  flex-direction: column;
+}
+.model-providers {
+  flex: 1;
+  overflow: hidden;
 }
 
 .env-warn {
@@ -2180,20 +2314,22 @@ button:focus-visible,
 /* ── model settings: master-detail layout (left list + right detail) ── */
 .provider-master-detail {
   display: grid;
-  grid-template-columns: 220px 1fr;
+  grid-template-columns: 220px minmax(0, 1fr);
+  flex: 1;
+  min-height: 0;
   gap: 0.85rem;
-  align-items: start;
+  align-items: stretch;
+  overflow: hidden;
 }
 .provider-list {
   display: flex;
   flex-direction: column;
+  align-self: flex-start;
   gap: 0.2rem;
   background: var(--surface-2);
   border: 1px solid var(--border);
   border-radius: 12px;
   padding: 0.4rem;
-  position: sticky;
-  top: 0;
 }
 .provider-list-item {
   display: flex;
@@ -2264,12 +2400,14 @@ button:focus-visible,
   border-radius: 12px;
   background: var(--surface);
   min-width: 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
 }
 .provider-detail .provider-card-head {
   border-radius: 12px 12px 0 0;
+  flex-shrink: 0;
 }
 .provider-detail .provider-fields {
   grid-template-columns: 1fr;
@@ -2364,11 +2502,12 @@ button:focus-visible,
 @media (max-width: 720px) {
   .provider-master-detail {
     grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(0, 1fr);
   }
   .provider-list {
     flex-direction: row;
     overflow-x: auto;
-    position: static;
+    overflow-y: hidden;
   }
   .provider-list-item {
     white-space: nowrap;
@@ -2454,6 +2593,7 @@ button:focus-visible,
   gap: 1rem;
   padding: 0.9rem 1rem;
   border-bottom: 1px solid var(--border-soft);
+  flex-shrink: 0;
 }
 .provider-fields .field {
   display: flex;
@@ -2482,12 +2622,16 @@ button:focus-visible,
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
+  /* 占据详情卡剩余高度，让模型列表在卡内滚动，头/字段区保持固定。 */
+  flex: 1;
+  min-height: 0;
 }
 .model-section-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 0.75rem;
+  flex-shrink: 0;
 }
 .model-section-title {
   font-size: 13px;
@@ -2524,8 +2668,10 @@ button:focus-visible,
   display: flex;
   flex-direction: column;
   gap: 0.25rem;
-  /* 中继平台可能返回数百个模型：容器内滚动，保存按钮不被顶出视口。 */
-  max-height: 320px;
+  /* 模型列表自己在卡内滚动：中继平台可能返回数百个模型，
+     列表变长不影响左侧服务商列表和底部保存按钮的可见性。 */
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding-right: 0.25rem;
 }
@@ -2722,16 +2868,16 @@ button:focus-visible,
   cursor: not-allowed;
 }
 
-/* 保存并重载按钮始终钉在设置区底部可见（模型列表很长时也不被顶出视口）。 */
+/* 模型配置的操作区是有界表单的固定末行，不随详情列表滚动。 */
 .model-save-bar {
-  position: sticky;
-  bottom: 0;
-  z-index: 5;
+  z-index: 1;
   display: flex;
+  flex-shrink: 0;
   justify-content: flex-start;
   margin-top: 0.3rem;
   padding: 0.6rem 0 0.35rem;
-  background: linear-gradient(to top, var(--bg) 72%, transparent);
+  border-top: 1px solid var(--border-soft);
+  background: var(--bg);
 }
 
 /* ── Scrollbar ──────────────────────────────────────────── */
@@ -4219,7 +4365,7 @@ button:focus-visible,
   color: var(--muted);
 }
 .diag-mono { font-family: var(--font-mono); font-size: 11.5px; word-break: break-all; }
-.diag-tools, .diag-context {
+.diag-context {
   list-style: none;
   margin: 0;
   padding: 0;
@@ -4227,24 +4373,6 @@ button:focus-visible,
   flex-direction: column;
   gap: 0.2rem;
 }
-.diag-tools li {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  font-size: 12px;
-  padding: 0.15rem 0;
-  opacity: 0.55;
-}
-.diag-tools li.loaded { opacity: 1; }
-.diag-tool-name { font-weight: 600; color: var(--fg); }
-.diag-tool-desc { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
-.diag-badge {
-  font-size: 10px; padding: 0.02rem 0.35rem; border-radius: 4px;
-  background: var(--surface-2); color: var(--fg-secondary);
-}
-.diag-badge.ro { color: var(--blue); background: rgba(37, 99, 235, 0.1); }
-.diag-badge.danger { color: var(--red); background: rgba(220, 38, 38, 0.1); }
-.diag-badge.off { color: var(--muted); }
 .diag-context li { display: flex; justify-content: space-between; font-size: 12px; padding: 0.1rem 0; }
 .diag-chars { color: var(--muted); font-size: 11px; }
 

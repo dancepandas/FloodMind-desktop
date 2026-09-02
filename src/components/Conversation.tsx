@@ -1,18 +1,58 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import Logo from "./Logo";
 import BlockView from "./BlockView";
 import ArtifactGroup from "./ArtifactGroup";
 import WelcomeView from "./WelcomeView";
-import { useChatStore, deriveStatusText, type ArtifactBlock, type Block, type Msg } from "../state/chat-store";
+import { useChatStore, type ArtifactBlock, type Block, type Msg } from "../state/chat-store";
 import { useUiStore } from "../state/ui-store";
+import { useConfigStore, type TurnMetrics } from "../state/config-store";
+import { useTurnCollapseStore } from "../state/turn-collapse-store";
+import { turnStatus, turnStatusLabel, finalNode } from "../lib/turn-status";
 import { openFileInSystem } from "../lib/open-file";
 import { formatTokens } from "../lib/format-tokens";
 
-/** 工具参数的定长截断展示（展开状态行时用）。 */
-function truncateParam(input: string | object | undefined | null): string {
-  const s = typeof input === "string" ? input : JSON.stringify(input ?? "");
-  const t = s.replace(/\s+/g, " ").trim();
-  return t.length > 120 ? t.slice(0, 120) + "…" : t;
+/** 毫秒 → 人类可读耗时。 */
+function formatDuration(ms: number): string {
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  const rem = s % 60;
+  return rem ? `${m}m${rem}s` : `${m}m`;
+}
+
+/**
+ * 键盘焦点 / 文本选择是否落在容器内。用于「结束答复仍在交互时不自动折叠」。
+ */
+function useFocusWithin(ref: React.RefObject<HTMLElement | null>): boolean {
+  const [within, setWithin] = useState(false);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const check = () => {
+      try {
+        const active = document.activeElement;
+        const inActive = active instanceof Node && el.contains(active);
+        const sel = window.getSelection();
+        const inSel =
+          !!sel && !sel.isCollapsed && sel.rangeCount > 0 &&
+          el.contains(sel.getRangeAt(0).startContainer);
+        setWithin(inActive || inSel);
+      } catch {
+        /* selection APIs can throw in exotic states — ignore */
+      }
+    };
+    check();
+    el.addEventListener("focusin", check);
+    el.addEventListener("focusout", check);
+    document.addEventListener("selectionchange", check);
+    return () => {
+      el.removeEventListener("focusin", check);
+      el.removeEventListener("focusout", check);
+      document.removeEventListener("selectionchange", check);
+    };
+  }, [ref]);
+  return within;
 }
 
 export default function Conversation() {
@@ -37,23 +77,27 @@ export default function Conversation() {
   return (
     <div className="conversation">
       {turns.map((m, i) => (
-        <TurnView key={m.id} turn={m} isLast={i === turns.length - 1} streaming={streaming} />
+        <TurnView key={m.id} turn={m} index={i} isLast={i === turns.length - 1} streaming={streaming} />
       ))}
       <div ref={endRef} />
     </div>
   );
 }
 
-function TurnView({ turn, isLast, streaming }: { turn: Msg; isLast: boolean; streaming: boolean }) {
+function TurnView({ turn, index, isLast: _isLast, streaming }: { turn: Msg; index: number; isLast: boolean; streaming: boolean }) {
   // All hooks must run unconditionally on every render (rules of hooks), so the
-  // user-turn early return below happens AFTER this useState. The state is only
-  // read on the assistant branch.
-  // 执行中点击状态行展开的项（thinking/tool）；新项到来时展示的始终是最新项。
-  const [expandedKind, setExpandedKind] = useState<"thinking" | "tool" | null>(null);
-  // 完成态「已用过程」折叠追踪（默认收起，对齐主流可复盘）。
-  const [showProcess, setShowProcess] = useState(false);
+  // user-turn early return below happens AFTER these.
   const openLightbox = useUiStore((s) => s.openLightbox);
   const setPreviewPath = useUiStore((s) => s.setPreviewPath);
+  const metrics = useConfigStore((s) => s.turnMetrics);
+  const conversationId = useChatStore((s) => s.conversationId);
+  const turnRef = useRef<HTMLDivElement>(null);
+  const focusWithin = useFocusWithin(turnRef);
+  // Collapse override keyed by (conversation, turn position) — survives switching
+  // conversations within the session without relying on the regenerated turn id.
+  const collapseKey = `${conversationId ?? ""}:${index}`;
+  const override = useTurnCollapseStore((s) => s.overrides[collapseKey]);
+  const setOverride = useTurnCollapseStore((s) => s.setOverride);
 
   if (turn.role === "user") {
     const imgs = turn.images;
@@ -94,56 +138,74 @@ function TurnView({ turn, isLast, streaming }: { turn: Msg; isLast: boolean; str
     );
   }
 
-  // ── after the turn completes, only the final answer + artifacts remain ──
-  const finalBlock = turn.done ? turn.blocks.find((b) => b.kind === "text" && b.final) : null;
-  // 中断/失败 turn（done 但未 markFinal）：兜底展示最后一个 text 块的半截内容，不凭空消失。
-  const abortedPartial =
-    turn.done && !finalBlock ? [...turn.blocks].reverse().find((b) => b.kind === "text") ?? null : null;
-  const finalArtifacts = turn.done
-    ? turn.blocks.filter(
-        (b): b is ArtifactBlock => b.kind === "artifact" && b.final !== false
-      )
-    : [];
+  const status = turnStatus(turn);
+  const statusLabel = turnStatusLabel(turn);
+  // Final answer = the turn's finalNode pointer; fall back to the last text block
+  // for stopped/failed turns that carry a partial answer.
+  const fn = finalNode(turn);
+  const finalBlock = fn ?? [...turn.blocks].reverse().find((b) => b.kind === "text") ?? null;
+  const mainTextId = finalBlock?.id;
+  const finalArtifacts = turn.blocks.filter(
+    (b): b is ArtifactBlock => b.kind === "artifact" && b.final !== false
+  );
   const errors = turn.blocks.filter((b) => b.kind === "error");
   const pendingPerms = turn.blocks.filter(
     (b) => b.kind === "permission" && b.approved === undefined
   );
-  // 主答案（final 或中断兜底）不重复进复盘区。
-  const mainTexts = [finalBlock, abortedPartial].filter((b): b is Block => b != null);
-  const mainTextIds = new Set(mainTexts.map((b) => b.id));
-  // 已用过程：思考/工具 + 中间 text 块（完成态默认折叠的可复盘追踪）。
-  // 权限卡片是执行期间的临时交互，不进入完成态历史。
-  const doneProcessBlocks = turn.blocks.filter(
+  // Foldable process activity: thinking / tool / context / intermediate text.
+  const processBlocks = turn.blocks.filter(
     (b) =>
-      (b.kind === "thinking" ||
-        b.kind === "tool" ||
-        (b.kind === "text" && !b.final)) &&
-      !mainTextIds.has(b.id)
+      b.kind === "thinking" ||
+      b.kind === "tool" ||
+      b.kind === "context" ||
+      (b.kind === "text" && b.id !== mainTextId)
   );
 
-  // 完成态：默认不渲染过程；只留最终答案 + 产物 + 必须感知的信息，外加一个
-  // 默认折叠的「已用过程」入口（对齐主流可复盘，而非彻底消失）。
+  const toolCount = turn.blocks.filter((b) => b.kind === "tool").length;
+  const hasElapsed = turn.startedAt != null && turn.completedAt != null;
+  const elapsedMs = hasElapsed ? (turn.completedAt as number) - (turn.startedAt as number) : null;
+
+  // ── done: summary bar + collapsible process + final answer ──
   if (turn.done) {
+    const finalIdx = fn ? turn.blocks.indexOf(fn) : -1;
+    const trailingAfterFinal = fn
+      ? processBlocks.some((b) => turn.blocks.indexOf(b) > finalIdx)
+      : false;
+    const keepExpanded =
+      status === "failed" ||
+      status === "max_tokens" ||
+      trailingAfterFinal ||
+      focusWithin;
+    const collapsed = override !== undefined ? override : !keepExpanded;
+    const onToggle = () => setOverride(collapseKey, !collapsed);
+
     return (
-      <div className="turn assistant-turn">
+      <div className="turn assistant-turn" ref={turnRef}>
         <div className="assistant-header">
           <span className="assistant-avatar" aria-hidden="true">
             <Logo className="assistant-avatar-icon" />
           </span>
           <span className="assistant-name">FloodMind</span>
         </div>
+        {processBlocks.length > 0 && (
+          <TurnSummaryBar
+            collapsed={collapsed}
+            onToggle={onToggle}
+            statusLabel={statusLabel}
+            metrics={metrics}
+            toolCount={toolCount}
+            elapsedMs={elapsedMs}
+            usage={turn.usage}
+            processBlocks={processBlocks}
+          />
+        )}
+        {processBlocks.length === 0 && statusLabel && (
+          <div className="turn-status-label">{statusLabel}</div>
+        )}
         {finalBlock && (
           <div data-block-id={finalBlock.id}>
             <BlockView block={finalBlock} isLive={false} />
           </div>
-        )}
-        {abortedPartial && (
-          <>
-            <div className="blk blk-error">已停止</div>
-            <div data-block-id={abortedPartial.id}>
-              <BlockView block={abortedPartial} isLive={false} />
-            </div>
-          </>
         )}
         <ArtifactGroup
           artifacts={finalArtifacts}
@@ -151,118 +213,206 @@ function TurnView({ turn, isLast, streaming }: { turn: Msg; isLast: boolean; str
           onOpenFolder={(directory) => void openFileInSystem(directory)}
         />
         {errors.map((b) => <BlockView key={b.id} block={b} isLive={false} />)}
-        {/* 已用过程：默认折叠的可复盘追踪（对齐主流，不消失） */}
-        {doneProcessBlocks.length > 0 && (
-          <>
-            <button
-              className="show-process"
-              onClick={() => setShowProcess((v) => !v)}
-              type="button"
-              aria-expanded={showProcess}
-            >
-              {showProcess ? "收起已用过程" : "已用过程"}
-            </button>
-            {showProcess &&
-              doneProcessBlocks.map((b) => {
-                // 复盘视图：工具直接显示「名 + 状态 + 定长参数」；思考/权限/中间 text 走 BlockView。
-                if (b.kind === "tool") {
-                  return (
-                    <div key={b.id} className="blk blk-tool trace-tool">
-                      <div className="tool-row">
-                        <span className="tname">{b.tool_name}</span>
-                        <span className="tstat">{b.status}</span>
-                      </div>
-                      {b.input && <div className="tool-detail">→ {truncateParam(b.input)}</div>}
-                      {b.output && (
-                        <div className="tool-detail">{String(b.output).slice(0, 200)}</div>
-                      )}
-                    </div>
-                  );
-                }
-                return (
-                  <div key={b.id} data-block-id={b.id}>
-                    <BlockView block={b} isLive={false} />
-                  </div>
-                );
-              })}
-          </>
-        )}
-        {turn.usage && <UsageLine usage={turn.usage} />}
+        {processBlocks.length === 0 && turn.usage && <UsageLine usage={turn.usage} />}
         <PlanConfirmBar turn={turn} />
       </div>
     );
   }
 
-  // 执行中：一条随当前步骤变化的动态指示（主流），默认无过程详情；点击展开当前项。
-  const lastBlock = turn.blocks[turn.blocks.length - 1];
-  const statusText = deriveStatusText(lastBlock);
-  // 只有「正在思考 / 正在调用工具」才有可点击展开的内容；过渡态（tool 已完成）不可展开。
-  const runningTool =
-    lastBlock?.kind === "tool" &&
-    ["running", "pending", "awaiting_permission"].includes(lastBlock.status);
-  const statusBlock =
-    lastBlock?.kind === "thinking" || runningTool ? lastBlock : null;
-  // 只流式展示【最后一个】text 块；更早的中间回答不占对话流（收进完成态复盘）。
-  const lastTextBlock = [...turn.blocks].reverse().find((b) => b.kind === "text") ?? null;
-  const stopped = !streaming && turn.blocks.length > 0;
+  // 执行中：已结束的内部 LLM 回合直接进入顶部摘要折叠栏；当前回合
+  // 最多显示一条思考、一条最新工具调用和当前说明正文。
+  if (!streaming) {
+    return (
+      <div className="turn assistant-turn" ref={turnRef}>
+        <div className="assistant-header">
+          <span className="assistant-avatar" aria-hidden="true">
+            <Logo className="assistant-avatar-icon" />
+          </span>
+          <span className="assistant-name">FloodMind</span>
+        </div>
+        <div className="turn-status-label">已中断</div>
+        <ProcessSequence blocks={processBlocks} />
+        {pendingPerms.map((b) => <BlockView key={b.id} block={b} isLive={false} />)}
+        {errors.map((b) => <BlockView key={b.id} block={b} isLive={false} />)}
+      </div>
+    );
+  }
+
+  const liveElapsedMs = turn.startedAt != null ? Math.max(0, Date.now() - turn.startedAt) : null;
+  const liveBlocks = turn.blocks.filter(
+    (b) =>
+      b.kind === "thinking" ||
+      b.kind === "tool" ||
+      b.kind === "context" ||
+      b.kind === "text"
+  );
+  const hasRoundMetadata = turn.activeRound !== undefined;
+  const historicalBlocks = hasRoundMetadata
+    ? liveBlocks.filter((block) => block.round !== turn.activeRound)
+    : [];
+  const currentBlocks = hasRoundMetadata
+    ? liveBlocks.filter((block) => block.round === turn.activeRound)
+    : liveBlocks;
+  const currentThinking = [...currentBlocks].reverse().find(
+    (block): block is Extract<Block, { kind: "thinking" }> => block.kind === "thinking",
+  );
+  const currentTool = [...currentBlocks].reverse().find(
+    (block): block is Extract<Block, { kind: "tool" }> => block.kind === "tool",
+  );
+  const currentText = currentBlocks.filter(
+    (block): block is Extract<Block, { kind: "text" }> => block.kind === "text",
+  );
+  const hasCurrentActivity = currentThinking || currentTool || currentText.length > 0;
+  const liveCollapsed = override !== undefined ? override : true;
+  const toggleLiveFold = () => setOverride(collapseKey, !liveCollapsed);
 
   return (
-    <div className="turn assistant-turn">
+    <div className="turn assistant-turn" ref={turnRef}>
       <div className="assistant-header">
         <span className="assistant-avatar" aria-hidden="true">
           <Logo className="assistant-avatar-icon" />
         </span>
         <span className="assistant-name">FloodMind</span>
       </div>
-      {stopped ? (
-        <div className="blk blk-error">已停止</div>
-      ) : (
-        <>
-          {/* 当前步骤动态指示（正在思考 → 正在调用工具 → 正在生成回答），随步骤变化 */}
-          {statusText && (
-            <span
-              className="live-status-item"
-              role={statusBlock ? "button" : undefined}
-              tabIndex={statusBlock ? 0 : undefined}
-              onClick={() => {
-                if (!statusBlock) return;
-                const k = statusBlock.kind === "thinking" ? "thinking" : "tool";
-                setExpandedKind(expandedKind === k ? null : k);
-              }}
-              onKeyDown={(e) => {
-                if (statusBlock && (e.key === "Enter" || e.key === " ")) {
-                  e.preventDefault();
-                  const k = statusBlock.kind === "thinking" ? "thinking" : "tool";
-                  setExpandedKind(expandedKind === k ? null : k);
-                }
-              }}
-            >
-              <span className="live-label">
-                {statusText}
-                <span className="live-dots"><span className="live-dot" /><span className="live-dot" /><span className="live-dot" /></span>
-              </span>
-            </span>
-          )}
-          {expandedKind === "thinking" && statusBlock?.kind === "thinking" && (
-            <div className="thinking-body">{statusBlock.content}</div>
-          )}
-          {expandedKind === "tool" && statusBlock?.kind === "tool" && (
-            <div className="tool-detail live-tool-detail">
-              <strong>{statusBlock.tool_name}</strong>
-              {statusBlock.input ? `：${truncateParam(statusBlock.input)}` : ""}
-            </div>
-          )}
-          {/* 流式回答输出（只流式展示最后一个 text 块，isLive 展开显示） */}
-          {lastTextBlock && (
-            <div data-block-id={lastTextBlock.id}>
-              <BlockView block={lastTextBlock} isLive={true} />
-            </div>
-          )}
-        </>
-      )}
+      <TurnSummaryBar
+        live
+        collapsed={liveCollapsed}
+        onToggle={toggleLiveFold}
+        metrics={metrics}
+        toolCount={toolCount}
+        elapsedMs={liveElapsedMs}
+        usage={turn.usage}
+        processBlocks={historicalBlocks}
+      />
+      <div className="turn-current-round">
+        {currentThinking ? (
+          <BlockView block={currentThinking} isLive />
+        ) : !hasCurrentActivity ? (
+          <ThinkingStatusRow />
+        ) : null}
+        {currentTool && <BlockView block={currentTool} isLive={currentTool.status === "running"} />}
+        {currentText.map((block) => (
+          <div key={block.id} data-block-id={block.id}>
+            <BlockView block={block} isLive />
+          </div>
+        ))}
+      </div>
       {pendingPerms.map((b) => <BlockView key={b.id} block={b} isLive={false} />)}
       {errors.map((b) => <BlockView key={b.id} block={b} isLive={false} />)}
-      {turn.usage && <UsageLine usage={turn.usage} />}
+    </div>
+  );
+}
+
+/** Historical process blocks keep their native renderers inside the top fold. */
+function ProcessSequence({ blocks }: { blocks: Block[] }) {
+  return (
+    <>
+      {blocks.map((block) => (
+        <div key={block.id} data-block-id={block.id}>
+          <BlockView block={block} isLive={false} />
+        </div>
+      ))}
+    </>
+  );
+}
+
+function ThinkingStatusRow() {
+  return (
+    <div className="blk blk-thinking" role="status" aria-label="正在思考">
+      <div className="blk-chip live-placeholder">
+        <span className="caret" aria-hidden="true">▸</span>
+        <span className="live-label">正在思考<span className="live-dots" /></span>
+      </div>
+    </div>
+  );
+}
+
+function TurnSummaryBar({
+  collapsed,
+  onToggle,
+  statusLabel,
+  live = false,
+  metrics,
+  toolCount,
+  elapsedMs,
+  usage,
+  processBlocks,
+}: {
+  collapsed?: boolean;
+  onToggle?: () => void;
+  statusLabel?: string;
+  live?: boolean;
+  metrics: TurnMetrics;
+  toolCount: number;
+  elapsedMs: number | null;
+  usage: { prompt: number; completion: number; total: number } | null;
+  processBlocks: Block[];
+}) {
+  const panelId = useId();
+  const parts: string[] = [];
+  if (metrics.showDuration && elapsedMs != null) {
+    parts.push(`${live || statusLabel ? "已工作" : "耗时"} ${formatDuration(elapsedMs)}`);
+  }
+  if (metrics.showToolCount && toolCount > 0) parts.push(`${toolCount} 次工具调用`);
+  if (metrics.showTokens && usage) {
+    parts.push(`${formatTokens(usage.prompt)} 输入 tokens`);
+    parts.push(`${formatTokens(usage.completion)} 输出 tokens`);
+  }
+  if (parts.length === 0) parts.push("执行过程");
+  if (statusLabel) parts.push(`- ${statusLabel}`);
+  const summary = parts.join(" | ");
+
+  const label = (
+    <span className="turn-fold-label" aria-hidden="true">
+      {parts.map((part, i) => (
+        <span key={`${part}:${i}`} className="turn-fold-metric">
+          {i > 0 && <span className="turn-fold-separator" />}
+          <span>{part}</span>
+        </span>
+      ))}
+      {(live ? processBlocks.length > 0 : true) && (
+        <span className="turn-fold-chevron" aria-hidden="true">⌄</span>
+      )}
+    </span>
+  );
+
+  if (live && processBlocks.length === 0) {
+    return (
+      <div className="turn-fold is-live" role="status" aria-label={summary}>
+        <div className="turn-fold-header">{label}</div>
+        <div className="turn-fold-rule" aria-hidden="true" />
+      </div>
+    );
+  }
+
+  const isCollapsed = collapsed ?? true;
+  const action = isCollapsed ? "展开" : "收起";
+  return (
+    <div className={`turn-fold${live ? " is-live" : ""}${isCollapsed ? "" : " is-open"}`}>
+      <button
+        type="button"
+        className="turn-fold-header"
+        onClick={onToggle}
+        aria-expanded={!isCollapsed}
+        aria-controls={panelId}
+        aria-label={`${action}执行过程：${summary}`}
+        title={`${action}执行过程：${summary}`}
+      >
+        {label}
+      </button>
+      <div className="turn-fold-rule" aria-hidden="true" />
+      <div
+        id={panelId}
+        className={`turn-fold-clip${isCollapsed ? "" : " is-open"}`}
+        aria-hidden={isCollapsed}
+        inert={isCollapsed ? true : undefined}
+      >
+        <div className="turn-fold-body-wrap">
+          <div className="turn-fold-body">
+            {!isCollapsed && <ProcessSequence blocks={processBlocks} />}
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

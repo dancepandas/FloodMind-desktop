@@ -31,6 +31,9 @@ export type ChatEvent =
   | { type: "permission"; ask_id: string; call_id: string; tool_name: string; reason: string; input: unknown; approved?: boolean; auto_approved?: boolean }
   | { type: "usage"; prompt: number; completion: number; total: number }
   | { type: "error"; content: string }
+  | { type: "round_start"; iteration: number }
+  | { type: "finish"; reason: string }
+  | { type: "context"; label: string; content: string }
   | { type: "done" };
 
 export async function appendInstruction(baseUrl: string, text: string): Promise<void> {

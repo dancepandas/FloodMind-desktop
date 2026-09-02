@@ -18,7 +18,7 @@ export interface Usage {
 }
 
 export type Block =
-  | { id: string; kind: "thinking"; content: string }
+  | { id: string; kind: "thinking"; content: string; round?: number }
   | {
       id: string;
       kind: "tool";
@@ -27,8 +27,9 @@ export type Block =
       status: string;
       input?: string;
       output?: string;
+      round?: number;
     }
-  | { id: string; kind: "text"; content: string; final?: boolean }
+  | { id: string; kind: "text"; content: string; final?: boolean; round?: number }
   | { id: string; kind: "plan"; title: string; steps: PlanStep[] }
   | {
       id: string;
@@ -42,6 +43,7 @@ export type Block =
       source?: ArtifactSource;
     }
   | { id: string; kind: "permission"; ask_id: string; call_id: string; tool_name: string; reason: string; input?: unknown; approved?: boolean; auto_approved?: boolean }
+  | { id: string; kind: "context"; label: string; content: string; round?: number }
   | { id: string; kind: "error"; content: string };
 
 export type ArtifactBlock = Extract<Block, { kind: "artifact" }>;
@@ -57,32 +59,15 @@ export interface AssistantTurn {
   done: boolean;
   /** Plan-mode proposal awaiting user confirmation (produced by a plan-mode send). */
   plan?: { awaiting: boolean; originalText?: string; cancelled?: boolean };
-}
-
-/**
- * Derive a human-readable streaming action status from the latest assistant
- * block. Returns an empty string when there is no meaningful action to show.
- *
- * 对齐主流的「一行动态指示」：随当前步骤变化，文案具体（带工具名）。
- * 已完成/最终/已解析的块返回空串或过渡态——tool 完成后模型在处理结果，
- * 视为「正在思考…」而非继续显示「调用工具」。
- */
-export function deriveStatusText(lastBlock?: Block): string {
-  if (!lastBlock) return "正在思考…";
-  switch (lastBlock.kind) {
-    case "thinking":
-      return "正在思考…";
-    case "tool":
-      return ["running", "pending", "awaiting_permission"].includes(lastBlock.status)
-        ? `正在调用 ${lastBlock.tool_name}…`
-        : "正在思考…"; // tool 已完成 → 过渡态
-    case "text":
-      return lastBlock.final ? "" : "正在生成回答…";
-    case "permission":
-      return lastBlock.approved === undefined ? `等待授权：${lastBlock.tool_name}` : "";
-    default:
-      return "正在思考…"; // plan / artifact / error
-  }
+  /** Latest non-`tool_calls` finish_reason from `llm_step_end` (drives turn status). */
+  finishReason?: string;
+  /** Block id of the final answer text block (data pointer, not DOM position). */
+  finalNodeId?: string;
+  /** Epoch ms the turn was created / completed (for the elapsed-time metric). */
+  startedAt?: number;
+  completedAt?: number;
+  /** SDK internal LLM iteration currently streaming. Process blocks inherit it. */
+  activeRound?: number;
 }
 
 interface ChatState {
@@ -130,27 +115,37 @@ export const _resetBlockIdsForTest = () => {
   _blockSeq = 0;
 };
 
-/** Append a thinking/text delta, merging into the last block when it's the same kind. */
-function appendDelta(blocks: Block[], kind: "thinking" | "text", content: string): Block[] {
+/** Append a thinking/text delta, merging only inside the same internal round. */
+function appendDelta(
+  blocks: Block[],
+  kind: "thinking" | "text",
+  content: string,
+  round?: number,
+): Block[] {
   const last = blocks[blocks.length - 1];
-  if (last && last.kind === kind) {
+  if (last && last.kind === kind && last.round === round) {
     const out = blocks.slice();
-    out[out.length - 1] = { ...last, content: (last as { content: string }).content + content };
+    out[out.length - 1] = { ...last, content: last.content + content };
     return out;
   }
-  return [...blocks, { id: nextId(), kind, content }];
+  return [...blocks, { id: nextId(), kind, content, ...(round !== undefined ? { round } : {}) }];
 }
 
-/** Mark the last text block as the final answer (expanded in the UI). */
-function markFinal(blocks: Block[]): Block[] {
+/**
+ * Mark the last text block as the final answer, returning its id too. This is a
+ * fallback for paths that never emit `llm_step_end(reason="stop")` (e.g. a
+ * provider/step that skips the finish signal); the primary final-answer path is
+ * the `finish` event handled in reduceEvent().
+ */
+function finalizeBlocks(blocks: Block[]): { blocks: Block[]; finalNodeId?: string } {
   for (let i = blocks.length - 1; i >= 0; i--) {
     if (blocks[i].kind === "text") {
       const out = blocks.slice();
       out[i] = { ...(out[i] as Extract<Block, { kind: "text" }>), final: true };
-      return out;
+      return { blocks: out, finalNodeId: out[i].id };
     }
   }
-  return blocks;
+  return { blocks };
 }
 
 /**
@@ -195,18 +190,45 @@ async function catchUpEvents(
 export function reduceEvent(turn: AssistantTurn, ev: ChatEvent): AssistantTurn {
   let blocks = turn.blocks;
   let usage = turn.usage;
+  let finishReason = turn.finishReason;
+  let finalNodeId = turn.finalNodeId;
+  let activeRound = turn.activeRound;
 
   switch (ev.type) {
+    case "round_start": {
+      if (activeRound === ev.iteration) break; // replay/duplicate event
+      activeRound = ev.iteration;
+      // A queued mid-run instruction can revive the executor after a temporary
+      // stop. That answer becomes intermediate once a newer LLM round starts.
+      if (finalNodeId) {
+        blocks = blocks.map((block) =>
+          block.id === finalNodeId && block.kind === "text"
+            ? { ...block, final: false }
+            : block
+        );
+        finalNodeId = undefined;
+        finishReason = undefined;
+      }
+      break;
+    }
     case "thinking":
-      blocks = appendDelta(blocks, "thinking", ev.content);
+      blocks = appendDelta(blocks, "thinking", ev.content, activeRound);
       break;
     case "text":
-      blocks = appendDelta(blocks, "text", ev.content);
+      blocks = appendDelta(blocks, "text", ev.content, activeRound);
       break;
     case "tool_start":
       blocks = [
         ...blocks,
-        { id: nextId(), kind: "tool", call_id: ev.call_id, tool_name: ev.tool_name, status: "running", input: ev.input },
+        {
+          id: nextId(),
+          kind: "tool",
+          call_id: ev.call_id,
+          tool_name: ev.tool_name,
+          status: "running",
+          input: ev.input,
+          ...(activeRound !== undefined ? { round: activeRound } : {}),
+        },
       ];
       break;
     case "tool_end": {
@@ -219,7 +241,15 @@ export function reduceEvent(turn: AssistantTurn, ev: ChatEvent): AssistantTurn {
         // Orphan tool_end (no matching start): show it rather than drop the output.
         blocks = [
           ...blocks,
-          { id: nextId(), kind: "tool", call_id: ev.call_id, tool_name: ev.tool_name, status: ev.status, output: ev.output },
+          {
+            id: nextId(),
+            kind: "tool",
+            call_id: ev.call_id,
+            tool_name: ev.tool_name,
+            status: ev.status,
+            output: ev.output,
+            ...(activeRound !== undefined ? { round: activeRound } : {}),
+          },
         ];
       }
       break;
@@ -288,6 +318,30 @@ export function reduceEvent(turn: AssistantTurn, ev: ChatEvent): AssistantTurn {
     case "error":
       blocks = [...blocks, { id: nextId(), kind: "error", content: ev.content }];
       break;
+    case "context":
+      blocks = [
+        ...blocks,
+        {
+          id: nextId(),
+          kind: "context",
+          label: ev.label,
+          content: ev.content,
+          ...(activeRound !== undefined ? { round: activeRound } : {}),
+        },
+      ];
+      break;
+    case "finish": {
+      if (ev.reason === "tool_calls") break; // intermediate step — loop continues
+      finishReason = ev.reason;
+      if (ev.reason === "stop") {
+        // Final answer = last text block. Record its id as the turn's finalNodeId
+        // pointer (the UI reads this, not DOM position).
+        const res = finalizeBlocks(blocks);
+        blocks = res.blocks;
+        finalNodeId = res.finalNodeId;
+      }
+      break;
+    }
     case "usage": {
       const prev = usage ?? { prompt: 0, completion: 0, total: 0 };
       // Each LLM request's usage.prompt_tokens already counts the FULL
@@ -303,10 +357,10 @@ export function reduceEvent(turn: AssistantTurn, ev: ChatEvent): AssistantTurn {
       break;
     }
     case "done":
-      break; // completion (incl. final-answer marking) handled in send()'s finally
+      break; // done flag handled in send()'s finally
   }
 
-  return { ...turn, blocks, usage };
+  return { ...turn, blocks, usage, finishReason, finalNodeId, activeRound };
 }
 
 export const useChatStore = create<ChatState>((set, get) => ({
@@ -354,7 +408,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           ...(images ? { images } : {}),
           ...(fileRefs ? { attachments: fileRefs } : {}),
         },
-        { id: nextTurnId(), role: "assistant", blocks: [], usage: null, done: false },
+        { id: nextTurnId(), role: "assistant", blocks: [], usage: null, done: false, startedAt: Date.now() },
       ],
       streaming: true,
       abortController: controller,
@@ -422,10 +476,22 @@ export const useChatStore = create<ChatState>((set, get) => ({
         const turns = s.turns.slice();
         const last = turns[turns.length - 1];
         if (last && last.role === "assistant") {
+          // Final-answer marking is driven by the `finish(reason="stop")` event in
+          // reduceEvent(); fall back to the last-text heuristic only when no such
+          // signal arrived (older providers / plan-only turns with no final text).
+          const finalized = finalize && !last.finalNodeId
+            ? finalizeBlocks(last.blocks)
+            : { blocks: last.blocks };
           turns[turns.length - 1] = {
             ...last,
-            blocks: finalize ? markFinal(last.blocks) : last.blocks,
+            blocks: finalized.blocks,
+            ...(finalized.finalNodeId ? { finalNodeId: finalized.finalNodeId } : {}),
             done: true,
+            completedAt: Date.now(),
+            // A client-side abort cuts the stream before the sidecar's
+            // `llm_step_end(reason="aborted")` can be read — record it here so
+            // the turn renders as 已停止 rather than 已中断.
+            ...(aborted ? { finishReason: "aborted" } : {}),
             // A successful plan-mode turn becomes a plan proposal awaiting the
             // user's confirm/cancel before anything executes.
             ...(finalize && workMode === "plan"

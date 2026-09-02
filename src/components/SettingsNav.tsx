@@ -1,11 +1,13 @@
-export type Tab = "model" | "identity" | "rules" | "permissions" | "feedback" | "diagnostics";
+export type Tab = "model" | "identity" | "rules" | "permissions" | "display" | "feedback" | "diagnostics" | "plugins";
 
 const ITEMS: { tab: Tab; label: string }[] = [
   { tab: "model", label: "模型" },
   { tab: "identity", label: "身份" },
   { tab: "rules", label: "规则" },
   { tab: "permissions", label: "权限" },
+  { tab: "display", label: "显示" },
   { tab: "feedback", label: "问题反馈" },
+  { tab: "plugins", label: "插件" },
   { tab: "diagnostics", label: "诊断" },
 ];
 

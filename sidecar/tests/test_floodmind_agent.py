@@ -3,6 +3,45 @@ import os
 from floodmind_desktop_sidecar.floodmind_agent import translate_event
 
 
+def test_diagnostics_returns_compact_tool_summary(monkeypatch):
+    from floodmind_desktop_sidecar.floodmind_agent import FloodMindAgent
+
+    class Tool:
+        def __init__(self, name, description):
+            self.name = name
+            self.description = description
+            self.is_readonly = False
+            self.is_destructive = True
+
+    registry = type("Registry", (), {"all": lambda self: [
+        Tool("Bash", "[必填] command: should stay out of diagnostics"),
+        Tool("mcp_demo", "[MCP:demo] should stay out too"),
+    ]})()
+    loader = type("Loader", (), {
+        "loaded_tools": {"Bash", "stale_tool"},
+        "mode": "progressive",
+        "config": type("Config", (), {"max_loaded_tools": 6})(),
+    })()
+    raw = type("Raw", (), {
+        "_orchestrator_registry": registry,
+        "_orchestrator_tool_loader": loader,
+        "_context_runtime": None,
+    })()
+    agent = FloodMindAgent.__new__(FloodMindAgent)
+    agent._agent = raw
+    agent._llm = type("LLM", (), {"provider": "openai", "model_name": "m", "base_url": "https://example.com"})()
+    monkeypatch.setattr(FloodMindAgent, "_desktop_block", lambda self: {})
+
+    result = agent.diagnostics()
+
+    assert result["tools"] == {
+        "mode": "progressive", "max_loaded": 6, "total": 2, "loaded": 1,
+    }
+    assert "items" not in result["tools"]
+    assert "command" not in str(result)
+    assert "MCP:demo" not in str(result)
+
+
 def test_answer_delta_becomes_text():
     out = translate_event({"type": "answer_delta", "content": "Hello"})
     assert out == [{"type": "text", "content": "Hello"}]
@@ -34,12 +73,33 @@ def test_final_text_dropped():
     assert translate_event({"type": "final_text", "content": "full answer"}) == []
 
 
-def test_context_compress_dropped():
-    # The agent emits `context_compress`; only the *_start/*_done variants are
-    # defined-but-never-called. Make sure the real one is dropped, not passed
-    # through as noise.
-    assert translate_event({"type": "context_compress", "summary": "...", "saved_tokens": 10,
-                            "original_messages": 5, "compressed_messages": 2}) == []
+def test_context_compress_becomes_context():
+    # context_compress (legacy) + the *_start/*_done variants all forward as a
+    # single context block so the fold bar can show the injection activity.
+    assert translate_event({"type": "context_compress", "summary": "已压缩为 200 字",
+                            "saved_tokens": 10, "original_messages": 5,
+                            "compressed_messages": 2}) == \
+        [{"type": "context", "label": "上下文压缩", "content": "已压缩为 200 字"}]
+    assert translate_event({"type": "context_compress_done", "summary_preview": "概要"}) == \
+        [{"type": "context", "label": "上下文压缩", "content": "概要"}]
+
+
+def test_attachment_context_becomes_context():
+    out = translate_event({"type": "attachment_context", "images": ["a.png", "b.png"]})
+    assert out == [{"type": "context", "label": "上下文注入", "content": "附图片 2 张"}]
+
+
+def test_llm_step_start_becomes_round_start():
+    assert translate_event({"type": "llm_step_start", "iteration": 3,
+                            "model": "test-model"}) == \
+        [{"type": "round_start", "iteration": 3}]
+
+
+def test_llm_step_end_becomes_finish():
+    assert translate_event({"type": "llm_step_end", "finish_reason": "stop"}) == \
+        [{"type": "finish", "reason": "stop"}]
+    assert translate_event({"type": "llm_step_end", "finish_reason": "tool_calls"}) == \
+        [{"type": "finish", "reason": "tool_calls"}]
 
 
 def test_permission_ask_carries_session_id():

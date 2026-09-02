@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { useChatStore, reduceEvent, deriveStatusText, _resetBlockIdsForTest } from "./chat-store";
+import { useChatStore, reduceEvent, _resetBlockIdsForTest } from "./chat-store";
 import type { AssistantTurn } from "./chat-store";
 import type { ImageAttachmentWire } from "../lib/chat-stream";
 
@@ -46,40 +46,6 @@ import { useConfigStore } from "./config-store";
 function emptyTurn(): AssistantTurn {
   return { id: "t0", role: "assistant", blocks: [], usage: null, done: false };
 }
-
-describe("deriveStatusText", () => {
-  it("returns thinking text when there is no block", () => {
-    expect(deriveStatusText(undefined)).toBe("正在思考…");
-  });
-
-  it("reflects a thinking block", () => {
-    expect(deriveStatusText({ kind: "thinking", content: "hmm" } as any)).toBe("正在思考…");
-  });
-
-  it("reflects a running tool block with the tool name", () => {
-    expect(deriveStatusText({ kind: "tool", tool_name: "read_file", status: "running" } as any)).toBe("正在调用 read_file…");
-  });
-
-  it("returns transitional thinking after a completed tool block", () => {
-    expect(deriveStatusText({ kind: "tool", tool_name: "read_file", status: "ok" } as any)).toBe("正在思考…");
-  });
-
-  it("returns transitional thinking after a failed tool block", () => {
-    expect(deriveStatusText({ kind: "tool", tool_name: "read_file", status: "error" } as any)).toBe("正在思考…");
-  });
-
-  it("reflects a non-final text block", () => {
-    expect(deriveStatusText({ kind: "text", content: "ans", final: false } as any)).toBe("正在生成回答…");
-  });
-
-  it("returns empty for a final text block", () => {
-    expect(deriveStatusText({ kind: "text", content: "ans", final: true } as any)).toBe("");
-  });
-
-  it("returns thinking for unknown block kinds", () => {
-    expect(deriveStatusText({ kind: "error", content: "boom" } as any)).toBe("正在思考…");
-  });
-});
 
 describe("reduceEvent (block model)", () => {
   it("merges consecutive text deltas into one text block", () => {
@@ -145,6 +111,49 @@ describe("reduceEvent (block model)", () => {
     expect(legacy.blocks[0]).not.toHaveProperty("exists");
     expect(legacy.blocks[0]).not.toHaveProperty("size");
     expect(legacy.blocks[0]).not.toHaveProperty("source");
+  });
+
+  it("separates adjacent deltas by SDK internal round", () => {
+    let t = reduceEvent(emptyTurn(), { type: "round_start", iteration: 0 });
+    t = reduceEvent(t, { type: "thinking", content: "first" });
+    t = reduceEvent(t, { type: "round_start", iteration: 1 });
+    t = reduceEvent(t, { type: "thinking", content: "second" });
+
+    expect(t.activeRound).toBe(1);
+    expect(t.blocks).toHaveLength(2);
+    expect(t.blocks[0]).toMatchObject({ kind: "thinking", content: "first", round: 0 });
+    expect(t.blocks[1]).toMatchObject({ kind: "thinking", content: "second", round: 1 });
+  });
+
+  it("keeps a completed tool in its original round", () => {
+    let t = reduceEvent(emptyTurn(), { type: "round_start", iteration: 0 });
+    t = reduceEvent(t, { type: "tool_start", call_id: "c1", tool_name: "Read", input: "a" });
+    t = reduceEvent(t, { type: "round_start", iteration: 1 });
+    t = reduceEvent(t, { type: "tool_end", call_id: "c1", tool_name: "Read", status: "ok", output: "done" });
+
+    expect(t.blocks[0]).toMatchObject({ kind: "tool", round: 0, status: "ok" });
+  });
+
+  it("treats duplicate round starts as idempotent", () => {
+    let t = reduceEvent(emptyTurn(), { type: "round_start", iteration: 2 });
+    t = reduceEvent(t, { type: "thinking", content: "a" });
+    t = reduceEvent(t, { type: "round_start", iteration: 2 });
+    t = reduceEvent(t, { type: "thinking", content: "b" });
+
+    expect(t.blocks).toHaveLength(1);
+    expect(t.blocks[0]).toMatchObject({ content: "ab", round: 2 });
+  });
+
+  it("demotes a temporary final answer when another round starts", () => {
+    let t = reduceEvent(emptyTurn(), { type: "round_start", iteration: 0 });
+    t = reduceEvent(t, { type: "text", content: "temporary" });
+    t = reduceEvent(t, { type: "finish", reason: "stop" });
+    expect(t.finalNodeId).toBeTruthy();
+
+    t = reduceEvent(t, { type: "round_start", iteration: 1 });
+    expect(t.finalNodeId).toBeUndefined();
+    expect(t.finishReason).toBeUndefined();
+    expect(t.blocks[0]).toMatchObject({ kind: "text", final: false, round: 0 });
   });
 
   it("tracks latest prompt token count and accumulates completion/total", () => {
@@ -260,6 +269,10 @@ describe("chat-store.send", () => {
     (streamChat as any).mockImplementation(async function* () {
       throw new Error("boom");
     });
+    // The error path probes /api/chat/events via fetch to see if the sidecar run
+    // kept going; stub it to reject so catchUpEvents bails out without a real
+    // network lookup.
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("net"); }));
 
     await useChatStore.getState().send("hi");
 
@@ -267,6 +280,7 @@ describe("chat-store.send", () => {
     const err = reply.blocks.find((b) => b.kind === "error");
     expect(err).toMatchObject({ kind: "error" });
     expect((err as { content: string }).content).toContain("boom");
+    vi.unstubAllGlobals();
   });
 
   it("does NOT mark a partial answer final when the turn errored mid-stream", async () => {
@@ -276,12 +290,14 @@ describe("chat-store.send", () => {
       yield { type: "text", content: "partial..." };
       throw new Error("boom");
     });
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("net"); }));
 
     await useChatStore.getState().send("hi");
     const reply = useChatStore.getState().turns[1] as AssistantTurn;
     const text = reply.blocks.find((b) => b.kind === "text");
     expect((text as { final?: boolean }).final).toBeFalsy();
     expect(reply.blocks.some((b) => b.kind === "error")).toBe(true);
+    vi.unstubAllGlobals();
   });
 
   it("catches up buffered events after a mid-stream disconnect", async () => {
@@ -387,12 +403,17 @@ describe("chat-store.send", () => {
   });
 
   it("loadConversation activates + hydrates turns from the loaded record", async () => {
+    // loadConversation also probes the bound-model endpoint; stub fetch so the
+    // real network lookup (host "test") doesn't hang the test.
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("net"); }));
+
     await useChatStore.getState().loadConversation("c-old");
     const st = useChatStore.getState();
     expect(st.conversationId).toBe("c-old");
     expect(st.turns).toHaveLength(1);
     expect((st.turns[0] as any).content).toBe("loaded");
     expect(st.title).toBe("old");      // from the open() mock record's title
+    vi.unstubAllGlobals();
   });
 
   it("send posts the finalized turn pair when a conversation is active", async () => {
