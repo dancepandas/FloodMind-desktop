@@ -6,19 +6,20 @@ cd "$(dirname "$0")"
 
 DESKTOP_VERSION="${FLOODMIND_DESKTOP_VERSION:-0.0.0}"
 GIT_COMMIT="${FLOODMIND_GIT_COMMIT:-unknown}"
+PYTHON_BIN="${FLOODMIND_BUILD_PYTHON:-python}"
 BUILD_DIR="build-nuitka"
 RAW_DIST="$BUILD_DIR/entry.dist"
 STABLE_DIST="$BUILD_DIR/floodmind-sidecar.dist"
 
-if [ "$(python -c 'import sys; print(sys.platform)')" != "win32" ]; then
+if [ "$("$PYTHON_BIN" -c 'import sys; print(sys.platform)')" != "win32" ]; then
   echo "error: the Windows sidecar must be compiled with native Windows Python" >&2
   exit 1
 fi
-if [ "$(python -c 'import struct; print(struct.calcsize("P") * 8)')" != "64" ]; then
+if [ "$("$PYTHON_BIN" -c 'import struct; print(struct.calcsize("P") * 8)')" != "64" ]; then
   echo "error: a 64-bit Python interpreter is required" >&2
   exit 1
 fi
-python -c 'import nuitka' >/dev/null 2>&1 || {
+"$PYTHON_BIN" -c 'import nuitka' >/dev/null 2>&1 || {
   echo "error: Nuitka is missing; install sidecar/requirements-build.txt first" >&2
   exit 1
 }
@@ -27,7 +28,7 @@ python -c 'import nuitka' >/dev/null 2>&1 || {
 # cache remains available outside these output directories.
 rm -rf "$RAW_DIST" "$STABLE_DIST" "$BUILD_DIR/entry.build" "$BUILD_DIR/entry.onefile-build"
 
-python -m nuitka \
+"$PYTHON_BIN" -m nuitka \
   --standalone \
   --follow-imports \
   --include-package=floodmind \
@@ -49,13 +50,13 @@ if [ ! -s "$EXE" ]; then
   exit 1
 fi
 
-PYTHON_VERSION="$(python -c 'import platform; print(platform.python_version())')"
-NUITKA_VERSION="$(python -m nuitka --version | head -n 1 | tr -d '\r')"
-SIDECAR_VERSION="$(python -c 'from importlib.metadata import version; print(version("floodmind-desktop-sidecar"))' 2>/dev/null || printf unknown)"
-FLOODMIND_VERSION="$(python -c 'from importlib.metadata import version; print(version("floodmind"))' 2>/dev/null || printf unknown)"
-BUILT_AT="$(python -c 'from datetime import datetime, timezone; print(datetime.now(timezone.utc).isoformat())')"
+PYTHON_VERSION="$("$PYTHON_BIN" -c 'import platform; print(platform.python_version())')"
+NUITKA_VERSION="$("$PYTHON_BIN" -m nuitka --version | head -n 1 | tr -d '\r')"
+SIDECAR_VERSION="$("$PYTHON_BIN" -c 'from importlib.metadata import version; print(version("floodmind-desktop-sidecar"))' 2>/dev/null || printf unknown)"
+FLOODMIND_VERSION="$("$PYTHON_BIN" -c 'from importlib.metadata import version; print(version("floodmind"))' 2>/dev/null || printf unknown)"
+BUILT_AT="$("$PYTHON_BIN" -c 'from datetime import datetime, timezone; print(datetime.now(timezone.utc).isoformat())')"
 
-python - "$RAW_DIST/build-info.json" <<PY
+"$PYTHON_BIN" - "$RAW_DIST/build-info.json" <<PY
 import json, pathlib
 path = pathlib.Path(r"$RAW_DIST/build-info.json")
 data = {

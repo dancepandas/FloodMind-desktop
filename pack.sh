@@ -8,6 +8,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 export CI=true
+BUILD_PYTHON="${FLOODMIND_BUILD_PYTHON:-python}"
 VERSION="$(node -p 'require("./package.json").version')"
 TAURI_VERSION="$(node -p 'require("./src-tauri/tauri.conf.json").version')"
 CARGO_VERSION="$(python -c 'import pathlib,re; print(re.search(r"^version\s*=\s*\"([^\"]+)\"", pathlib.Path("src-tauri/Cargo.toml").read_text(), re.M).group(1))')"
@@ -21,17 +22,17 @@ for cmd in git node npm python rustc cargo powershell.exe; do
 done
 [ "$VERSION" = "$TAURI_VERSION" ] && [ "$VERSION" = "$CARGO_VERSION" ] || \
   fail "version mismatch: package=$VERSION tauri=$TAURI_VERSION cargo=$CARGO_VERSION"
-[ "$(python -c 'import sys; print(sys.platform)')" = "win32" ] || fail "native Windows Python is required"
-[ "$(python -c 'import struct; print(struct.calcsize("P") * 8)')" = "64" ] || fail "64-bit Python is required"
+[ "$("$BUILD_PYTHON" -c 'import sys; print(sys.platform)')" = "win32" ] || fail "native Windows build Python is required"
+[ "$("$BUILD_PYTHON" -c 'import struct; print(struct.calcsize("P") * 8)')" = "64" ] || fail "64-bit build Python is required"
 rustc -vV | grep -q 'host: x86_64-pc-windows-msvc' || fail "Rust MSVC x64 host is required"
 if ! git diff --quiet || ! git diff --cached --quiet; then
   fail "tracked files have uncommitted changes; commit release changes before packaging"
 fi
 
-# Build dependencies are project-owned and version-pinned. This intentionally
-# modifies the active packaging environment, never the end user's machine.
-python -m pip install -r sidecar/requirements-build.txt
-python -c 'import nuitka' >/dev/null 2>&1 || fail "Nuitka installation failed"
+# Build dependencies are project-owned and version-pinned. The build interpreter
+# may be a dedicated Python 3.12 environment even when development uses 3.13.
+"$BUILD_PYTHON" -m pip install -e './sidecar[build]'
+"$BUILD_PYTHON" -c 'import nuitka, floodmind, floodmind_desktop_sidecar' >/dev/null 2>&1 || fail "build Python dependencies are incomplete"
 
 # Lock-respecting dependency and test gates. `npm ci` cannot replace esbuild.exe
 # while a local Vite/Tauri dev process is using it; release maintainers may set
@@ -53,7 +54,8 @@ cargo test --locked --manifest-path src-tauri/Cargo.toml
 
 # Always compile from current sources; build_sidecar.sh removes old release trees.
 echo ">> building fresh sidecar with Nuitka …"
-FLOODMIND_DESKTOP_VERSION="$VERSION" FLOODMIND_GIT_COMMIT="$COMMIT" bash sidecar/build_sidecar.sh
+FLOODMIND_DESKTOP_VERSION="$VERSION" FLOODMIND_GIT_COMMIT="$COMMIT" \
+  FLOODMIND_BUILD_PYTHON="$BUILD_PYTHON" bash sidecar/build_sidecar.sh
 SIDE_EXE="sidecar/build-nuitka/floodmind-sidecar.dist/floodmind-sidecar.exe"
 [ -s "$SIDE_EXE" ] || fail "fresh sidecar executable is missing"
 
