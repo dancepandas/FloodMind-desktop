@@ -10,7 +10,7 @@ dependencies = [
 
 [project.optional-dependencies]
 build = [
-    "Nuitka==2.7.16",
+    "Nuitka==4.2",
     "ordered-set==4.1.0",
     "zstandard==0.24.0",
 ]
