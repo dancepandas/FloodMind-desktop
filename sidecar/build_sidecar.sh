@@ -35,6 +35,7 @@ python -m nuitka \
   --include-package=floodmind_desktop_sidecar \
   --include-package-data=floodmind_desktop_sidecar \
   --enable-plugin=anti-bloat \
+  --mingw64 \
   --assume-yes-for-downloads \
   --windows-console-mode=disable \
   --output-dir="$BUILD_DIR" \
