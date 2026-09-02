@@ -6,32 +6,42 @@ param(
 
 $ErrorActionPreference = "Stop"
 $exe = (Resolve-Path $SidecarExe).Path
+$dir = Split-Path $exe -Parent
 $stdout = [System.IO.Path]::GetTempFileName()
 $stderr = [System.IO.Path]::GetTempFileName()
 $process = $null
 
 try {
-    $process = Start-Process -FilePath $exe -PassThru -WindowStyle Hidden `
-        -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+    # Start-Process cannot keep the GUI-subsystem exe alive when its stdio is a
+    # console-less temp redirect; spawn via cmd so the pipe stays attached the
+    # same way Rust's std::process::Command does in production.
+    $pinfo = New-Object System.Diagnostics.ProcessStartInfo
+    $pinfo.FileName = $exe
+    $pinfo.WorkingDirectory = $dir
+    $pinfo.UseShellExecute = $false
+    $pinfo.RedirectStandardOutput = $true
+    $pinfo.RedirectStandardError = $true
+    $pinfo.CreateNoWindow = $true
+    $process = [System.Diagnostics.Process]::Start($pinfo)
     $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
-    $line = $null
+    $readyLine = $null
+    $outTask = $process.StandardOutput.ReadLineAsync()
+    $errBuffer = New-Object System.Text.StringBuilder
 
+    $errTask = $process.StandardError.ReadToEndAsync()
     while ([DateTime]::UtcNow -lt $deadline) {
-        if (Test-Path $stdout) {
-            $line = Get-Content $stdout -TotalCount 1 -ErrorAction SilentlyContinue
-            if ($line) { break }
+        if ($outTask.IsCompleted) {
+            $readyLine = $outTask.Result
+            break
         }
         if ($process.HasExited) {
-            $errText = Get-Content $stderr -Raw -ErrorAction SilentlyContinue
-            throw "Sidecar exited before READY (code $($process.ExitCode)): $errText"
+            throw "Sidecar exited before READY (code $($process.ExitCode)). stderr: $($errTask.Result)"
         }
         Start-Sleep -Milliseconds 200
-        $process.Refresh()
     }
 
-    if (-not $line -or $line -notmatch '^READY ([0-9]+)$') {
-        $errText = Get-Content $stderr -Raw -ErrorAction SilentlyContinue
-        throw "Sidecar did not report READY within ${TimeoutSeconds}s. First line: '$line'. stderr: $errText"
+    if (-not $readyLine -or $readyLine -notmatch '^READY ([0-9]+)$') {
+        throw "Sidecar did not report READY within ${TimeoutSeconds}s. First line: '$readyLine'. stderr: $($errTask.Result)"
     }
 
     $port = [int]$Matches[1]

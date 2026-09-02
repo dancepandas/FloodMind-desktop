@@ -52,6 +52,25 @@ if [ ! -s "$EXE" ]; then
   exit 1
 fi
 
+# MinGW-compiled _ctypes.pyd links against the conda libffi runtime (ffi.dll),
+# which Nuitka does not collect; without it the frozen exe dies in bootstrap
+# with a silent hard-import abort (exit 3) at 'import ctypes'.
+if [ ! -f "$RAW_DIST/ffi.dll" ]; then
+  FFI_SRC="$("$PYTHON_BIN" -c 'import os, sys; p = os.path.join(os.path.dirname(os.path.dirname(sys.executable)), "Library", "bin", "ffi.dll"); print(p if os.path.isfile(p) else "")')"
+  if [ -n "$FFI_SRC" ]; then
+    cp "$FFI_SRC" "$RAW_DIST/ffi.dll"
+  else
+    echo "error: ffi.dll not found next to the build interpreter; MinGW _ctypes needs it" >&2
+    rm -rf "$RAW_DIST"
+    exit 1
+  fi
+fi
+if [ ! -f "$RAW_DIST/_ctypes.pyd" ] || [ ! -f "$RAW_DIST/ffi.dll" ]; then
+  echo "error: _ctypes.pyd/ffi.dll pair is incomplete in the standalone tree" >&2
+  rm -rf "$RAW_DIST"
+  exit 1
+fi
+
 PYTHON_VERSION="$("$PYTHON_BIN" -c 'import platform; print(platform.python_version())')"
 NUITKA_VERSION="$("$PYTHON_BIN" -m nuitka --version | head -n 1 | tr -d '\r')"
 SIDECAR_VERSION="$("$PYTHON_BIN" -c 'from importlib.metadata import version; print(version("floodmind-desktop-sidecar"))' 2>/dev/null || printf unknown)"
