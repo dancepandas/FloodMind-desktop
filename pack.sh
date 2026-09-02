@@ -33,9 +33,16 @@ fi
 python -m pip install -r sidecar/requirements-build.txt
 python -c 'import nuitka' >/dev/null 2>&1 || fail "Nuitka installation failed"
 
-# Lock-respecting dependency and test gates.
-echo ">> installing frontend dependencies from package-lock.json …"
-npm ci
+# Lock-respecting dependency and test gates. `npm ci` cannot replace esbuild.exe
+# while a local Vite/Tauri dev process is using it; release maintainers may set
+# FLOODMIND_SKIP_NPM_CI=1 only when the existing tree already passes `npm ls`.
+if [ "${FLOODMIND_SKIP_NPM_CI:-0}" = "1" ]; then
+  echo ">> validating existing frontend dependencies (npm ci explicitly skipped) …"
+  npm ls --depth=0 >/dev/null
+else
+  echo ">> installing frontend dependencies from package-lock.json …"
+  npm ci
+fi
 echo ">> frontend tests and production build …"
 npm test -- --run
 npm run build
