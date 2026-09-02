@@ -56,7 +56,7 @@ fi
 # which Nuitka does not collect; without it the frozen exe dies in bootstrap
 # with a silent hard-import abort (exit 3) at 'import ctypes'.
 if [ ! -f "$RAW_DIST/ffi.dll" ]; then
-  FFI_SRC="$("$PYTHON_BIN" -c 'import os, sys; p = os.path.join(os.path.dirname(os.path.dirname(sys.executable)), "Library", "bin", "ffi.dll"); print(p if os.path.isfile(p) else "")')"
+  FFI_SRC="$("$PYTHON_BIN" -c 'import os, sys; p = os.path.join(os.path.dirname(sys.executable), "Library", "bin", "ffi.dll"); print(p if os.path.isfile(p) else "")')"
   if [ -n "$FFI_SRC" ]; then
     cp "$FFI_SRC" "$RAW_DIST/ffi.dll"
   else
