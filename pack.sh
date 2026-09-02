@@ -24,7 +24,7 @@ done
   fail "version mismatch: package=$VERSION tauri=$TAURI_VERSION cargo=$CARGO_VERSION"
 [ "$("$BUILD_PYTHON" -c 'import sys; print(sys.platform)')" = "win32" ] || fail "native Windows build Python is required"
 [ "$("$BUILD_PYTHON" -c 'import struct; print(struct.calcsize("P") * 8)')" = "64" ] || fail "64-bit build Python is required"
-rustc -vV | grep -q 'host: x86_64-pc-windows-msvc' || fail "Rust MSVC x64 host is required"
+rustc -vV 2>/dev/null | grep -q 'host: x86_64-pc-windows-msvc' || fail "Rust MSVC x64 host is required"
 if ! git diff --quiet || ! git diff --cached --quiet; then
   fail "tracked files have uncommitted changes; commit release changes before packaging"
 fi
