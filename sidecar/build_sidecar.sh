@@ -37,6 +37,8 @@ rm -rf "$RAW_DIST" "$STABLE_DIST" "$BUILD_DIR/entry.build" "$BUILD_DIR/entry.one
   --include-package-data=floodmind_desktop_sidecar \
   --enable-plugin=anti-bloat \
   --mingw64 \
+  --low-memory \
+  --jobs=1 \
   --assume-yes-for-downloads \
   --windows-console-mode=disable \
   --output-dir="$BUILD_DIR" \
