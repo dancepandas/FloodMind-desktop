@@ -31,8 +31,14 @@ fi
 
 # Build dependencies are project-owned and version-pinned. The build interpreter
 # may be a dedicated Python 3.12 environment even when development uses 3.13.
-"$BUILD_PYTHON" -m pip install -e './sidecar[build]'
-"$BUILD_PYTHON" -c 'import nuitka, floodmind, floodmind_desktop_sidecar' >/dev/null 2>&1 || fail "build Python dependencies are incomplete"
+# If that interpreter already has everything (normal case after first setup),
+# skip reinstalling to avoid re-resolving the FloodMind git tag over the network.
+if "$BUILD_PYTHON" -c 'import nuitka, floodmind, floodmind_desktop_sidecar' >/dev/null 2>&1; then
+  echo ">> build Python environment is ready (nuitka + floodmind + sidecar importable)"
+else
+  "$BUILD_PYTHON" -m pip install -e './sidecar[build]'
+  "$BUILD_PYTHON" -c 'import nuitka, floodmind, floodmind_desktop_sidecar' >/dev/null 2>&1 || fail "build Python dependencies are incomplete"
+fi
 
 # Lock-respecting dependency and test gates. `npm ci` cannot replace esbuild.exe
 # while a local Vite/Tauri dev process is using it; release maintainers may set
