@@ -8,6 +8,14 @@ dependencies = [
     "floodmind @ git+https://github.com/dancepandas/FloodMind.git@v2.1.9",
 ]
 
+[project.optional-dependencies]
+build = [
+    "Nuitka==2.7.16",
+    "ordered-set==4.1.0",
+    "zstandard==0.24.0",
+]
+test = ["pytest>=8,<10"]
+
 [project.scripts]
 floodmind-sidecar = "floodmind_desktop_sidecar.__main__:main"
 
