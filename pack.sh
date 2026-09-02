@@ -59,6 +59,12 @@ echo ">> Rust tests …"
 cargo test --locked --manifest-path src-tauri/Cargo.toml
 
 # Always compile from current sources; build_sidecar.sh removes old release trees.
+# MinGW64 backend requires Python <= 3.12, so the build interpreter must be the
+# dedicated 3.12 environment (FLOODMIND_BUILD_PYTHON), not the dev 3.13 one.
+case "$("$BUILD_PYTHON" -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")')" in
+  3.10|3.11|3.12) ;;
+  *) fail "FLOODMIND_BUILD_PYTHON must be Python 3.10-3.12 (MinGW64 requirement); got $("$BUILD_PYTHON" --version 2>&1)" ;;
+esac
 echo ">> building fresh sidecar with Nuitka …"
 FLOODMIND_DESKTOP_VERSION="$VERSION" FLOODMIND_GIT_COMMIT="$COMMIT" \
   FLOODMIND_BUILD_PYTHON="$BUILD_PYTHON" bash sidecar/build_sidecar.sh
