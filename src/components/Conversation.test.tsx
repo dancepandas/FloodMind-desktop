@@ -1,5 +1,5 @@
-import { describe, it, expect, afterEach, beforeAll, vi } from "vitest";
-import { render, screen, cleanup, fireEvent } from "@testing-library/react";
+import { describe, it, expect, afterEach, vi } from "vitest";
+import { render, screen, cleanup, fireEvent, act } from "@testing-library/react";
 import Conversation from "./Conversation";
 import { useChatStore, _resetBlockIdsForTest, type ArtifactBlock, type Block, type AssistantTurn } from "../state/chat-store";
 import { useUiStore } from "../state/ui-store";
@@ -12,14 +12,6 @@ vi.mock("../lib/open-file", () => ({
 vi.mock("../lib/chat-stream", () => ({
   streamChat: vi.fn(),
 }));
-
-// jsdom doesn't implement Element.scrollIntoView; the Conversation mounts and
-// runs its auto-scroll effect on every test, so stub it before any render.
-beforeAll(() => {
-  if (!Element.prototype.scrollIntoView) {
-    Element.prototype.scrollIntoView = function () {};
-  }
-});
 
 afterEach(() => {
   cleanup();
@@ -57,6 +49,31 @@ function seedAssistant(
 }
 
 describe("Conversation", () => {
+  it("keeps a reader in history during streaming and exposes an accessible jump-to-latest action", () => {
+    let height = 1400;
+    const heightSpy = vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockImplementation(() => height);
+    const viewportSpy = vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(400);
+    try {
+      seedAssistant([{ id: "live", kind: "text", content: "正在答复" }], false, true);
+      const { container } = render(<Conversation />);
+      const viewport = container.querySelector<HTMLDivElement>(".conversation")!;
+      viewport.scrollTop = 200;
+      fireEvent.scroll(viewport);
+      expect(screen.getByRole("button", { name: "跳转到最新消息" })).toBeInTheDocument();
+      height = 1800;
+      act(() => seedAssistant([{ id: "live", kind: "text", content: "正在答复，新增内容" }], false, true));
+      expect(viewport.scrollTop).toBe(200);
+      expect(screen.getByText("正在答复，新增内容")).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "跳转到最新消息" }));
+      // jsdom doesn't clamp scrollTop; the browser clamps this to height - clientHeight.
+      expect(viewport.scrollTop).toBe(1800);
+      expect(screen.queryByRole("button", { name: "跳转到最新消息" })).not.toBeInTheDocument();
+    } finally {
+      heightSpy.mockRestore();
+      viewportSpy.mockRestore();
+    }
+  });
+
   it("renders image thumbnails on a user turn that carried images", () => {
     useChatStore.setState({
       turns: [

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import PageHeader from "./PageHeader";
 import { useCatalogStore, type McpServerForm } from "../state/catalog-store";
 import McpEditModal from "./McpEditModal";
+import "../styles/catalog.css";
 
 export default function McpView() {
   const servers = useCatalogStore((s) => s.mcpServers);
@@ -80,7 +81,7 @@ export default function McpView() {
   };
 
   return (
-    <div className="page">
+    <div className="page catalog-page" role="region" aria-label="MCP 服务器" tabIndex={0}>
       <PageHeader title={`MCP 服务器（${servers.length}）`}>
         <button
           className="btn-primary"
@@ -91,8 +92,8 @@ export default function McpView() {
           ＋ 新建
         </button>
       </PageHeader>
-      <div className="page-body master-detail">
-        <ul className="cat-list">
+      <div className="page-body catalog-body">
+        <ul className="cat-list catalog-grid" aria-label="MCP 服务器列表">
           {servers.length === 0 && <li className="cat-empty">未配置 MCP 服务器</li>}
           {servers.map((s) => {
             const dotClass = s.health_ok === false
@@ -111,20 +112,22 @@ export default function McpView() {
                   className={selected === s.name ? "cat-item active" : "cat-item"}
                   onClick={() => { setSelected(s.name); setTestResult(null); }}
                   type="button"
+                  aria-pressed={selected === s.name}
+                  aria-controls="mcp-detail"
                 >
                   <span className="cat-name" title={title}>
                     <span className={dotClass} /> {s.name}
                   </span>
                   {s.transport && <span className="cat-tag">{s.transport}</span>}
-                  <span className="cat-desc">{s.tools ?? 0} 个工具</span>
+                  <span className="cat-desc">{s.tools ?? 0} 个工具 · {s.health_ok === false ? "调用异常" : s.connected ? "已连接" : "未连接"}</span>
                 </button>
               </li>
             );
           })}
         </ul>
-        <div className="cat-detail">
-          {!selected && <div className="cat-empty">选择左侧服务器查看工具</div>}
-          {selected && detail && (
+        <div className="cat-detail" id="mcp-detail" role="region" aria-label="服务器详情" aria-busy={detailLoading}>
+          {!selected && <div className="cat-empty">选择一个服务器查看工具</div>}
+          {selected && detail?.name === selected && !detailLoading && (
             <>
               <div className="cat-detail-head">
                 <h2>{detail.name}</h2>

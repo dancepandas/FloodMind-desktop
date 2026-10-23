@@ -1,0 +1,160 @@
+/* Catalog galleries are scoped to beat legacy app.css, regardless of import order. */
+.catalog-page.page,
+.catalog-page.tasks-view,
+.catalog-page.experience-view {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  max-width: none;
+  flex: 1;
+  overflow: auto;
+  scrollbar-gutter: stable;
+}
+
+.catalog-page.page,
+.catalog-page.tasks-view {
+  display: block;
+}
+
+.catalog-page .catalog-body,
+.catalog-page .tasks-layout {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  max-width: none;
+  margin: 0;
+  padding: var(--space-6);
+  overflow: visible;
+}
+
+.catalog-page .catalog-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 1fr));
+  align-items: stretch;
+  gap: var(--space-3);
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.catalog-page .catalog-grid > li { min-width: 0; }
+.catalog-page .catalog-grid > .cat-empty,
+.catalog-page .catalog-grid > .tree-empty { grid-column: 1 / -1; }
+
+.catalog-page .cat-item,
+.catalog-page .task-card,
+.catalog-page .draft-skill-card,
+.catalog-page .experience-card {
+  box-sizing: border-box;
+  min-width: 0;
+  padding: var(--space-4);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-panel);
+  background: var(--surface);
+  color: var(--fg);
+  overflow-wrap: anywhere;
+}
+
+.catalog-page .cat-item,
+.catalog-page .task-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+  width: 100%;
+  height: 100%;
+  min-height: 142px;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+  transition: border-color 140ms ease, background-color 140ms ease;
+}
+
+.catalog-page .cat-item:hover,
+.catalog-page .task-card:hover,
+.catalog-page .experience-card:hover,
+.catalog-page .draft-skill-card:hover { border-color: var(--border); }
+
+.catalog-page .cat-item.active,
+.catalog-page .task-card.active {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 5%, var(--surface));
+}
+
+.catalog-page .cat-name { flex-wrap: wrap; font-size: 14px; }
+.catalog-page .cat-desc {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  line-height: 1.6;
+}
+.catalog-page .cat-tag { max-width: 100%; }
+.catalog-page .cat-detail,
+.catalog-page .tasks-detail {
+  flex: none;
+  min-width: 0;
+  padding: var(--space-6);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-panel);
+  background: var(--surface);
+  overflow: visible;
+  overflow-wrap: anywhere;
+}
+.catalog-page .cat-detail-head,
+.catalog-page .task-detail-actions { flex-wrap: wrap; }
+.catalog-page .cat-prompt pre { border-radius: var(--radius-control); }
+.catalog-page .cat-tool-chip { max-width: 100%; border-radius: var(--radius-control); }
+
+.catalog-page .draft-skills {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+}
+.catalog-page .draft-skills-head { margin-bottom: var(--space-3); }
+.catalog-page .draft-skill-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  border-top: 1px solid var(--border-soft);
+}
+.catalog-page .draft-skill-card:first-of-type { border-top: 1px solid var(--border-soft); }
+.catalog-page .draft-skill-actions { margin-top: auto; padding-top: var(--space-2); flex-wrap: wrap; }
+
+.catalog-page.experience-view { margin: 0; padding: var(--space-6); }
+.catalog-page .experience-toolbar { flex-wrap: wrap; }
+.catalog-page .experience-search { min-width: min(100%, 220px); border-radius: var(--radius-control); }
+.catalog-page .experience-group { margin-bottom: var(--space-6); }
+.catalog-page .experience-domain { margin-bottom: var(--space-3); }
+.catalog-page .experience-card { margin: 0; display: flex; flex-direction: column; }
+.catalog-page .experience-meta { flex-wrap: wrap; gap: var(--space-2); margin-top: auto; padding-top: var(--space-3); }
+.catalog-page .experience-actions { flex-wrap: wrap; margin-left: 0; }
+.catalog-page .experience-outcome,
+.catalog-page .experience-skill,
+.catalog-page .btn-mini { border-radius: var(--radius-control); }
+
+.catalog-page .tasks-header { flex-wrap: wrap; padding: var(--space-4) var(--space-6) 0; }
+.catalog-page .tasks-note { flex: 1; min-width: min(100%, 220px); }
+.catalog-page .tasks-list { border: 0; overflow: visible; }
+.catalog-page .task-card-command { font-size: 14px; font-weight: 600; line-height: 1.5; }
+.catalog-page .task-card-status,
+.catalog-page .task-card-schedule,
+.catalog-page .task-card-next { font-size: 12px; color: var(--muted); }
+.catalog-page .task-card-status { display: flex; align-items: center; gap: var(--space-2); }
+.catalog-page .task-card .task-dot { flex: 0 0 auto; }
+.catalog-page .task-card-next { margin-top: auto; }
+.catalog-page .task-detail-command { overflow-wrap: anywhere; }
+
+@media (max-width: 520px) {
+  .catalog-page .catalog-body,
+  .catalog-page .tasks-layout,
+  .catalog-page.experience-view { padding: var(--space-4); }
+  .catalog-page .cat-detail,
+  .catalog-page .tasks-detail { padding: var(--space-4); }
+}

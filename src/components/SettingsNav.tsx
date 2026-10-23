@@ -18,6 +18,20 @@ export default function SettingsNav({ active, onChange }: { active: Tab; onChang
         <button
           key={i.tab}
           role="tab"
+          id={`settings-tab-${i.tab}`}
+          aria-selected={active === i.tab}
+          aria-controls="settings-panel"
+          tabIndex={active === i.tab ? 0 : -1}
+          onKeyDown={(event) => {
+            const index = ITEMS.findIndex((item) => item.tab === i.tab);
+            const next = event.key === "Home" ? 0 : event.key === "End" ? ITEMS.length - 1
+              : ["ArrowRight", "ArrowDown"].includes(event.key) ? (index + 1) % ITEMS.length
+              : ["ArrowLeft", "ArrowUp"].includes(event.key) ? (index - 1 + ITEMS.length) % ITEMS.length : -1;
+            if (next < 0) return;
+            event.preventDefault();
+            onChange(ITEMS[next].tab);
+            document.getElementById(`settings-tab-${ITEMS[next].tab}`)?.focus();
+          }}
           className={active === i.tab ? "settings-nav-item active" : "settings-nav-item"}
           onClick={() => onChange(i.tab)}
           type="button"

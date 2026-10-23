@@ -3,14 +3,17 @@ import { render, screen, fireEvent, cleanup } from "@testing-library/react";
 import ModelPicker from "./ModelPicker";
 import { useConfigStore } from "../state/config-store";
 
+const chatState = vi.hoisted(() => ({ streaming: false }));
+
 vi.mock("../state/chat-store", () => ({
-  useChatStore: (sel: (s: any) => any) => sel({ streaming: false }),
+  useChatStore: (sel: (s: any) => any) => sel(chatState),
 }));
 
 describe("ModelPicker", () => {
   afterEach(() => cleanup());
 
   beforeEach(() => {
+    chatState.streaming = false;
     useConfigStore.setState({
       model: { provider: "qwen", model: "qwen3.7-plus" } as any,
       enabledModels: [
@@ -60,6 +63,59 @@ describe("ModelPicker", () => {
     expect(onPick).toHaveBeenCalledWith("qwen", "qwen3.6-flash");
   });
 
+  it("picks the keyboard-highlighted model with Enter", () => {
+    const onPick = vi.fn();
+    render(<ModelPicker onPick={onPick} onClose={() => {}} />);
+    const picker = screen.getByRole("listbox");
+    expect(picker).toHaveFocus();
+    fireEvent.keyDown(picker, { key: "ArrowDown" });
+    fireEvent.keyDown(picker, { key: "Enter" });
+    expect(onPick).toHaveBeenCalledExactlyOnceWith("qwen", "qwen3.6-flash");
+  });
+
+  it.each(["switching", "streaming"] as const)("blocks click and Enter selection while %s", (reason) => {
+    if (reason === "switching") useConfigStore.setState({ switching: true });
+    else chatState.streaming = true;
+    const onPick = vi.fn();
+    render(<ModelPicker onPick={onPick} onClose={() => {}} />);
+    const row = screen.getByRole("option", { name: "qwen3.6-flash" });
+    expect(row).toHaveAttribute("aria-disabled", "true");
+    fireEvent.click(row);
+    const picker = screen.getByRole("listbox");
+    fireEvent.keyDown(picker, { key: "ArrowDown" });
+    fireEvent.keyDown(picker, { key: "Enter" });
+    expect(onPick).not.toHaveBeenCalled();
+  });
+
+  it("renders decorative stroke icons without changing action labels", () => {
+    render(<ModelPicker onPick={() => {}} onClose={() => {}} />);
+    expect(screen.getByRole("button", { name: "管理模型…" })).toBeInTheDocument();
+    const icons = document.querySelectorAll(".model-picker-icon");
+    expect(icons).toHaveLength(3);
+    icons.forEach((icon) => {
+      expect(icon).toHaveAttribute("aria-hidden", "true");
+      expect(icon).toHaveAttribute("focusable", "false");
+      expect(icon).toHaveAttribute("stroke-linecap", "round");
+    });
+  });
+
+  it("uses displayed provider group order for Home, End and Space selection", () => {
+    useConfigStore.setState({
+      enabledModels: [{ provider: "qwen", model: "qwen3.7-plus" }, { provider: "moonshot", model: "kimi-2.6" }, { provider: "qwen", model: "qwen3.6-flash" }],
+      providers: useConfigStore.getState().providers.map((p) => ({ ...p, apiKeyPresent: true })),
+    });
+    const onPick = vi.fn();
+    render(<ModelPicker onPick={onPick} onClose={() => {}} />);
+    const list = screen.getByRole("listbox");
+    fireEvent.keyDown(list, { key: "End" });
+    expect(list.getAttribute("aria-activedescendant")).toBe(screen.getByRole("option", { name: "kimi-2.6" }).id);
+    fireEvent.keyDown(list, { key: " " });
+    expect(onPick).toHaveBeenLastCalledWith("moonshot", "kimi-2.6");
+    fireEvent.keyDown(list, { key: "Home" });
+    expect(screen.getByRole("option", { name: "qwen3.7-plus" })).toHaveAttribute("aria-selected", "true");
+    expect(list.getAttribute("aria-activedescendant")).toBe(screen.getByRole("option", { name: "qwen3.7-plus" }).id);
+  });
+
   it("allows picking local provider (ollama) models without an api key", () => {
     useConfigStore.setState({
       model: { provider: "ollama", model: "llama3" } as any,
@@ -72,7 +128,7 @@ describe("ModelPicker", () => {
     } as any);
     const onPick = vi.fn();
     render(<ModelPicker onPick={onPick} onClose={() => {}} />);
-    const btn = screen.getByText("llama3").closest("button")!;
+    const btn = screen.getByRole("option", { name: "llama3" });
     expect(btn).not.toHaveAttribute("disabled");
     fireEvent.click(btn);
     expect(onPick).toHaveBeenCalledWith("ollama", "llama3");

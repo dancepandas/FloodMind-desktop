@@ -4,6 +4,8 @@ import Composer, { collectPastedImages, looksLikeFsPath, toFileRefPath } from ".
 import { useConfigStore } from "../state/config-store";
 import { useBackgroundTaskStore } from "../state/background-task-store";
 import type { FileEntry } from "../state/workspace-store";
+import { WelcomeStarters } from "./WelcomeView";
+import { COMPOSER_DRAFT_EVENT } from "./composer/draft-event";
 
 const sendMock = vi.fn();
 const pauseMock = vi.fn();
@@ -29,13 +31,13 @@ const setPreviewPathMock = vi.fn();
 const openLightboxMock = vi.fn();
 
 vi.mock("../state/chat-store", () => ({
-  useChatStore: (selector: (s: any) => any) =>
+  useChatStore: Object.assign((selector: (s: any) => any) =>
     selector({
       streaming: mockStreaming,
       send: sendMock,
       pause: pauseMock,
       turns: [],
-    }),
+    }), { getState: () => ({ conversationId: "conv-test" }) }),
 }));
 
 // config-store is bridged to the real zustand store so that tests can drive
@@ -66,15 +68,20 @@ vi.mock("../state/workspace-store", () => ({
     }),
 }));
 
-vi.mock("../state/ui-store", () => ({
-  useUiStore: (selector: (s: any) => any) =>
-    selector({
-      setView: setViewMock,
-      showToast: showToastMock,
-      setPreviewPath: setPreviewPathMock,
-      openLightbox: openLightboxMock,
-    }),
-}));
+vi.mock("../state/ui-store", () => {
+  const getState = () => ({
+    setView: setViewMock,
+    showToast: showToastMock,
+    setPreviewPath: setPreviewPathMock,
+    openLightbox: openLightboxMock,
+    openInspector: vi.fn(),
+    closeInspector: vi.fn(),
+    inspectorTab: "files",
+  });
+  return {
+    useUiStore: Object.assign((selector: (s: any) => any) => selector(getState()), { getState }),
+  };
+});
 
 vi.mock("../lib/sidecar-client", () => ({ getBaseUrl: vi.fn(async () => "http://test") }));
 
@@ -168,6 +175,7 @@ describe("Composer", () => {
     vi.clearAllMocks();
     mockFiles = [{ name: "readme.md", type: "file", path: "readme.md" }];
     mockCurrent = { path: "/ws", name: "ws" };
+    mockRecent = [{ path: "/ws2", name: "ws2" }];
     mockPending = [];
     mockImages = [];
     mockStreaming = false;
@@ -190,6 +198,119 @@ describe("Composer", () => {
       enabledModels: [],
       switching: false,
     } as any);
+  });
+
+  it.each([
+    { isComposing: true },
+    { keyCode: 229 },
+  ])("does not send Enter used for native IME confirmation: %o", (nativeFlags) => {
+    render(<Composer />);
+    const input = screen.getByLabelText("任务输入");
+    fireEvent.change(input, { target: { value: "整理会议记录" } });
+    fireEvent.keyDown(input, { key: "Enter", ...nativeFlags });
+    expect(sendMock).not.toHaveBeenCalled();
+    expect(input).toHaveValue("整理会议记录");
+  });
+
+  it("guards composition state and sends normal Enter after composition ends", () => {
+    render(<Composer />);
+    const input = screen.getByLabelText("任务输入");
+    fireEvent.change(input, { target: { value: "整理会议记录" } });
+    fireEvent.compositionStart(input);
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(sendMock).not.toHaveBeenCalled();
+    fireEvent.compositionEnd(input);
+    fireEvent.keyDown(input, { key: "Enter", shiftKey: true });
+    expect(sendMock).not.toHaveBeenCalled();
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(sendMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not let IME confirmation select a slash item through its window listener", async () => {
+    render(<Composer />);
+    const input = screen.getByLabelText("任务输入");
+    fireEvent.change(input, { target: { value: "/code" } });
+    await screen.findByText("code-review");
+    fireEvent.keyDown(input, { key: "Enter", isComposing: true });
+    expect(input).toHaveValue("/code");
+    expect(screen.getByText("Skills")).toBeInTheDocument();
+    expect(sendMock).not.toHaveBeenCalled();
+  });
+
+  it("preserves the composer node, draft and attachments across empty-state layout changes", () => {
+    mockPending = ["notes.txt"];
+    const Stage = ({ empty }: { empty: boolean }) => (
+      <div className={`chat-stage${empty ? " chat-stage-empty" : ""}`}>
+        <div>{empty ? "欢迎" : "消息内容"}</div>
+        <Composer />
+        {empty && <WelcomeStarters />}
+      </div>
+    );
+    const { rerender } = render(<Stage empty />);
+    const input = screen.getByLabelText("任务输入");
+    fireEvent.change(input, { target: { value: "保留这份草稿" } });
+    for (const empty of [false, true]) {
+      rerender(<Stage empty={empty} />);
+      expect(screen.getByLabelText("任务输入")).toBe(input);
+      expect(input).toHaveValue("保留这份草稿");
+      expect(screen.getByLabelText("移除 notes.txt")).toBeInTheDocument();
+    }
+  });
+
+  it("keeps an existing unsent draft when choosing a welcome starter", () => {
+    render(<><WelcomeStarters /><Composer /></>);
+    const input = screen.getByLabelText("任务输入");
+    fireEvent.change(input, { target: { value: "会议记录在附件里" } });
+    fireEvent.click(screen.getByRole("button", { name: /整理一份文档/ }));
+    expect(input).toHaveValue("会议记录在附件里\n\n请帮我整理这份文档，提炼核心观点、关键结论和待办事项。");
+    expect(input).toHaveFocus();
+    expect(sendMock).not.toHaveBeenCalled();
+  });
+
+  it("fills and focuses the draft from a welcome starter without sending", () => {
+    render(<><WelcomeStarters /><Composer /></>);
+    fireEvent.click(screen.getByRole("button", { name: /整理一份文档/ }));
+    const input = screen.getByLabelText("任务输入");
+    expect(input).toHaveValue("请帮我整理这份文档，提炼核心观点、关键结论和待办事项。");
+    expect(input).toHaveFocus();
+    expect(sendMock).not.toHaveBeenCalled();
+  });
+
+  it("closes an open picker when a starter fills the draft and ignores malformed events", async () => {
+    render(<><WelcomeStarters /><Composer /></>);
+    const input = screen.getByLabelText("任务输入");
+    fireEvent.change(input, { target: { value: "/" } });
+    await screen.findByText("Skills");
+    fireEvent.click(screen.getByRole("button", { name: /推进一个计划/ }));
+    expect(screen.queryByText("Skills")).not.toBeInTheDocument();
+    const draft = (input as HTMLTextAreaElement).value;
+    fireEvent(window, new CustomEvent(COMPOSER_DRAFT_EVENT, { detail: { text: 123 } }));
+    expect(input).toHaveValue(draft);
+    expect(sendMock).not.toHaveBeenCalled();
+  });
+
+  it("shows file and image attachments before the editable draft", () => {
+    mockPending = ["notes.txt"];
+    mockImages = [{ id: "im", name: "photo.png", thumb: "data:image/png;base64,AA", mime: "image/png", source: "clipboard" }];
+    render(<Composer />);
+    const tray = screen.getByRole("group", { name: "待发送附件" });
+    const input = screen.getByLabelText("任务输入");
+    expect(tray.compareDocumentPosition(input) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    fireEvent.click(screen.getByLabelText("移除 notes.txt"));
+    expect(removeAttachmentMock).toHaveBeenCalledWith("notes.txt");
+  });
+
+  it("keeps append and pause available while streaming", () => {
+    mockStreaming = true;
+    render(<Composer />);
+    const input = screen.getByLabelText("任务输入");
+    expect(input).toHaveAttribute("placeholder", "追加指令到当前任务… @ 引用文件 · / 选择工具");
+    fireEvent.change(input, { target: { value: "请补充结论" } });
+    fireEvent.click(screen.getByLabelText("发送"));
+    expect(sendMock).toHaveBeenCalledWith("请补充结论", undefined, undefined, undefined, expect.any(String));
+    fireEvent.click(screen.getByLabelText("暂停"));
+    expect(pauseMock).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("button", { name: "工作模式" })).toBeDisabled();
   });
 
   it("opens the file picker when @ is typed", async () => {
@@ -336,12 +457,78 @@ describe("Composer", () => {
     expect(document.activeElement).toBe(textarea);
   });
 
-  it("disables the + affordance when the active model lacks vision", () => {
+  it("opens the file picker and attaches ordinary files without vision support", async () => {
     mockModel = { ...mockModel, supportsVision: false };
     useConfigStore.setState({ model: mockModel } as any);
     render(<Composer />);
-    const addBtn = screen.getByLabelText("引用工作区文件") as HTMLButtonElement;
-    expect(addBtn).toBeDisabled();
+    fireEvent.click(screen.getByLabelText("引用工作区文件"));
+    fireEvent.click(await screen.findByRole("checkbox", { name: "readme.md" }));
+    fireEvent.click(screen.getByRole("button", { name: "确认" }));
+    await waitFor(() => expect(addAttachmentsMock).toHaveBeenCalledWith(["readme.md"]));
+    expect(addImagesMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects unsupported images but keeps ordinary files in a mixed selection", async () => {
+    mockModel = { ...mockModel, supportsVision: false };
+    useConfigStore.setState({ model: mockModel } as any);
+    mockFiles.push({ name: "chart.png", type: "file", path: "chart.png" });
+    render(<Composer />);
+    fireEvent.click(screen.getByLabelText("引用工作区文件"));
+    fireEvent.click(await screen.findByRole("checkbox", { name: "chart.png" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "readme.md" }));
+    fireEvent.click(screen.getByRole("button", { name: "确认" }));
+    await waitFor(() => expect(showToastMock).toHaveBeenCalledWith(expect.stringContaining("不支持图片")));
+    expect(addAttachmentsMock).toHaveBeenCalledExactlyOnceWith(["readme.md"]);
+    expect(addImagesMock).not.toHaveBeenCalled();
+    expect(pathToDataUrlMock).not.toHaveBeenCalled();
+  });
+
+  it.each(["workspace", "streaming"])("disables file selection while missing %s availability", (reason) => {
+    if (reason === "workspace") mockCurrent = null;
+    else mockStreaming = true;
+    render(<Composer />);
+    const button = screen.getByLabelText("引用工作区文件");
+    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute("title", reason === "workspace" ? "请先打开一个工作区" : "任务运行中，暂时无法添加文件");
+  });
+
+  it("places the unframed workspace selector before and outside the form", () => {
+    const { container } = render(<Composer />);
+    const select = screen.getByRole("button", { name: "工作区" });
+    const form = container.querySelector("form")!;
+    expect(select.closest("form, .fm-composer-meta")).toBeNull();
+    expect(select.closest(".fm-workspace-row")).not.toBeNull();
+    expect(select.compareDocumentPosition(form) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("deduplicates the current workspace in recent options", () => {
+    mockRecent = [mockCurrent!, { path: "/ws2", name: "ws2" }];
+    render(<Composer />);
+    fireEvent.click(screen.getByRole("button", { name: "工作区" }));
+    expect(screen.getAllByRole("option", { name: "ws" })).toHaveLength(1);
+  });
+
+  it("keeps workspace selection available without a current workspace", () => {
+    mockCurrent = null;
+    render(<Composer />);
+    const select = screen.getByRole("button", { name: "工作区" });
+    expect(select).toHaveTextContent("未选择");
+    expect(select).not.toBeDisabled();
+    fireEvent.click(select);
+    fireEvent.click(screen.getByRole("button", { name: "打开其他工作区…" }));
+    expect(pickAndOpenMock).toHaveBeenCalledOnce();
+  });
+
+  it("switches recent workspaces and dispatches the folder picker", () => {
+    render(<Composer />);
+    const select = screen.getByRole("button", { name: "工作区" });
+    fireEvent.click(select);
+    fireEvent.click(screen.getByRole("option", { name: "ws2" }));
+    expect(openPathMock).toHaveBeenCalledWith("/ws2");
+    expect(setViewMock).toHaveBeenCalledWith("chat");
+    fireEvent.click(select);
+    fireEvent.click(screen.getByRole("button", { name: "打开其他工作区…" }));
+    expect(pickAndOpenMock).toHaveBeenCalledOnce();
   });
 
   it("keeps the + affordance enabled for a vision-capable model", () => {
@@ -550,7 +737,7 @@ describe("Composer", () => {
     render(<Composer />);
     const badges = screen.getAllByText("外部");
     expect(badges).toHaveLength(1);
-    expect(screen.getByText("notes.txt").closest(".attachment-pill")).not.toBeNull();
+    expect(screen.getByText("notes.txt").closest(".fm-file-card")).not.toBeNull();
   });
 
   it("still routes dropped images to the visual channel", async () => {
@@ -668,12 +855,87 @@ describe("Composer", () => {
       switching: false,
     } as any);
     render(<Composer />);
-    const pill = screen.getByRole("button", { name: /qwen3\.7-plus/ });
+    const pill = screen.getByRole("button", { name: "选择模型" });
+    expect(pill.querySelector("svg")).toBeNull();
+    expect(pill).not.toHaveTextContent("▾");
+    const mode = screen.getByRole("button", { name: "工作模式" });
+    expect(mode.parentElement?.querySelector("svg")).toBeNull();
     fireEvent.click(pill);
     expect(await screen.findByRole("listbox", { name: "选择模型" })).toBeInTheDocument();
   });
 
-  it("renders pending file chips below the input; clicking one opens the preview panel", () => {
+  it("switches model with the active conversation binding and returns focus", async () => {
+    const original = useConfigStore.getState().switchActive;
+    const switchActive = vi.fn().mockResolvedValue(true);
+    useConfigStore.setState({ switchActive, switching: false, enabledModels: [{ provider: "qwen", model: "qwen-test" }], providers: [{ id: "qwen", name: "Qwen", apiKeyPresent: true, models: [{ name: "qwen-test" }] }] } as any);
+    render(<Composer />);
+    const trigger = screen.getByRole("button", { name: "选择模型" });
+    fireEvent.click(trigger);
+    fireEvent.click(screen.getByRole("option", { name: "qwen-test" }));
+    expect(switchActive).toHaveBeenCalledWith("qwen", "qwen-test", "conv-test");
+    expect(trigger).toHaveFocus();
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    await waitFor(() => expect(switchActive).toHaveResolved());
+    useConfigStore.setState({ switchActive: original });
+  });
+
+  it("keeps only one portal menu open and preserves drafts and attachments", () => {
+    mockPending = ["notes/report.txt"];
+    render(<Composer />);
+    const input = screen.getByLabelText("任务输入");
+    fireEvent.change(input, { target: { value: "保留草稿" } });
+    fireEvent.click(screen.getByRole("button", { name: "工作模式" }));
+    expect(screen.getByRole("listbox", { name: "选择工作模式" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "工作区" }));
+    expect(screen.queryByRole("listbox", { name: "选择工作模式" })).not.toBeInTheDocument();
+    expect(screen.getByRole("listbox", { name: "选择工作区" }).closest(".fm-composer-wrap")).toBeNull();
+    expect(input).toHaveValue("保留草稿");
+    expect(screen.getByText("report.txt")).toBeInTheDocument();
+  });
+
+  it("supports mode keyboard navigation, Escape focus and outside dismissal", () => {
+    render(<Composer />);
+    const trigger = screen.getByRole("button", { name: "工作模式" });
+    fireEvent.keyDown(trigger, { key: "ArrowDown" });
+    const list = screen.getByRole("listbox", { name: "选择工作模式" });
+    expect(list).toHaveFocus();
+    fireEvent.keyDown(list, { key: "End" });
+    expect(list.getAttribute("aria-activedescendant")).toBe(screen.getByRole("option", { name: "计划" }).id);
+    fireEvent.keyDown(list, { key: "Home" });
+    expect(list.getAttribute("aria-activedescendant")).toBe(screen.getByRole("option", { name: "执行" }).id);
+    fireEvent.keyDown(list, { key: "Escape" });
+    expect(trigger).toHaveFocus();
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    fireEvent.click(trigger);
+    const input = screen.getByLabelText("任务输入");
+    input.focus();
+    fireEvent.mouseDown(input);
+    expect(input).toHaveFocus();
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+  });
+
+  it("keeps workspace footer outside listbox and Tabs back into toolbar order", () => {
+    render(<Composer />);
+    fireEvent.click(screen.getByRole("button", { name: "工作区" }));
+    const footer = screen.getByRole("button", { name: "打开其他工作区…" });
+    expect(footer.closest('[role="listbox"]')).toBeNull();
+    footer.focus();
+    fireEvent.keyDown(footer, { key: "Tab" });
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("任务输入")).toHaveFocus();
+  });
+
+  it("keeps reference hint inside input and permission in toolbar without empty meta", () => {
+    const { container } = render(<Composer />);
+    expect(screen.getByLabelText("任务输入")).toHaveAttribute("placeholder", "描述你想完成的任务… @ 引用文件 · / 选择工具");
+    expect(screen.queryByText("@ 引用文件 · / 选择工具")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /授权：/ }).closest(".fm-composer-toolbar")).not.toBeNull();
+    expect(screen.getByRole("button", { name: /授权：/ }).querySelector("svg")).toBeNull();
+    expect(screen.getByRole("button", { name: "工作区" }).querySelector("svg")).toBeNull();
+    expect(container.querySelector(".fm-composer-meta")).toBeNull();
+  });
+
+  it("renders pending file chips above the input; clicking one opens the preview panel", () => {
     mockPending = ["notes/report.txt"];
     render(<Composer />);
     // The chip shows the basename; the full path is the preview target.
@@ -701,12 +963,12 @@ describe("Composer", () => {
     });
   });
 
-  it("renders the three work-mode buttons with craft active by default", () => {
+  it("renders a compact work-mode selector with craft active by default", () => {
     useConfigStore.setState({ workMode: "craft" } as any);
     render(<Composer />);
-    expect(screen.getByRole("button", { name: "执行" })).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByRole("button", { name: "问答" })).toHaveAttribute("aria-pressed", "false");
-    expect(screen.getByRole("button", { name: "计划" })).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByRole("button", { name: "工作模式" })).toHaveTextContent("执行");
+    fireEvent.click(screen.getByRole("button", { name: "工作模式" }));
+    for (const name of ["执行", "问答", "计划"]) expect(screen.getByRole("option", { name })).toBeInTheDocument();
   });
 
   it("clicking a mode button saves it and switches the active state", async () => {
@@ -717,13 +979,14 @@ describe("Composer", () => {
     vi.stubGlobal("fetch", fetchMock);
     const { rerender } = render(<Composer />);
 
-    fireEvent.click(screen.getByRole("button", { name: "问答" }));
+    fireEvent.click(screen.getByRole("button", { name: "工作模式" }));
+    fireEvent.click(screen.getByRole("option", { name: "问答" }));
 
     await waitFor(() => expect(useConfigStore.getState().workMode).toBe("ask"));
     // The bridged config-store mock does not subscribe to store changes, so
     // force a re-render to confirm the control reflects the saved mode.
     rerender(<Composer />);
-    expect(screen.getByRole("button", { name: "问答" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "工作模式" })).toHaveTextContent("问答");
     vi.unstubAllGlobals();
   });
 
@@ -737,7 +1000,7 @@ describe("Composer", () => {
     expect(sendMock).toHaveBeenCalledWith("做一个水文报告", undefined, undefined, undefined, "plan");
   });
 
-  it("permission pill cycles to the next mode without navigating to settings", async () => {
+  it("permission menu lists every mode and saves the chosen one without navigating to settings", async () => {
     useConfigStore.setState({ permissionMode: "trust-once" } as any);
     const fetchMock = vi.fn(async () =>
       new Response(JSON.stringify({ ok: true, permissions: { mode: "always-ask" } }), { status: 200 })
@@ -746,13 +1009,20 @@ describe("Composer", () => {
     render(<Composer />);
 
     fireEvent.click(screen.getByRole("button", { name: /授权：首次询问/ }));
+    for (const name of ["首次询问", "每次都问", "完全信任"]) {
+      expect(screen.getByRole("option", { name })).toBeInTheDocument();
+    }
+    expect(screen.getByRole("option", { name: "首次询问" })).toHaveAttribute("aria-selected", "true");
+
+    fireEvent.click(screen.getByRole("option", { name: "每次都问" }));
 
     await waitFor(() => expect(useConfigStore.getState().permissionMode).toBe("always-ask"));
+    expect(screen.queryByRole("listbox", { name: "选择授权模式" })).not.toBeInTheDocument();
     expect(setViewMock).not.toHaveBeenCalled();
     vi.unstubAllGlobals();
   });
 
-  it("permission pill shows the always-trust confirmation before switching", async () => {
+  it("choosing always-trust from the permission menu shows the confirmation before switching", async () => {
     useConfigStore.setState({ permissionMode: "always-ask" } as any);
     const fetchMock = vi.fn(async () =>
       new Response(JSON.stringify({ ok: true, permissions: { mode: "always-trust" } }), { status: 200 })
@@ -761,6 +1031,7 @@ describe("Composer", () => {
     render(<Composer />);
 
     fireEvent.click(screen.getByRole("button", { name: /授权：每次都问/ }));
+    fireEvent.click(screen.getByRole("option", { name: "完全信任" }));
 
     // 确认框先弹出，模式尚未切换
     expect(screen.getByText(/切换到「完全信任」/)).toBeInTheDocument();

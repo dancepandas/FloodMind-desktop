@@ -22,7 +22,7 @@ function fmtTime(epoch: number | null): string {
 /** Right-side panel listing the session's background Bash tasks.
  *  Each running task can be manually terminated (关闭); 返回 dismisses the panel
  *  and returns to the dialog. */
-export default function BackgroundTasksPanel() {
+export default function BackgroundTasksPanel({ embedded = false }: { embedded?: boolean }) {
   const tasks = useBackgroundTaskStore((s) => s.tasks);
   const kill = useBackgroundTaskStore((s) => s.kill);
   const setPanelOpen = useBackgroundTaskStore((s) => s.setPanelOpen);
@@ -30,7 +30,7 @@ export default function BackgroundTasksPanel() {
 
   return (
     <aside className="bg-panel">
-      <div className="bg-panel-header">
+      {!embedded && <div className="bg-panel-header">
         <span className="bg-panel-title">后台任务</span>
         <button
           className="btn-secondary bg-panel-back"
@@ -39,7 +39,7 @@ export default function BackgroundTasksPanel() {
         >
           返回
         </button>
-      </div>
+      </div>}
       {tasks.length === 0 && <div className="bg-panel-empty">暂无后台任务</div>}
       <div className="bg-panel-list">
         {tasks.map((t) => (

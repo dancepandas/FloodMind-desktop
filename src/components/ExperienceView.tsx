@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { getBaseUrl } from "../lib/sidecar-client";
+import "../styles/catalog.css";
 
 interface ExperienceLeaf {
   node_id: string;
@@ -104,7 +105,7 @@ export default function ExperienceView() {
   const leafCount = data.stats.leaf_cases ?? data.leaves.length;
 
   return (
-    <div className="experience-view">
+    <div className="experience-view catalog-page" role="region" aria-label="经验库" tabIndex={0}>
       <header className="view-header">
         <h2>经验库</h2>
         <span className="view-subtitle">
@@ -116,6 +117,7 @@ export default function ExperienceView() {
         <input
           className="experience-search"
           type="search"
+          aria-label="搜索经验"
           placeholder="搜索经验（关键词 / 领域 / 坑点）…"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
@@ -138,38 +140,40 @@ export default function ExperienceView() {
       {Array.from(grouped.entries()).map(([domain, leaves]) => (
         <section className="experience-group" key={domain}>
           <h3 className="experience-domain">{domain}</h3>
-          {leaves.map((leaf) => (
-            <article className="experience-card" key={leaf.node_id}>
-              <div className="experience-card-head">
-                <span className={`experience-outcome ${leaf.final_outcome === "success" ? "ok" : "bad"}`}>
-                  {leaf.final_outcome === "success" ? "成功" : "失败"}
-                </span>
-                <span className="experience-title">{leaf.task_description || leaf.path.slice(1).join(" / ")}</span>
-                {leaf.skill_used && <span className="experience-skill">{leaf.skill_used}</span>}
-              </div>
-              {leaf.pitfalls.length > 0 && (
-                <div className="experience-section">
-                  <span className="experience-label">坑点</span>
-                  <ul>{leaf.pitfalls.slice(0, 3).map((p, i) => <li key={i}>{p}</li>)}</ul>
+          <div className="catalog-grid experience-grid">
+            {leaves.map((leaf) => (
+              <article className="experience-card" key={leaf.node_id}>
+                <div className="experience-card-head">
+                  <span className={`experience-outcome ${leaf.final_outcome === "success" ? "ok" : "bad"}`}>
+                    {leaf.final_outcome === "success" ? "成功" : "失败"}
+                  </span>
+                  <span className="experience-title">{leaf.task_description || leaf.path.slice(1).join(" / ")}</span>
+                  {leaf.skill_used && <span className="experience-skill">{leaf.skill_used}</span>}
                 </div>
-              )}
-              {leaf.solutions.length > 0 && (
-                <div className="experience-section">
-                  <span className="experience-label">解法</span>
-                  <ul>{leaf.solutions.slice(0, 3).map((s, i) => <li key={i}>{s}</li>)}</ul>
+                {leaf.pitfalls.length > 0 && (
+                  <div className="experience-section">
+                    <span className="experience-label">坑点</span>
+                    <ul>{leaf.pitfalls.slice(0, 3).map((p, i) => <li key={i}>{p}</li>)}</ul>
+                  </div>
+                )}
+                {leaf.solutions.length > 0 && (
+                  <div className="experience-section">
+                    <span className="experience-label">解法</span>
+                    <ul>{leaf.solutions.slice(0, 3).map((s, i) => <li key={i}>{s}</li>)}</ul>
+                  </div>
+                )}
+                <div className="experience-meta">
+                  <span title="重要性">重要度 {(leaf.importance * 100).toFixed(0)}%</span>
+                  <span title="被引用次数">引用 {leaf.hit_count}</span>
+                  <span title="有用/无用反馈">👍 {leaf.success_count} · 👎 {leaf.failure_count}</span>
+                  <span className="experience-actions">
+                    <button className="btn-mini" onClick={() => feedback(leaf.node_id, true)} type="button">有帮助</button>
+                    <button className="btn-mini" onClick={() => feedback(leaf.node_id, false)} type="button">无帮助</button>
+                  </span>
                 </div>
-              )}
-              <div className="experience-meta">
-                <span title="重要性">重要度 {(leaf.importance * 100).toFixed(0)}%</span>
-                <span title="被引用次数">引用 {leaf.hit_count}</span>
-                <span title="有用/无用反馈">👍 {leaf.success_count} · 👎 {leaf.failure_count}</span>
-                <span className="experience-actions">
-                  <button className="btn-mini" onClick={() => feedback(leaf.node_id, true)} type="button">有帮助</button>
-                  <button className="btn-mini" onClick={() => feedback(leaf.node_id, false)} type="button">无帮助</button>
-                </span>
-              </div>
-            </article>
-          ))}
+              </article>
+            ))}
+          </div>
         </section>
       ))}
     </div>

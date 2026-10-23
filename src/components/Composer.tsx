@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useChatStore } from "../state/chat-store";
 import { useWorkspaceStore } from "../state/workspace-store";
@@ -17,7 +17,12 @@ import FilePickerModal from "./FilePickerModal";
 import ComposerFilePicker from "./ComposerFilePicker";
 import SlashPicker, { type SlashItem } from "./SlashPicker";
 import ModelPicker from "./ModelPicker";
+import ComposerPopup, { type CloseReason } from "./composer/ComposerPopup";
+import SelectionList from "./composer/SelectionList";
 import ContextRing from "./ContextRing";
+import AttachmentTray from "./composer/AttachmentTray";
+import { COMPOSER_DRAFT_EVENT } from "./composer/draft-event";
+import "../styles/composer.css";
 
 const PERMISSION_MODE_LABELS: Record<PermissionMode, string> = {
   "always-trust": "完全信任",
@@ -25,8 +30,13 @@ const PERMISSION_MODE_LABELS: Record<PermissionMode, string> = {
   "always-ask": "每次都问",
 };
 
-/** 点击授权 pill 时循环的顺序：首次询问 → 每次都问 → 完全信任（需确认）→ 回到首次询问。 */
-const PERMISSION_CYCLE: PermissionMode[] = ["trust-once", "always-ask", "always-trust"];
+/** 授权菜单顺序（从最保守到最宽松）；切换到「完全信任」仍需确认。 */
+const PERMISSION_ORDER: PermissionMode[] = ["trust-once", "always-ask", "always-trust"];
+const PERMISSION_MODE_TOOLTIPS: Record<PermissionMode, string> = {
+  "trust-once": "首次询问：同一命令第一次执行时询问，同意后后续自动放行",
+  "always-ask": "每次都问：每次工具调用前都必须手动授权",
+  "always-trust": "完全信任：所有工具调用自动放行，不再询问（危险）",
+};
 
 const WORK_MODE_ORDER: WorkMode[] = ["craft", "ask", "plan"];
 const WORK_MODE_LABELS: Record<WorkMode, string> = {
@@ -78,7 +88,20 @@ export default function Composer() {
   const [text, setText] = useState("");
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerQuery, setPickerQuery] = useState("");
-  const [modelPickerOpen, setModelPickerOpen] = useState(false);
+  const [openMenu, setOpenMenu] = useState<"model" | "mode" | "workspace" | "permission" | null>(null);
+  const modelTrigger = useRef<HTMLButtonElement>(null);
+  const modeTrigger = useRef<HTMLButtonElement>(null);
+  const workspaceTrigger = useRef<HTMLButtonElement>(null);
+  const permissionTrigger = useRef<HTMLButtonElement>(null);
+  const menuTriggers = [modelTrigger, modeTrigger, workspaceTrigger, permissionTrigger];
+  function closeMenu(reason: CloseReason) {
+    const trigger = openMenu === "model" ? modelTrigger : openMenu === "mode" ? modeTrigger : openMenu === "workspace" ? workspaceTrigger : permissionTrigger;
+    setOpenMenu(null);
+    if (reason === "escape" || reason === "select") trigger.current?.focus();
+  }
+  function triggerKey(event: React.KeyboardEvent, menu: "model" | "mode" | "workspace" | "permission") {
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); setOpenMenu(menu); }
+  }
   const [slashOpen, setSlashOpen] = useState(false);
   const [slashQuery, setSlashQuery] = useState("");
   const [filePickerOpen, setFilePickerOpen] = useState(false);
@@ -97,6 +120,7 @@ export default function Composer() {
   const workMode = useConfigStore((s) => s.workMode);
   const saveWorkMode = useConfigStore((s) => s.saveWorkMode);
   const modelName = useConfigStore((s) => s.model?.model ?? null);
+  const switching = useConfigStore((s) => s.switching);
   const supportsVision = useConfigStore((s) => !!s.model?.supportsVision);
   const switchActive = useConfigStore((s) => s.switchActive);
   const setView = useUiStore((s) => s.setView);
@@ -113,13 +137,31 @@ export default function Composer() {
   const addImages = useAttachmentStore((s) => s.addImages);
   const removeImage = useAttachmentStore((s) => s.removeImage);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const composingRef = useRef(false);
 
-  function resize() {
+  useEffect(() => {
+    const receiveDraft = (event: Event) => {
+      const detail = (event as CustomEvent<{ text?: unknown }>).detail;
+      if (typeof detail?.text !== "string" || !detail.text.trim()) return;
+      const starter = detail.text;
+      // Keep unsent work: a starter supplements an existing draft rather than
+      // silently replacing it (and any deliberately selected tool context).
+      setText((draft) => draft.trim() ? `${draft}\n\n${starter}` : starter);
+      setPickerOpen(false);
+      setSlashOpen(false);
+      textareaRef.current?.focus();
+    };
+    window.addEventListener(COMPOSER_DRAFT_EVENT, receiveDraft);
+    return () => window.removeEventListener(COMPOSER_DRAFT_EVENT, receiveDraft);
+  }, []);
+
+  // Measure once after each draft change, before paint (including starters).
+  useLayoutEffect(() => {
     const el = textareaRef.current;
     if (!el) return;
     el.style.height = "auto";
     el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
-  }
+  }, [text]);
 
   function findTriggerIndex(value: string, char: string, allowAfter = ""): number {
     let i = value.length;
@@ -138,7 +180,6 @@ export default function Composer() {
     const v = e.target.value;
     const caret = e.target.selectionStart ?? v.length;
     setText(v);
-    resize();
 
     const beforeCaret = v.slice(0, caret);
     const at = findTriggerIndex(beforeCaret, "@", "/");
@@ -171,7 +212,6 @@ export default function Composer() {
     const after = text.slice(at + 1 + pickerQuery.length);
     setText(before + after);
     setPickerOpen(false);
-    resize();
     textareaRef.current?.focus();
 
     // Bifurcate @ selections by file type and model vision support.
@@ -214,7 +254,6 @@ export default function Composer() {
     setText(before + after);
     setSlashItem(item);
     setSlashOpen(false);
-    resize();
     textareaRef.current?.focus();
   }
 
@@ -276,18 +315,26 @@ export default function Composer() {
     doSend();
   }
 
-  /** 授权 pill 点击：循环切换模式；切到「完全信任」先弹确认框。 */
-  function onTogglePermission() {
-    const idx = PERMISSION_CYCLE.indexOf(permissionMode);
-    const next = PERMISSION_CYCLE[(idx + 1) % PERMISSION_CYCLE.length];
+  /** 授权菜单选择：完全信任先弹确认框，其余立即保存。 */
+  function onSelectPermission(next: PermissionMode) {
+    if (next === permissionMode) { closeMenu("select"); return; }
     if (next === "always-trust") {
+      closeMenu("select");
       setTrustToggleOpen(true);
       return;
     }
+    closeMenu("select");
     savePermissions(next);
   }
 
   function onKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    // WebView/IME may emit Enter before compositionend, or keyCode 229
+    // without isComposing. None of those candidate confirmations may send.
+    if (composingRef.current || e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) {
+      // SlashPicker listens on window; don't let candidate confirmation reach it.
+      e.stopPropagation();
+      return;
+    }
     if (e.key === "Enter" && !e.shiftKey && !slashOpen) {
       e.preventDefault();
       doSend();
@@ -451,8 +498,20 @@ export default function Composer() {
   }, [streaming, attachPaths]);
 
   return (
-    <div className="composer-wrap">
-      <form className={dragOver ? "composer drag-over" : "composer"} onSubmit={submit}>
+    <div className="fm-composer-wrap">
+      <div className="fm-workspace-row">
+        <button type="button" ref={workspaceTrigger} className="fm-workspace-select" aria-label="工作区" aria-haspopup="listbox" aria-expanded={openMenu === "workspace"} title={current?.path ?? "未选择"}
+          onKeyDown={(event) => triggerKey(event, "workspace")} onClick={() => setOpenMenu(openMenu === "workspace" ? null : "workspace")}>
+          <span className="fm-model-label">{current?.name ?? "未选择"}</span>
+        </button>
+        {openMenu === "workspace" && <ComposerPopup anchor={workspaceTrigger} triggers={menuTriggers} width={300} onClose={closeMenu}>
+          <SelectionList label="选择工作区" value={current?.path ?? ""}
+            items={Array.from(new Map([...(current ? [current] : [{ path: "", name: "未选择" }]), ...recent.filter((w) => w.path !== current?.path)].map((w) => [w.path, w])).values()).map((w) => ({ value: w.path, label: w.name, title: w.path || w.name }))}
+            onSelect={(path) => { closeMenu("select"); if (path) openPath(path); setView("chat"); }}
+            footer={<button type="button" className="fm-menu-action" onClick={() => { closeMenu("select"); pickAndOpen(); setView("chat"); }}>打开其他工作区…</button>} />
+        </ComposerPopup>}
+      </div>
+      <form className={dragOver ? "fm-composer drag-over" : "fm-composer"} onSubmit={submit}>
         {slashItem && (
           <div className="composer-slash-item">
             <span className="slash-pill" data-kind={slashItem.kind}>
@@ -489,126 +548,120 @@ export default function Composer() {
             onClose={() => setPickerOpen(false)}
           />
         )}
+        <AttachmentTray
+          files={attachments}
+          images={images}
+          onPreviewFile={setPreviewPath}
+          onPreviewImage={openLightbox}
+          onRemoveFile={removeAttachment}
+          onRemoveImage={removeImage}
+        />
         <textarea
           ref={textareaRef}
           rows={1}
           value={text}
           placeholder={
             streaming
-              ? "追加指令到当前任务…"
-              : "描述水文任务…用 @ 引用文件，用 / 选择 Skill 与 MCP 工具"
+              ? "追加指令到当前任务… @ 引用文件 · / 选择工具"
+              : "描述你想完成的任务… @ 引用文件 · / 选择工具"
           }
           onChange={handleChange}
           onKeyDown={onKeyDown}
           onPaste={onPaste}
+          onCompositionStart={() => { composingRef.current = true; }}
+          onCompositionEnd={() => { composingRef.current = false; }}
           autoFocus
           aria-label="任务输入"
         />
-        {(attachments.length > 0 || images.length > 0) && (
-          <div className="composer-attach-row">
-            {attachments.map((p) => (
-              <span key={p} className="attachment-pill" title={p}>
-                <button
-                  type="button"
-                  className="attachment-preview"
-                  onClick={() => setPreviewPath(p)}
-                  aria-label={`预览 ${p}`}
-                >
-                  <span className="attachment-icon" aria-hidden="true">📄</span>
-                  <span className="attachment-name">{p.split(/[\\/]/).pop() || p}</span>
-                  {looksLikeFsPath(p) && (
-                    <span className="attachment-badge-external">外部</span>
-                  )}
-                </button>
-                <button
-                  type="button"
-                  className="attachment-remove"
-                  onClick={() => removeAttachment(p)}
-                  aria-label={`移除 ${p}`}
-                >
-                  ✕
-                </button>
-              </span>
-            ))}
-            {images.map((im) => (
-              <span key={im.id} className="image-chip" title={im.name}>
-                <button
-                  type="button"
-                  className="image-thumb-btn"
-                  onClick={() => openLightbox({ src: im.thumb, name: im.name })}
-                  aria-label={`预览 ${im.name}`}
-                >
-                  <img className="image-thumb" src={im.thumb} alt={im.name} />
-                </button>
-                <button
-                  type="button"
-                  className="attachment-remove image-remove"
-                  onClick={() => removeImage(im.id)}
-                  aria-label={`移除 ${im.name}`}
-                >
-                  ✕
-                </button>
-              </span>
-            ))}
-          </div>
-        )}
-        <div className="composer-bottom">
-          <div className="composer-context">
+        <div className="fm-composer-toolbar">
+          <div className="fm-composer-tools">
             <button
-              className="ctx-pill"
+              className="fm-toolbar-button fm-add-button"
               type="button"
-              disabled={!current || streaming || !supportsVision}
+              disabled={!current || streaming}
               onClick={() => setFilePickerOpen(true)}
               title={
-                !supportsVision
-                  ? "当前模型不支持图片输入，请在设置中切换视觉模型"
-                  : current
-                    ? "引用工作区文件"
-                    : "请先打开一个工作区"
+                !current
+                  ? "请先打开一个工作区"
+                  : streaming
+                    ? "任务运行中，暂时无法添加文件"
+                    : "引用工作区文件"
               }
               aria-label="引用工作区文件"
             >
-              ＋
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
             </button>
             <div className="model-pill-wrap">
               <button
-                className="ctx-pill model"
+                className="fm-toolbar-button fm-model-button"
                 type="button"
-                onClick={() => setModelPickerOpen((v) => !v)}
-                // ModelPicker closes on any mousedown OUTSIDE its container (a
-                // document-level listener). Because mousedown fires before click,
-                // the same pointer that opens the picker would otherwise be seen
-                // as an "outside" mousedown and re-close it (open-then-close).
-                // Stopping propagation on the trigger's mousedown keeps it from
-                // reaching that listener. (T5 review note, option a.)
-                onMouseDown={(e) => e.stopPropagation()}
-                disabled={streaming}
+                ref={modelTrigger}
+                aria-label="选择模型"
+                onKeyDown={(event) => triggerKey(event, "model")}
+                onClick={() => setOpenMenu(openMenu === "model" ? null : "model")}
+                disabled={streaming || switching}
                 title={modelName ?? "未配置模型"}
                 aria-haspopup="listbox"
-                aria-expanded={modelPickerOpen}
+                aria-expanded={openMenu === "model"}
               >
-                {modelName ?? "未配置模型"} ▾
+                <span className="fm-model-label">{modelName ?? "未配置模型"}</span>
               </button>
-              {modelPickerOpen && (
-                <ModelPicker
+              {openMenu === "model" && (
+                <ComposerPopup anchor={modelTrigger} triggers={menuTriggers} width={300} onClose={closeMenu}><ModelPicker
                   onPick={async (p, m) => {
                     // Per-conversation binding: chat-store holds the active conv
                     // id as `conversationId` (string | null). switchActive uses
                     // it to PUT /api/conversations/:id/model; null = global only.
                     const convId = useChatStore.getState().conversationId ?? undefined;
+                    closeMenu("select");
                     const ok = await switchActive(p, m, convId);
-                    setModelPickerOpen(false);
                     if (!ok) showToast("模型切换失败，已恢复");
                   }}
-                  onClose={() => setModelPickerOpen(false)}
-                />
+                  onClose={() => closeMenu("select")}
+                /></ComposerPopup>
               )}
             </div>
+            <div className="fm-mode-control">
+              <button type="button" ref={modeTrigger} className="fm-mode-select" aria-label="工作模式" aria-haspopup="listbox" aria-expanded={openMenu === "mode"} title={WORK_MODE_TOOLTIPS[workMode]} disabled={streaming}
+                onKeyDown={(event) => triggerKey(event, "mode")} onClick={() => setOpenMenu(openMenu === "mode" ? null : "mode")}>
+                {WORK_MODE_LABELS[workMode]}
+              </button>
+              {openMenu === "mode" && <ComposerPopup anchor={modeTrigger} triggers={menuTriggers} width={180} onClose={closeMenu}>
+                <SelectionList label="选择工作模式" value={workMode} disabled={streaming} items={WORK_MODE_ORDER.map((mode) => ({ value: mode, label: WORK_MODE_LABELS[mode], title: WORK_MODE_TOOLTIPS[mode] }))}
+                  onSelect={(mode) => { saveWorkMode(mode as WorkMode); closeMenu("select"); }} />
+              </ComposerPopup>}
+            </div>
+            <button
+              type="button"
+              ref={permissionTrigger}
+              className="fm-toolbar-button fm-permission-button"
+              aria-haspopup="listbox"
+              aria-expanded={openMenu === "permission"}
+              title="选择工具授权模式"
+              onKeyDown={(event) => triggerKey(event, "permission")}
+              onClick={() => setOpenMenu(openMenu === "permission" ? null : "permission")}
+            >
+              授权：{PERMISSION_MODE_LABELS[permissionMode]}
+            </button>
+            {openMenu === "permission" && (
+              <ComposerPopup anchor={permissionTrigger} triggers={menuTriggers} width={200} onClose={closeMenu}>
+                <SelectionList
+                  label="选择授权模式"
+                  value={permissionMode}
+                  items={PERMISSION_ORDER.map((mode) => ({
+                    value: mode,
+                    label: PERMISSION_MODE_LABELS[mode],
+                    title: PERMISSION_MODE_TOOLTIPS[mode],
+                  }))}
+                  onSelect={(mode) => onSelectPermission(mode as PermissionMode)}
+                />
+              </ComposerPopup>
+            )}
           </div>
-          <div className="composer-actions">
+          <div className="fm-composer-actions">
             <ContextRing />
             <button
-              className="send"
+              className="fm-send"
               type="submit"
               disabled={!buildMessage().trim()}
               aria-label="发送"
@@ -629,7 +682,7 @@ export default function Composer() {
             </button>
             {streaming && (
               <button
-                className="pause"
+                className="fm-pause"
                 type="button"
                 onClick={() => pause()}
                 title="暂停（暂停后可追加指令，再发送即恢复）"
@@ -650,8 +703,8 @@ export default function Composer() {
           </div>
         </div>
       </form>
-      <div className="composer-meta">
-        {bgRunning > 0 && (
+      {bgRunning > 0 && (
+        <div className="fm-composer-meta">
           <button
             type="button"
             className="bg-shell-pill"
@@ -662,79 +715,19 @@ export default function Composer() {
             <span className="bg-shell-dot" aria-hidden="true" />
             shell{bgRunning > 1 ? ` (${bgRunning})` : ""}
           </button>
-        )}
-        <div className="mode-seg" role="group" aria-label="工作模式">
-          {WORK_MODE_ORDER.map((m) => (
-            <button
-              key={m}
-              type="button"
-              className={`mode-seg-btn${workMode === m ? " active" : ""}`}
-              onClick={() => saveWorkMode(m)}
-              title={WORK_MODE_TOOLTIPS[m]}
-              aria-pressed={workMode === m}
-              disabled={streaming}
-            >
-              {WORK_MODE_LABELS[m]}
-            </button>
-          ))}
         </div>
-        <select
-          className="workspace-select"
-          value={current?.path ?? ""}
-          onChange={(e) => {
-            const v = e.target.value;
-            if (v === "__pick__") {
-              pickAndOpen();
-            } else if (v) {
-              openPath(v);
-            }
-            setView("chat");
-          }}
-        >
-          {current ? (
-            <option value={current.path}>{current.name}</option>
-          ) : (
-            <option value="">未选择</option>
-          )}
-          {recent
-            .filter((w) => w.path !== current?.path)
-            .map((w) => (
-              <option key={w.path} value={w.path}>
-                {w.name}
-              </option>
-            ))}
-          <option value="__pick__">打开其他工作区…</option>
-        </select>
-        <div className="composer-meta-right">
-          <button
-            type="button"
-            className="permission-mode-pill"
-            onClick={onTogglePermission}
-            title="点击切换授权模式（首次询问 → 每次都问 → 完全信任）"
-          >
-            授权：{PERMISSION_MODE_LABELS[permissionMode]}
-          </button>
-          <span>Enter 发送，Shift+Enter 换行</span>
-        </div>
-      </div>
+      )}
 
       {filePickerOpen && (
         <FilePickerModal
           onClose={() => setFilePickerOpen(false)}
           onConfirm={async (paths) => {
-            // Task 10: the ＋ modal is only reachable when supportsVision is
-            // true (the affordance is disabled otherwise), so every image in
-            // the selection can be routed to the visual channel. Non-image
-            // files keep the text-reference semantics they always had. On
-            // thumb fetch failure we degrade the path to a text reference so
-            // the user's selection is never silently dropped.
+            // Ordinary files are text references; images require vision support.
+            // Preserve the existing text-reference fallback on thumbnail failure.
             for (const p of paths) {
               if (isImageName(p)) {
                 if (!supportsVision) {
-                  // Defense: the ＋ affordance is disabled on non-vision models,
-                  // so this is unreachable in normal use — but if an image ever
-                  // reaches here, block it (don't text-ref) + toast, matching
-                  // the inline @ path.
+                  // Skip unsupported images without discarding other selected files.
                   showToast("当前模型不支持图片输入，请在设置中切换视觉模型后再附加图片");
                   continue;
                 }

@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { getBaseUrl } from "../lib/sidecar-client";
+import { useUiStore } from "./ui-store";
 
 // v2.0.0 BackgroundTask.status 全量：starting/running/kill_requested/terminating/
 // completed/failed/killed/kill_failed/orphaned/unknown。
@@ -85,6 +86,11 @@ export const useBackgroundTaskStore = create<BackgroundTaskState>((set, get) => 
   },
 
   setPanelOpen(open) {
+    // Compatibility command only. Polling never changes inspector state, and UI
+    // tab changes deliberately do not synchronize back into this legacy flag.
     set({ panelOpen: open });
+    const ui = useUiStore.getState();
+    if (open) ui.openInspector("tasks");
+    else if (ui.inspectorTab === "tasks") ui.closeInspector();
   },
 }));

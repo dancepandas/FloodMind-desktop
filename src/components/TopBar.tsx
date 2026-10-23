@@ -1,24 +1,24 @@
 import { useMemo } from "react";
-import { useChatStore, type Block, type Msg } from "../state/chat-store";
+import { useChatStore } from "../state/chat-store";
+import { conversationArtifacts, findLatestPlan } from "../lib/context-data";
+import { runningCount, useBackgroundTaskStore } from "../state/background-task-store";
 import { useUiStore } from "../state/ui-store";
 import HealthBadge from "./HealthBadge";
 import UsageBadge from "./UsageBadge";
 
-function findLatestPlan(turns: Msg[]) {
-  for (let i = turns.length - 1; i >= 0; i--) {
-    const t = turns[i];
-    if (t.role !== "assistant") continue;
-    const plan = t.blocks.find((b): b is Extract<Block, { kind: "plan" }> => b.kind === "plan");
-    if (plan) return plan;
-  }
-  return null;
-}
+import "../styles/context-panel.css";
 
-export default function TopBar() {
+export default function TopBar({ onToggleSidebar }: { onToggleSidebar?: () => void }) {
   const turns = useChatStore((s) => s.turns);
   const title = useChatStore((s) => s.title);
   const reset = useChatStore((s) => s.reset);
-  const planOpen = useUiStore((s) => s.planPanelOpen);
+  const inspectorOpen = useUiStore((s) => s.inspectorOpen);
+  const inspectorTab = useUiStore((s) => s.inspectorTab);
+  const openInspector = useUiStore((s) => s.openInspector);
+  const resetInspector = useUiStore((s) => s.resetInspector);
+  const planOpen = inspectorOpen && inspectorTab === "plan";
+  const tasks = useBackgroundTaskStore((s) => s.tasks);
+  const artifactCount = useMemo(() => conversationArtifacts(turns).length, [turns]);
   const togglePlan = useUiStore((s) => s.togglePlanPanel);
 
   const plan = useMemo(() => findLatestPlan(turns), [turns]);
@@ -38,6 +38,8 @@ export default function TopBar() {
         onClick={togglePlan}
         type="button"
         title="切换执行计划面板"
+        aria-label="执行计划"
+        aria-pressed={planOpen}
       >
         <span className={`sdot ${failed ? "sdot-down" : done === total ? "sdot-up" : "sdot-checking"}`} />
         计划 {done}/{total}
@@ -47,12 +49,15 @@ export default function TopBar() {
 
   return (
     <header className="topbar">
+      {onToggleSidebar && <button type="button" className="topbar-sidebar-toggle" aria-label="展开导航" onClick={onToggleSidebar}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16" /></svg></button>}
       <div className="topbar-title" title={title}>{title}</div>
       <div className="topbar-actions">
+        <button type="button" className="topbar-context-button" aria-label="查看产物" aria-pressed={inspectorOpen && inspectorTab === "artifacts"} onClick={() => openInspector("artifacts")}>产物{artifactCount > 0 && <span>{artifactCount}</span>}</button>
         {planPill}
+        <button type="button" className="topbar-context-button" aria-label="查看后台任务" aria-pressed={inspectorOpen && inspectorTab === "tasks"} onClick={() => openInspector("tasks")}>后台任务{runningCount(tasks) > 0 && <span>{runningCount(tasks)}</span>}</button>
         <HealthBadge />
         <UsageBadge />
-        <button className="icon-btn" onClick={reset} title="新会话" type="button">
+        <button className="icon-btn" onClick={() => { resetInspector(); reset(); }} title="新会话" aria-label="新会话" type="button">
           ✕
         </button>
       </div>

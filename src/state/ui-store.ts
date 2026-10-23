@@ -1,6 +1,7 @@
 import { create } from "zustand";
 
 export type View = "chat" | "skills" | "mcp" | "settings" | "tasks" | "experience";
+export type InspectorTab = "artifacts" | "plan" | "tasks";
 
 export interface Toast {
   id: number;
@@ -10,8 +11,18 @@ export interface Toast {
 interface UiState {
   view: View;
   selectedTaskId: string | null;
-  planPanelOpen: boolean;
+  inspectorOpen: boolean;
+  inspectorTab: InspectorTab;
+  /** A manual close suppresses plan auto-discovery until the conversation changes. */
+  inspectorDismissed: boolean;
+  /** Retained across controller remounts when navigating away from chat. */
+  inspectorConversationId: string | null | undefined;
+  /** Session-only discovery keys survive chat/settings controller remounts. */
+  inspectorDiscoveredPlans: ReadonlySet<string>;
   previewPath: string | null;
+  openInspector: (tab: InspectorTab) => void;
+  closeInspector: () => void;
+  resetInspector: () => void;
   /** Transient user-facing message (auto-clears after a few seconds). Used for
    *  non-blocking feedback like "当前模型不支持图片输入". */
   toast: Toast | null;
@@ -38,14 +49,30 @@ const TOAST_MS = 3500;
 export const useUiStore = create<UiState>((set) => ({
   view: "chat",
   selectedTaskId: null,
-  planPanelOpen: false,
+  inspectorOpen: false,
+  inspectorTab: "artifacts",
+  inspectorDismissed: false,
+  inspectorConversationId: undefined,
+  inspectorDiscoveredPlans: new Set(),
   previewPath: null,
+  openInspector: (inspectorTab) => set({ inspectorOpen: true, inspectorTab }),
+  // Closing the inspector preserves its detail selection for an explicit reopen.
+  closeInspector: () => set({ inspectorOpen: false, inspectorDismissed: true }),
+  resetInspector: () => set({ inspectorOpen: false, inspectorTab: "artifacts", inspectorDismissed: false, previewPath: null }),
   toast: null,
   setView: (view) => set({ view }),
   setSelectedTaskId: (selectedTaskId) => set({ selectedTaskId }),
-  setPlanPanelOpen: (planPanelOpen) => set({ planPanelOpen }),
-  togglePlanPanel: () => set((s) => ({ planPanelOpen: !s.planPanelOpen })),
-  setPreviewPath: (previewPath) => set({ previewPath }),
+  setPlanPanelOpen: (open) => set((s) => open
+    ? { inspectorOpen: true, inspectorTab: "plan" }
+    : s.inspectorTab === "plan" ? { inspectorOpen: false, inspectorDismissed: true } : {}),
+  togglePlanPanel: () => set((s) => ({
+    inspectorOpen: !(s.inspectorOpen && s.inspectorTab === "plan"),
+    inspectorDismissed: s.inspectorDismissed || (s.inspectorOpen && s.inspectorTab === "plan"),
+    inspectorTab: "plan",
+  })),
+  setPreviewPath: (previewPath) => set(previewPath === null
+    ? { previewPath: null }
+    : { previewPath, inspectorOpen: true, inspectorTab: "artifacts" }),
   closePreview: () => set({ previewPath: null }),
   lightboxImage: null,
   openLightbox: (lightboxImage) => set({ lightboxImage }),

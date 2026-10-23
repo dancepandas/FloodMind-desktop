@@ -5,6 +5,7 @@ import { useWorkspaceStore } from "../state/workspace-store";
 import { reduceEvent, type AssistantTurn, type Block } from "../state/chat-store";
 import BlockView from "./BlockView";
 import TaskEditModal from "./TaskEditModal";
+import "../styles/catalog.css";
 
 function emptyTurn(): AssistantTurn {
   return { id: "replay", role: "assistant", blocks: [], usage: null, done: false };
@@ -65,34 +66,43 @@ export default function ScheduledTasksView() {
   }
 
   return (
-    <div className="tasks-view">
+    <div className="tasks-view catalog-page" role="region" aria-label="定时任务" tabIndex={0}>
       <div className="tasks-header">
-        <button className="btn-secondary" onClick={() => setView("chat")} type="button">← 返回对话</button>
+        <button className="btn-secondary" onClick={() => setView("chat")} type="button">返回对话</button>
         <span className="tasks-note">任务在 app 开启时自动执行；关闭期间错过的会在下次开启时补跑。</span>
+        <button className="btn-secondary" onClick={openCreate} type="button">＋ 新建定时任务</button>
       </div>
 
       <div className="tasks-layout">
-        <div className="tasks-list">
-          <button className="btn-secondary" onClick={openCreate} type="button">＋ 新建定时任务</button>
-
+        <ul className="tasks-list catalog-grid" aria-label="定时任务列表">
           {tasks.length === 0 && (
-            <div className="tree-empty">暂无定时任务，点击上方按钮创建</div>
+            <li className="tree-empty">暂无定时任务，点击上方按钮创建</li>
           )}
 
           {tasks.map((t) => (
-            <button
-              key={t.id}
-              className={selectedTaskId === t.id ? "sidebar-item task-item active" : "sidebar-item task-item"}
-              onClick={() => setSelectedTaskId(t.id)}
-              type="button"
-            >
-              <span className={"task-dot task-" + t.status} />
-              <span className="item-name">{t.command}</span>
-            </button>
+            <li key={t.id}>
+              <button
+                className={selectedTaskId === t.id ? "task-card active" : "task-card"}
+                onClick={() => setSelectedTaskId(t.id)}
+                type="button"
+                aria-pressed={selectedTaskId === t.id}
+                aria-controls="scheduled-task-detail"
+              >
+                <span className="task-card-status">
+                  <span className={"task-dot task-" + t.status} aria-hidden="true" />
+                  {t.status} · {t.enabled ? "已启用" : "已停用"}
+                </span>
+                <span className="task-card-command">{t.command}</span>
+                <span className="task-card-schedule">
+                  {t.repeat === "daily" ? `每日 ${t.run_time}` : `一次性 ${t.scheduled_at}`}
+                </span>
+                {t.next_run_at && <span className="task-card-next">下次运行 {t.next_run_at}</span>}
+              </button>
+            </li>
           ))}
-        </div>
+        </ul>
 
-        <div className="tasks-detail">
+        <div className="tasks-detail" id="scheduled-task-detail" role="region" aria-label="定时任务详情">
           {!task && tasks.length > 0 && (
             <div className="empty-hint">
               <div className="big">选择一个定时任务查看详情</div>

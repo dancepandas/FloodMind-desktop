@@ -7,7 +7,7 @@ export default function PageHeader({ title, children }: { title: string; childre
   return (
     <header className="page-header">
       <button className="back-btn" onClick={() => setView("chat")} type="button">
-        ← 返回对话
+       返回对话
       </button>
       <h1 className="page-title">{title}</h1>
       <div className="page-actions">{children}</div>

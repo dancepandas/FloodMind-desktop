@@ -10,6 +10,7 @@ import { useTurnCollapseStore } from "../state/turn-collapse-store";
 import { turnStatus, turnStatusLabel, finalNode } from "../lib/turn-status";
 import { openFileInSystem } from "../lib/open-file";
 import { formatTokens } from "../lib/format-tokens";
+import { useChatScroll } from "../lib/use-chat-scroll";
 
 /** 毫秒 → 人类可读耗时。 */
 function formatDuration(ms: number): string {
@@ -58,28 +59,33 @@ function useFocusWithin(ref: React.RefObject<HTMLElement | null>): boolean {
 export default function Conversation() {
   const turns = useChatStore((s) => s.turns);
   const streaming = useChatStore((s) => s.streaming);
-  const endRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    // Instant scroll during streaming (smooth on every token delta jitters long
-    // turns); smooth only when a turn starts/finishes.
-    endRef.current?.scrollIntoView({ behavior: streaming ? "auto" : "smooth" });
-  }, [turns, streaming]);
+  const conversationId = useChatStore((s) => s.conversationId);
+  const { scrollRef, contentRef, showJumpToLatest, jumpToLatest } = useChatScroll(
+    conversationId, turns, turns.length > 0,
+  );
 
   if (turns.length === 0) {
     return (
-      <div className="conversation">
+      <div className="conversation-empty">
         <WelcomeView />
       </div>
     );
   }
 
   return (
-    <div className="conversation">
-      {turns.map((m, i) => (
-        <TurnView key={m.id} turn={m} index={i} isLast={i === turns.length - 1} streaming={streaming} />
-      ))}
-      <div ref={endRef} />
+    <div className="conversation-shell">
+      <div className="conversation" ref={scrollRef}>
+        <div className="conversation-content" ref={contentRef}>
+          {turns.map((m, i) => (
+            <TurnView key={m.id} turn={m} index={i} isLast={i === turns.length - 1} streaming={streaming} />
+          ))}
+        </div>
+      </div>
+      {showJumpToLatest && (
+        <button type="button" className="conversation-jump" aria-label="跳转到最新消息" onClick={jumpToLatest}>
+          <span aria-hidden="true">↓</span> 最新消息
+        </button>
+      )}
     </div>
   );
 }

@@ -18,7 +18,7 @@ export default function SettingsView() {
       <PageHeader title="设置" />
       <div className={`page-body settings-layout${tab === "model" ? " model-settings-layout" : ""}`}>
         <SettingsNav active={tab} onChange={setTab} />
-        <div className={`settings-content${tab === "model" ? " model-settings-content" : ""}`}>
+        <div id="settings-panel" role="tabpanel" aria-labelledby={`settings-tab-${tab}`} className={`settings-content${tab === "model" ? " model-settings-content" : ""}`}>
           {tab === "model" && <ModelTab />}
           {tab === "identity" && <IdentityTab />}
           {tab === "rules" && <RulesTab />}

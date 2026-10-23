@@ -3,6 +3,7 @@ import PageHeader from "./PageHeader";
 import { useCatalogStore, type SkillForm } from "../state/catalog-store";
 import SkillEditModal from "./SkillEditModal";
 import { getBaseUrl } from "../lib/sidecar-client";
+import "../styles/catalog.css";
 
 interface DraftSkill {
   name: string;
@@ -48,22 +49,24 @@ function DraftSkillsSection({ onChanged }: { onChanged: () => void }) {
   if (loading || drafts.length === 0) return null;
 
   return (
-    <div className="draft-skills">
+    <section className="draft-skills" aria-label="建议技能">
       <div className="draft-skills-head">建议技能（由历史经验自动生成，待审阅）</div>
-      {drafts.map((d) => (
-        <div className="draft-skill-card" key={d.name}>
-          <div className="draft-skill-name">{d.name}</div>
-          {d.description && <div className="draft-skill-desc">{d.description}</div>}
-          {d.keywords.length > 0 && (
-            <div className="draft-skill-keywords">关键词：{d.keywords.join("、")}</div>
-          )}
-          <div className="draft-skill-actions">
-            <button className="btn-primary" onClick={() => act(d.name, "approve")} type="button">安装</button>
-            <button className="btn-secondary" onClick={() => act(d.name, "reject")} type="button">拒绝</button>
+      <div className="catalog-grid draft-skills-grid">
+        {drafts.map((d) => (
+          <div className="draft-skill-card" key={d.name}>
+            <div className="draft-skill-name">{d.name}</div>
+            {d.description && <div className="draft-skill-desc">{d.description}</div>}
+            {d.keywords.length > 0 && (
+              <div className="draft-skill-keywords">关键词：{d.keywords.join("、")}</div>
+            )}
+            <div className="draft-skill-actions">
+              <button className="btn-primary" onClick={() => act(d.name, "approve")} type="button">安装</button>
+              <button className="btn-secondary" onClick={() => act(d.name, "reject")} type="button">拒绝</button>
+            </div>
           </div>
-        </div>
-      ))}
-    </div>
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -132,7 +135,7 @@ export default function SkillsView() {
   };
 
   return (
-    <div className="page">
+    <div className="page catalog-page" role="region" aria-label="Skills" tabIndex={0}>
       <PageHeader title={`Skills（${skills.length}）`}>
         <button
           className="btn-primary"
@@ -143,9 +146,9 @@ export default function SkillsView() {
           ＋ 新建
         </button>
       </PageHeader>
-      <DraftSkillsSection onChanged={loadSkills} />
-      <div className="page-body master-detail">
-        <ul className="cat-list">
+      <div className="page-body catalog-body">
+        <DraftSkillsSection onChanged={loadSkills} />
+        <ul className="cat-list catalog-grid" aria-label="技能列表">
           {skills.length === 0 && <li className="cat-empty">暂无 Skill</li>}
           {skills.map((s) => (
             <li key={s.name}>
@@ -153,17 +156,21 @@ export default function SkillsView() {
                 className={selected === s.name ? "cat-item active" : "cat-item"}
                 onClick={() => setSelected(s.name)}
                 type="button"
+                aria-pressed={selected === s.name}
+                aria-controls="skill-detail"
               >
                 <span className="cat-name">{s.name}</span>
                 {s.category && <span className="cat-tag">{s.category}</span>}
+                {s.builtin && <span className="cat-tag">内置</span>}
+                {s.disabled && <span className="cat-tag">已停用</span>}
                 {s.description && <span className="cat-desc">{s.description}</span>}
               </button>
             </li>
           ))}
         </ul>
-        <div className="cat-detail">
-          {!selected && <div className="cat-empty">选择左侧 Skill 查看详情</div>}
-          {selected && detail && (
+        <div className="cat-detail" id="skill-detail" role="region" aria-label="技能详情" aria-busy={detailLoading}>
+          {!selected && <div className="cat-empty">选择一个 Skill 查看详情</div>}
+          {selected && detail?.name === selected && !detailLoading && (
             <>
               <div className="cat-detail-head">
                 <h2>{detail.name}</h2>
