@@ -37,6 +37,17 @@ def _write_settings(home, data):
     (home / "settings.json").write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
 
 
+def _read_settings(home):
+    """Read settings.json as the SDK sees it (credentials decrypted).
+
+    Since SDK v2.3.1 credential fields are encrypted at rest; comparing raw
+    ciphertext wouldn't prove the value survived the round-trip.
+    """
+    from floodmind.config.secret_store import unprotect_tree
+
+    return unprotect_tree(json.loads((home / "settings.json").read_text(encoding="utf-8")))
+
+
 def test_read_returns_provider_catalog_and_active_model(isolated_home):
     _write_settings(isolated_home, {
         "providers": {
@@ -130,7 +141,11 @@ def test_write_rebuilds_providers_and_records_active_model(isolated_home):
     assert snapshot["model"]["maxTokens"] == 131072
     assert snapshot["apiKeyPresent"] is True
 
-    on_disk = json.loads((isolated_home / "settings.json").read_text(encoding="utf-8"))
+    raw_on_disk = json.loads((isolated_home / "settings.json").read_text(encoding="utf-8"))
+    # Credentials are encrypted at rest (SDK v2.3.1)…
+    assert raw_on_disk["providers"]["deepseek"]["api_key"].startswith("enc:v1:")
+    # …and decrypt back to the value the GUI sent.
+    on_disk = _read_settings(isolated_home)
     # New flat providers format.
     ds = on_disk["providers"]["deepseek"]
     assert ds["base_url"] == "https://api.deepseek.com/v1"
@@ -162,9 +177,34 @@ def test_write_preserves_unrelated_keys_and_keeps_unsent_apikey(isolated_home):
         ],
     })
 
-    on_disk = json.loads((isolated_home / "settings.json").read_text(encoding="utf-8"))
+    on_disk = _read_settings(isolated_home)
     assert on_disk["providers"]["deepseek"]["api_key"] == "sk-keep"
     assert on_disk["permissions"]["mode"] == "always-trust"
+
+
+def test_repeated_saves_never_double_encrypt_credentials(isolated_home):
+    """Read-modify-write cycles keep credentials recoverable.
+
+    The host decrypts settings on read and the SDK re-protects on write; a key
+    that was sent once must still resolve after a later save that leaves the
+    password field blank.
+    """
+    payload = {
+        "provider": "deepseek", "model": "deepseek-v4-flash",
+        "providers": [
+            {"id": "deepseek", "baseURL": "https://api.deepseek.com/v1",
+             "apiKey": "sk-twice", "models": [{"name": "deepseek-v4-flash"}]},
+        ],
+    }
+    write_model_config(payload)
+    # Second save without re-sending the key (GUI keeps the field blank).
+    payload["providers"][0].pop("apiKey")
+    write_model_config(payload)
+
+    from floodmind.config.settings import reload_config
+
+    cfg = reload_config()  # SDK reads the file from disk
+    assert cfg["providers"]["deepseek"]["api_key"] == "sk-twice"
 
 
 def test_write_disambiguates_colliding_model_ids_via_active_provider(isolated_home):

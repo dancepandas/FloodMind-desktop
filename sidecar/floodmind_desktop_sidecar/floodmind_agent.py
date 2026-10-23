@@ -71,7 +71,17 @@ def _persist_runtime_mcp(server_config: dict) -> None:
     try:
         path = _mcp_path()
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"servers": servers}, ensure_ascii=False, indent=2), encoding="utf-8")
+        try:
+            from floodmind.config.secret_store import protect_tree
+        except ImportError:  # older SDK: no at-rest encryption
+            protect_tree = lambda cfg: cfg  # noqa: E731
+        # Credential values (auth headers/env) must be encrypted the same way
+        # the SDK's own save path does; a plaintext write still loads, but would
+        # regress the at-rest guarantee the SDK provides since v2.3.1.
+        path.write_text(
+            json.dumps(protect_tree({"servers": servers}), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
         print(f"[sidecar] persisted runtime MCP '{name}' to mcp.json", file=sys.stderr)
     except Exception as e:
         print(f"[sidecar] persist runtime MCP failed: {e}", file=sys.stderr)

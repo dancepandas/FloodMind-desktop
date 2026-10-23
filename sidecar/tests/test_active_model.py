@@ -22,6 +22,13 @@ def _write_settings(home, data):
     (home / "settings.json").write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
 
 
+def _read_settings(home):
+    """Read settings.json as the SDK sees it (credentials decrypted, v2.3.1)."""
+    from floodmind.config.secret_store import unprotect_tree
+
+    return unprotect_tree(json.loads((home / "settings.json").read_text(encoding="utf-8")))
+
+
 class ReloadSpy(StubAgent):
     def __init__(self):
         self.reload_calls = 0
@@ -67,7 +74,7 @@ def test_active_model_does_not_touch_providers_or_keys(isolated_home):
     })
     client = create_app(ReloadSpy()).test_client()
     client.post("/api/config/active-model", json={"provider": "qwen", "model": "qwen3.7-plus"})
-    on_disk = json.loads((isolated_home / "settings.json").read_text(encoding="utf-8"))
+    on_disk = _read_settings(isolated_home)
     assert on_disk["providers"]["deepseek"]["api_key"] == "sk-keep"
     assert on_disk["providers"]["qwen"]["api_key"] == "sk2"
     assert [m["id"] for m in on_disk["providers"]["deepseek"]["models"]] == ["deepseek-v4-pro"]

@@ -63,13 +63,22 @@ def _legacy_config_path() -> Path:
 
 
 def _load_raw_settings() -> dict:
-    """Load the raw ``~/.floodmind/settings.json`` without SDK merging."""
+    """Load ``~/.floodmind/settings.json`` without SDK merging.
+
+    SDK v2.3.1 encrypts credential fields at rest (``enc:v1:...``, DPAPI on
+    Windows). Decrypt on read so callers see the same plaintext representation
+    the SDK holds in memory (``save_config`` re-protects on write).
+    """
     path = _settings_path()
     if path.exists():
         try:
+            from floodmind.config.secret_store import unprotect_tree
+        except ImportError:  # older SDK: no at-rest encryption
+            unprotect_tree = lambda cfg: cfg  # noqa: E731
+        try:
             data = json.loads(path.read_text(encoding="utf-8"))
             if isinstance(data, dict):
-                return data
+                return unprotect_tree(data)
         except Exception:
             pass
     return {}

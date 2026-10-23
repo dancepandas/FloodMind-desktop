@@ -132,3 +132,25 @@ def test_endpoints_degrade_when_sdk_unavailable(monkeypatch):
     assert mcp.status_code == 200
     assert mcp.get_json()["servers"] == []
     assert _client().get("/api/mcp/anything").status_code == 404
+
+
+def test_mcp_config_encrypts_auth_headers_at_rest(tmp_path, monkeypatch):
+    """mcp.json credentials follow the SDK's at-rest encryption (v2.3.1)."""
+    import json
+
+    monkeypatch.setenv("FLOODMIND_HOME", str(tmp_path))
+    monkeypatch.setattr(
+        "floodmind_desktop_sidecar.catalog_api._reconnect_mcp", lambda servers: None
+    )
+    from floodmind_desktop_sidecar import catalog_api
+
+    servers = [{
+        "name": "api", "transport": "sse", "url": "https://example.com/sse",
+        "headers": {"Authorization": "Bearer secret-token"},
+    }]
+    catalog_api.write_mcp_config(servers)
+
+    raw = json.loads((tmp_path / "mcp.json").read_text(encoding="utf-8"))
+    assert raw["servers"][0]["headers"]["Authorization"].startswith("enc:v1:")
+    # Reading decrypts, so the UI and reconnect paths see plaintext.
+    assert catalog_api.read_mcp_config() == servers
