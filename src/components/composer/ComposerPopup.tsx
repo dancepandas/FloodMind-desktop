@@ -64,8 +64,13 @@ export default function ComposerPopup({ anchor, triggers, width, onClose, childr
       document.removeEventListener("focusin", focus);
     };
   }, []);
-  return createPortal(<div ref={ref} className="fm-composer-popup" data-direction={geometry?.direction}
-    style={geometry ? { left: geometry.left, top: geometry.top, width: geometry.width, maxHeight: geometry.maxHeight, transform: geometry.direction === "up" ? "translateY(-100%)" : undefined } : { visibility: "hidden" }}
+  // Render nothing until the first measurement. Mounting the children inside a
+  // `visibility: hidden` shell would make Chromium refuse their mount-time
+  // focus() calls (the passive effect runs before the layout-effect re-render
+  // that reveals the popup), which breaks keyboard navigation in the menu.
+  if (!geometry) return null;
+  return createPortal(<div ref={ref} className="fm-composer-popup" data-direction={geometry.direction}
+    style={{ left: geometry.left, top: geometry.top, width: geometry.width, maxHeight: geometry.maxHeight, transform: geometry.direction === "up" ? "translateY(-100%)" : undefined }}
     onKeyDown={(event) => {
       if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); onClose("escape"); }
       if (event.key !== "Tab") return;
