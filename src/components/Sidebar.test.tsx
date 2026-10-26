@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { render, screen, cleanup, fireEvent } from "@testing-library/react";
+import { render, screen, cleanup, fireEvent, within } from "@testing-library/react";
 import Sidebar from "./Sidebar";
 
 afterEach(cleanup);
@@ -11,6 +11,7 @@ const loadConversation = vi.fn();
 const setView = vi.fn();
 const remove = vi.fn();
 const startNew = vi.fn();
+const byWorkspaceState: Record<string, any[]> = {};
 
 vi.mock("../state/workspace-store", () => ({
   useWorkspaceStore: (selector: (s: any) => any) =>
@@ -37,7 +38,7 @@ vi.mock("../state/conversation-store", () => ({
   useConversationStore: (selector: (s: any) => any) =>
     selector({
       list: [],
-      byWorkspace: {},
+      byWorkspace: byWorkspaceState,
       loadList: vi.fn(),
       loadWorkspaceConversations,
       remove,
@@ -57,16 +58,45 @@ describe("Sidebar", () => {
   it("renders top navigation rows", () => {
     render(<Sidebar />);
     expect(screen.getByText("新建任务")).toBeInTheDocument();
-    expect(screen.getByText("对话")).toBeInTheDocument();
     expect(screen.getByText("Skills")).toBeInTheDocument();
     expect(screen.getByText("MCP")).toBeInTheDocument();
     expect(screen.getByText("自动化")).toBeInTheDocument();
     expect(screen.getByText("设置")).toBeInTheDocument();
   });
 
-  it("renders workspace header with count", () => {
+  it("renders three-band navigation without a chat entry", () => {
     render(<Sidebar />);
-    expect(screen.getByText("工作区 (2)")).toBeInTheDocument();
+    const primary = screen.getByRole("navigation", { name: "主导航" });
+    expect(within(primary).getByText("新建任务")).toBeInTheDocument();
+    expect(within(primary).getByText("自动化")).toBeInTheDocument();
+    expect(within(primary).getByText("Skills")).toBeInTheDocument();
+    const secondary = screen.getByRole("navigation", { name: "更多" });
+    expect(within(secondary).getByText("MCP")).toBeInTheDocument();
+    expect(within(secondary).getByText("经验")).toBeInTheDocument();
+    expect(screen.queryByText("对话")).not.toBeInTheDocument();
+  });
+
+  it("renders a relative timestamp on each conversation row", () => {
+    byWorkspaceState["/test"] = [
+      {
+        id: "c1",
+        title: "Hello",
+        updated_at: new Date(Date.now() - 5 * 60_000).toISOString(),
+        active: false,
+      },
+    ];
+    try {
+      render(<Sidebar />);
+      const time = document.querySelector(".conv-item .conv-time");
+      expect(time).toHaveTextContent("5 分钟");
+    } finally {
+      delete byWorkspaceState["/test"];
+    }
+  });
+
+  it("renders workspace header", () => {
+    render(<Sidebar />);
+    expect(screen.getByText("会话")).toBeInTheDocument();
   });
 
   it("lists current and recent workspaces", () => {

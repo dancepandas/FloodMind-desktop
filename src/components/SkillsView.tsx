@@ -136,7 +136,7 @@ export default function SkillsView() {
 
   return (
     <div className="page catalog-page" role="region" aria-label="Skills" tabIndex={0}>
-      <PageHeader title={`Skills（${skills.length}）`}>
+      <PageHeader variant="hero" title={`Skills（${skills.length}）`}>
         <button
           className="btn-primary"
           onClick={() => { setEditing(null); setModalOpen(true); }}

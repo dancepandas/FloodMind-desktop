@@ -82,7 +82,7 @@ export default function McpView() {
 
   return (
     <div className="page catalog-page" role="region" aria-label="MCP 服务器" tabIndex={0}>
-      <PageHeader title={`MCP 服务器（${servers.length}）`}>
+      <PageHeader variant="hero" title={`MCP 服务器（${servers.length}）`}>
         <button
           className="btn-primary"
           onClick={() => { setEditing(null); setModalOpen(true); }}

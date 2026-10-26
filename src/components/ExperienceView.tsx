@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { getBaseUrl } from "../lib/sidecar-client";
+import PageHeader from "./PageHeader";
 import "../styles/catalog.css";
 
 interface ExperienceLeaf {
@@ -106,12 +107,10 @@ export default function ExperienceView() {
 
   return (
     <div className="experience-view catalog-page" role="region" aria-label="经验库" tabIndex={0}>
-      <header className="view-header">
-        <h2>经验库</h2>
-        <span className="view-subtitle">
-          {leafCount} 条经验 · 引擎自动从完成的任务中沉淀，帮助后续任务复用踩坑与解法
-        </span>
-      </header>
+      <PageHeader variant="hero" title="经验库" />
+      <p className="page-hero-note">
+        {leafCount} 条经验 · 引擎自动从完成的任务中沉淀，帮助后续任务复用踩坑与解法
+      </p>
 
       <div className="experience-toolbar">
         <input

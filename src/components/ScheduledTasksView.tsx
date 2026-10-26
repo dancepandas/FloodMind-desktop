@@ -4,6 +4,7 @@ import { useUiStore } from "../state/ui-store";
 import { useWorkspaceStore } from "../state/workspace-store";
 import { reduceEvent, type AssistantTurn, type Block } from "../state/chat-store";
 import BlockView from "./BlockView";
+import PageHeader from "./PageHeader";
 import TaskEditModal from "./TaskEditModal";
 import "../styles/catalog.css";
 
@@ -21,7 +22,6 @@ function replay(events: unknown[]): Block[] {
 export default function ScheduledTasksView() {
   const selectedTaskId = useUiStore((s) => s.selectedTaskId);
   const setSelectedTaskId = useUiStore((s) => s.setSelectedTaskId);
-  const setView = useUiStore((s) => s.setView);
   const currentPath = useWorkspaceStore((s) => s.current?.path);
   const tasks = useScheduledTaskStore((s) => s.tasks);
   const runs = useScheduledTaskStore((s) => s.runs);
@@ -67,13 +67,12 @@ export default function ScheduledTasksView() {
 
   return (
     <div className="tasks-view catalog-page" role="region" aria-label="定时任务" tabIndex={0}>
-      <div className="tasks-header">
-        <button className="btn-secondary" onClick={() => setView("chat")} type="button">返回对话</button>
-        <span className="tasks-note">任务在 app 开启时自动执行；关闭期间错过的会在下次开启时补跑。</span>
+      <PageHeader variant="hero" title="自动化">
         <button className="btn-secondary" onClick={openCreate} type="button">＋ 新建定时任务</button>
-      </div>
+      </PageHeader>
 
       <div className="tasks-layout">
+        <span className="tasks-note">任务在 app 开启时自动执行；关闭期间错过的会在下次开启时补跑。</span>
         <ul className="tasks-list catalog-grid" aria-label="定时任务列表">
           {tasks.length === 0 && (
             <li className="tree-empty">暂无定时任务，点击上方按钮创建</li>
@@ -102,8 +101,9 @@ export default function ScheduledTasksView() {
           ))}
         </ul>
 
-        <div className="tasks-detail" id="scheduled-task-detail" role="region" aria-label="定时任务详情">
-          {!task && tasks.length > 0 && (
+        {tasks.length > 0 && (
+          <div className="tasks-detail" id="scheduled-task-detail" role="region" aria-label="定时任务详情">
+            {!task && (
             <div className="empty-hint">
               <div className="big">选择一个定时任务查看详情</div>
             </div>
@@ -160,7 +160,8 @@ export default function ScheduledTasksView() {
               )}
             </>
           )}
-        </div>
+          </div>
+        )}
       </div>
 
       {modalOpen && currentPath && (

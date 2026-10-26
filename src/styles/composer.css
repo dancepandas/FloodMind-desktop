@@ -1,17 +1,17 @@
 /* Owned presentation surface. fm-* avoids competing with legacy app.css rules.
    Shared popovers, slash chips, context ring and background-task pill stay there. */
 .chat-stage { display: flex; flex: 1; flex-direction: column; min-height: 0; min-width: 0; }
-.chat-stage-empty { overflow-y: auto; padding: clamp(36px, 15vh, 150px) 0 32px; }
+.chat-stage-empty { overflow-y: auto; padding: clamp(36px, 14vh, 120px) 0 32px; }
 .chat-stage-empty .fm-composer-wrap { padding-bottom: 0; }
 /* Empty chat scrolls as one composition; open pickers into reachable content,
    never above the scroll origin where their first rows would be clipped. */
 .chat-stage-empty .composer-picker { top: calc(100% + 6px); bottom: auto; margin-bottom: 0; max-height: min(220px, 45vh); }
 .conversation-empty { flex-shrink: 0; }
 .fm-composer-wrap { width: 100%; max-width: 800px; margin: 0 auto; padding: 0 24px 20px; flex-shrink: 0; }
-.fm-composer { position: relative; padding: 14px; background: var(--surface); border: 1px solid transparent; border-radius: var(--radius-composer); box-shadow: 0 4px 20px rgb(0 0 0 / 3.5%), inset 0 0 0 1px rgb(20 20 20 / 10%); transition: box-shadow 180ms ease; }
-.fm-composer:hover { box-shadow: 0 4px 20px rgb(0 0 0 / 5%), inset 0 0 0 1px rgb(20 20 20 / 17%); }
-.fm-composer:focus-within { box-shadow: 0 4px 20px rgb(0 0 0 / 5%), inset 0 0 0 1px rgb(20 20 20 / 24%); }
-.fm-composer.drag-over { outline: 2px dashed var(--accent); outline-offset: -5px; background: var(--surface-2); }
+.fm-composer { position: relative; padding: 14px; background: var(--surface); border: 1px solid transparent; border-radius: var(--radius-composer); box-shadow: var(--shadow-composer); transition: box-shadow 180ms ease; }
+.fm-composer:hover { box-shadow: var(--shadow-composer-strong); }
+.fm-composer:focus-within { box-shadow: var(--shadow-composer-strong); }
+.fm-composer.drag-over { outline: 2px dashed var(--fg-secondary); outline-offset: -5px; background: var(--surface-2); }
 .fm-composer textarea { display: block; width: 100%; min-height: 48px; max-height: 240px; padding: 3px 6px; border: 0; outline: none; resize: none; background: transparent; color: var(--fg); font: 15px/1.5 var(--font-sans); }
 .fm-composer textarea::placeholder { color: var(--muted); }
 .fm-composer-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
@@ -30,12 +30,12 @@
 .fm-mode-select:hover:not(:disabled) { background: var(--surface-2); color: var(--fg); }
 .fm-mode-select:disabled { opacity: .5; cursor: default; }
 .fm-composer-actions { margin-left: auto; }
-.fm-send, .fm-pause { display: grid; place-items: center; flex-shrink: 0; width: 32px; height: 32px; padding: 0; border: 0; border-radius: var(--radius-control); cursor: pointer; }
+.fm-send, .fm-pause { display: grid; place-items: center; flex-shrink: 0; width: 36px; height: 36px; padding: 0; border: 0; border-radius: 50%; cursor: pointer; }
 .fm-send { color: white; background: var(--accent); }
 .fm-send:hover:not(:disabled) { filter: brightness(.92); }
-.fm-send:disabled { background: var(--surface-2); color: var(--muted); cursor: not-allowed; }
+.fm-send:disabled { background: var(--surface-3); color: var(--muted); cursor: not-allowed; }
 .fm-pause { border: 1px solid var(--border); color: var(--fg-secondary); background: var(--surface); }
-.fm-pause:hover { border-color: var(--amber); color: var(--amber); }
+.fm-pause:hover { border-color: var(--fg); color: var(--fg); }
 .fm-composer-hint { margin: 9px 0 0; text-align: center; color: var(--muted); font-size: 11px; }
 .fm-composer-hint span { margin: 0 6px; }
 .fm-composer-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin-top: 10px; color: var(--muted); font-size: 11px; }
@@ -48,7 +48,7 @@
 .fm-attachment-tray { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 2px 0 14px; max-height: 160px; overflow-y: auto; }
 .fm-attachment-tray .fm-file-card { display: inline-flex; align-items: center; gap: 4px; max-width: 240px; padding: 7px 6px 7px 10px; border: 1px solid var(--border); border-radius: var(--radius-control); background: var(--surface-2); color: var(--fg-secondary); font-size: 12px; }
 .fm-file-preview { display: inline-flex; align-items: center; gap: 8px; min-width: 0; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; cursor: pointer; }
-.fm-file-preview svg { flex-shrink: 0; color: var(--accent); }
+.fm-file-preview svg { flex-shrink: 0; color: var(--fg-secondary); }
 .fm-file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fm-external-badge { flex-shrink: 0; color: var(--amber); font-size: 10px; }
 .fm-attachment-remove { display: grid; place-items: center; flex-shrink: 0; width: 24px; height: 24px; border: 0; border-radius: 5px; background: transparent; color: var(--muted); font-size: 17px; line-height: 1; cursor: pointer; }
@@ -57,17 +57,17 @@
 .fm-image-preview { display: block; padding: 0; border: 1px solid var(--border); border-radius: var(--radius-control); background: var(--surface-2); overflow: hidden; cursor: pointer; }
 .fm-image-preview img { display: block; width: 56px; height: 56px; object-fit: cover; }
 .fm-image-remove { position: absolute; top: -2px; right: 0; width: 22px; height: 22px; background: var(--surface); border: 1px solid var(--border); }
-.fm-file-preview:hover, .fm-image-preview:hover { color: var(--accent); }
+.fm-file-preview:hover, .fm-image-preview:hover { color: var(--fg); }
 .fm-composer-wrap button:focus-visible, .fm-mode-select:focus-visible, .fm-workspace-select:focus-visible, .fm-welcome button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 
 /* Greeting and composer share the same reading column. */
 .fm-welcome { width: 100%; max-width: 800px; margin: 0 auto; padding: 0 30px 28px; }
 .fm-welcome-brand { display: flex; align-items: center; gap: 9px; color: var(--fg-secondary); font-size: 12px; font-weight: 550; letter-spacing: .025em; }
-.fm-welcome-logo { width: 24px; height: 24px; color: var(--accent); }
-.fm-welcome h1 { margin: 18px 0 0; color: var(--fg); font-size: clamp(27px, 3vw, 36px); font-weight: 450; line-height: 1.45; letter-spacing: -.035em; }
+.fm-welcome-logo { width: 24px; height: 24px; color: var(--brand); }
+.fm-welcome h1 { margin: 18px 0 0; color: var(--fg); font-size: clamp(30px, 3.4vw, 40px); font-weight: 400; line-height: 1.4; letter-spacing: -.035em; }
 .fm-welcome-starters { display: flex; flex-wrap: wrap; gap: 8px; width: 100%; max-width: 800px; margin: 18px auto 0; padding: 0 24px; flex-shrink: 0; }
-.fm-welcome-starters button { display: inline-flex; align-items: center; padding: 9px 12px; border: 1px solid var(--border); border-radius: var(--radius-control); background: transparent; color: var(--fg-secondary); font-size: 12px; cursor: pointer; transition: background 160ms, border-color 160ms, color 160ms; }
-.fm-welcome-starters button:hover { background: var(--surface); border-color: #c8c8c0; color: var(--fg); }
+.fm-welcome-starters button { display: inline-flex; align-items: center; padding: 9px 13px; border: 1px solid var(--border); border-radius: var(--radius-pill); background: transparent; color: var(--fg-secondary); font-size: 12px; cursor: pointer; transition: background 160ms, border-color 160ms, color 160ms, box-shadow 160ms; }
+.fm-welcome-starters button:hover { background: var(--surface); border-color: var(--border); box-shadow: var(--shadow-card); color: var(--fg); }
 @media (max-width: 600px) {
   .fm-composer-wrap { padding: 0 16px 12px; }
   .fm-composer { padding: 12px; }

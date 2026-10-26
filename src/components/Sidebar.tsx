@@ -4,6 +4,7 @@ import { useConversationStore, type ConvSummary } from "../state/conversation-st
 import { useUiStore, type View } from "../state/ui-store";
 import { useWorkspaceStore, type WorkspaceSummary } from "../state/workspace-store";
 import { getBaseUrl } from "../lib/sidecar-client";
+import { relativeTime } from "../lib/relative-time";
 import Logo from "./Logo";
 
 function NavIcon({ children }: { children: ReactNode }) {
@@ -36,12 +37,6 @@ const FolderIcon = ({ add = false }: { add?: boolean }) => (
     <path d="M20 20H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2Z" />
     {add && <path d="M12 10v7m-3.5-3.5h7" />}
   </svg>
-);
-
-const ChatIcon = () => (
-  <NavIcon>
-    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-  </NavIcon>
 );
 
 const ZapIcon = () => (
@@ -128,10 +123,15 @@ function SidebarSearch({ workspace, onOpen, onGoChat }: { workspace: string; onO
   );
 }
 
-const NAV: { view: View; label: string; icon: ReactNode }[] = [
-  { view: "skills", label: "Skills", icon: <ZapIcon /> },
-  { view: "mcp", label: "MCP", icon: <LinkIcon /> },
+/* 三段式：主导航钉顶（新建任务 + 自动化/Skills），会话区居中，
+   次级入口（MCP/经验）钉底，设置独占 footer。 */
+const NAV_PRIMARY: { view: View; label: string; icon: ReactNode }[] = [
   { view: "tasks", label: "自动化", icon: <ClockIcon /> },
+  { view: "skills", label: "Skills", icon: <ZapIcon /> },
+];
+
+const NAV_SECONDARY: { view: View; label: string; icon: ReactNode }[] = [
+  { view: "mcp", label: "MCP", icon: <LinkIcon /> },
   { view: "experience", label: "经验", icon: <BookIcon /> },
 ];
 
@@ -263,30 +263,36 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
         FloodMind
       </div>
 
-      <button
-        className="sidebar-item sidebar-new-task"
-        onClick={handleNewTask}
-        disabled={!current || streaming}
-        title={!current ? "请先打开一个工作区" : "新建任务"}
-        type="button"
-      >
-        <span className="nav-icon" aria-hidden="true"><PlusIcon /></span>
-        <span className="item-name">新建任务</span>
-      </button>
+      <nav className="sidebar-nav-list sidebar-primary" aria-label="主导航">
+        <button
+          className="sidebar-item sidebar-new-task"
+          onClick={handleNewTask}
+          disabled={!current || streaming}
+          title={!current ? "请先打开一个工作区" : "新建任务"}
+          type="button"
+        >
+          <span className="nav-icon" aria-hidden="true"><PlusIcon /></span>
+          <span className="item-name">新建任务</span>
+        </button>
+        {NAV_PRIMARY.map((item) => (
+          <button
+            key={item.view}
+            className={`sidebar-item${view === item.view ? " active" : ""}`}
+            onClick={() => navigate(item.view)}
+            type="button"
+          >
+            <span className="nav-icon" aria-hidden="true">{item.icon}</span>
+            <span className="item-name">{item.label}</span>
+          </button>
+        ))}
+      </nav>
 
       <SidebarSearch workspace={current?.path ?? ""} onOpen={loadConversation} onGoChat={() => navigate("chat")} />
-
-      <nav className="sidebar-nav-list" aria-label="主导航">
-        <button className={`sidebar-item${view === "chat" ? " active" : ""}`} onClick={() => navigate("chat")} type="button">
-          <span className="nav-icon" aria-hidden="true"><ChatIcon /></span>
-          <span className="item-name">对话</span>
-        </button>
-      </nav>
 
       <div className="sidebar-scroll">
         <div className="sidebar-section">
         <div className="sidebar-workspace-header">
-          工作区 ({workspaces.length})
+          会话
         </div>
 
         <div className="workspace-list">
@@ -359,6 +365,7 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
                         >
                           <span className="item-name">{c.title}</span>
                         </button>
+                        <span className="conv-time">{relativeTime(c.updated_at)}</span>
                         <button
                           className="conv-del"
                           onClick={() => handleDeleteConversation(c, ws)}
@@ -390,9 +397,9 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
           </button>
         </div>
         </div>
-      <nav className="sidebar-nav-list sidebar-tools" aria-label="工具">
-        <div className="sidebar-label">工具与自动化</div>
-        {NAV.map((item) => (
+      </div>
+      <nav className="sidebar-nav-list sidebar-secondary" aria-label="更多">
+        {NAV_SECONDARY.map((item) => (
           <button
             key={item.view}
             className={`sidebar-item${view === item.view ? " active" : ""}`}
@@ -404,7 +411,6 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
           </button>
         ))}
       </nav>
-      </div>
       <footer className="sidebar-footer">
         <button className={`sidebar-item${view === "settings" ? " active" : ""}`} onClick={() => navigate("settings")} type="button">
           <span className="nav-icon" aria-hidden="true"><SlidersIcon /></span>

@@ -758,7 +758,7 @@ export default function Composer() {
       {trustToggleOpen && (
         <div className="modal-overlay" onClick={() => setTrustToggleOpen(false)}>
           <div className="modal-card" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-title" style={{ color: "var(--red)" }}>⚠️ 切换到「完全信任」模式？</div>
+            <div className="modal-title modal-title-danger">⚠️ 切换到「完全信任」模式？</div>
             <div style={{ fontSize: "13px", lineHeight: "1.6", color: "var(--fg-secondary)" }}>
               <p><strong>此模式非常危险：</strong>所有工具调用（含 Bash、文件写删、网络请求）将自动执行，<strong>不再弹出任何授权提示</strong>。智能体可能因误导/恶意/错误指令直接执行危险操作。</p>
               <p><strong>确定要切换吗？</strong></p>
@@ -772,9 +772,8 @@ export default function Composer() {
                 取消
               </button>
               <button
-                className="btn-primary"
+                className="btn-danger"
                 type="button"
-                style={{ background: "var(--red)" }}
                 onClick={() => {
                   setTrustToggleOpen(false);
                   savePermissions("always-trust");

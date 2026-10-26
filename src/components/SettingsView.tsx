@@ -403,7 +403,7 @@ function PermissionsTab() {
       {confirmOpen && (
         <div className="modal-overlay" onClick={() => setConfirmOpen(false)}>
           <div className="modal-card" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-title" style={{ color: "var(--red)" }}>⚠️ 确认切换到「完全信任」模式？</div>
+            <div className="modal-title modal-title-danger">⚠️ 确认切换到「完全信任」模式？</div>
             <div style={{ fontSize: "13px", lineHeight: "1.6", color: "var(--fg-secondary)" }}>
               <p><strong>此模式非常危险，请仔细阅读以下说明：</strong></p>
               <ul style={{ paddingLeft: "1.2rem", margin: "0.4rem 0" }}>
@@ -423,9 +423,8 @@ function PermissionsTab() {
                 取消
               </button>
               <button
-                className="btn-primary"
+                className="btn-danger"
                 type="button"
-                style={{ background: "var(--red)" }}
                 onClick={async () => {
                   await savePermissions("always-trust");
                   setConfirmOpen(false);

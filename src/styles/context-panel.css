@@ -17,7 +17,7 @@
 .context-empty strong { color: var(--fg-secondary); font-size: 13px; font-weight: 500; }
 .context-empty p { margin: 8px 0 0; font-size: 12px; }
 .context-preview { display: flex; flex-direction: column; height: 100%; min-height: 0; }
-.context-back { align-self: flex-start; margin: 12px 14px 4px; padding: 5px 0; border: 0; background: transparent; color: var(--accent); font-size: 12px; cursor: pointer; }
+.context-back { align-self: flex-start; margin: 12px 14px 4px; padding: 5px 0; border: 0; background: transparent; color: var(--fg-secondary); font-size: 12px; cursor: pointer; }
 .context-back:hover { text-decoration: underline; }
 .context-panel .preview-panel { flex: 1; min-height: 0; width: 100%; border: 0; }
 .context-panel .preview-title { overflow: hidden; text-overflow: ellipsis; }
@@ -26,6 +26,6 @@
 .context-panel .plan-panel-step { text-align: left; }
 .topbar-actions .topbar-context-button { display: inline-flex; align-items: center; gap: 5px; border: 1px solid transparent; border-radius: var(--radius-control); background: transparent; color: var(--fg-secondary); font-size: 12px; padding: 6px 8px; cursor: pointer; white-space: nowrap; }
 .topbar-actions .topbar-context-button:hover { background: var(--surface-2); }
-.topbar-actions .topbar-context-button[aria-pressed="true"] { background: var(--accent-light); color: var(--accent); }
+.topbar-actions .topbar-context-button[aria-pressed="true"] { background: var(--surface-3); border-color: transparent; color: var(--fg); font-weight: 600; }
 .topbar .topbar-sidebar-toggle { display: none; flex-shrink: 0; align-items: center; justify-content: center; width: 30px; height: 30px; margin-right: 10px; border: 0; background: transparent; color: var(--fg-secondary); border-radius: var(--radius-control); cursor: pointer; }
 @media (max-width: 760px) { .topbar .topbar-sidebar-toggle { display: inline-flex; } .topbar-actions .topbar-context-button { padding: 6px; font-size: 11px; } }
