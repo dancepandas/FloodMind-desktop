@@ -35,7 +35,7 @@ def test_list_filters_by_workspace_and_marks_active(tmp_path):
     assert next(i for i in items if i["id"] == a1["id"])["active"] is False
     assert {i["id"] for i in s.list("/ws/B")} == {b1["id"]}
     # list items carry only summary fields.
-    assert set(items[0]) == {"id", "title", "updated_at", "active"}
+    assert set(items[0]) == {"id", "title", "updated_at", "active", "turns_count"}
 
 
 def test_list_orders_by_updated_at_desc(tmp_path):
@@ -120,3 +120,29 @@ def test_invalid_format_conv_id_is_missing(tmp_path):
     assert s.get("conv-nope") is None
     assert s.get("not-a-conv-id") is None
     assert s.delete("conv-deadbeefdeadbeef") is None  # 16 hex chars, wrong length
+
+
+def test_search_matches_turn_content(tmp_path):
+    s = _store(tmp_path)
+    rec = s.create("/ws/A")
+    s.append_turns(rec["id"], [
+        {"role": "user", "content": "帮我分析水情简报"},
+        {"role": "assistant", "blocks": [{"kind": "text", "content": "分析结果…"}]},
+    ])
+
+    hits = s.search("/ws/A", "水情")
+    assert len(hits) == 1
+    assert hits[0]["conv_id"] == rec["id"]
+    assert "水情" in hits[0]["snippet"]
+
+
+def test_search_scopes_to_workspace_and_no_hit(tmp_path):
+    s = _store(tmp_path)
+    a = s.create("/ws/A")
+    b = s.create("/ws/B")
+    s.append_turns(a["id"], [{"role": "user", "content": "水情"}])
+    s.append_turns(b["id"], [{"role": "user", "content": "气象"}])
+
+    assert len(s.search("/ws/A", "水情")) == 1
+    assert s.search("/ws/A", "气象") == []
+    assert s.search("/ws/B", "不存在") == []

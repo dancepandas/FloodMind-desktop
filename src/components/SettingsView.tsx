@@ -1,11 +1,14 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import PageHeader from "./PageHeader";
 import { useConfigStore, type ModelForm, type ProviderFormEntry, type ModelEntry } from "../state/config-store";
 import { useChatStore } from "../state/chat-store";
 import { useFeedbackStore, buildFeedbackMailto, type FeedbackForm } from "../state/feedback-store";
+import { useUiStore } from "../state/ui-store";
 import { openUrl } from "../lib/open-file";
+import { listExternalPaths, removeExternalPath } from "../lib/external-paths";
+import { getBaseUrl } from "../lib/sidecar-client";
 import SettingsNav, { type Tab } from "./SettingsNav";
-import { CURATED_PROVIDERS, getProviderDef, getTierDefaultTokens } from "../lib/providers";
+import { CURATED_PROVIDERS, getProviderDef } from "../lib/providers";
 import ProviderIcon from "./ProviderIcon";
 
 export default function SettingsView() {
@@ -13,21 +16,27 @@ export default function SettingsView() {
   return (
     <div className="page">
       <PageHeader title="设置" />
-      <div className="page-body settings-layout">
+      <div className={`page-body settings-layout${tab === "model" ? " model-settings-layout" : ""}`}>
         <SettingsNav active={tab} onChange={setTab} />
-        <div className="settings-content">
+        <div id="settings-panel" role="tabpanel" aria-labelledby={`settings-tab-${tab}`} className={`settings-content${tab === "model" ? " model-settings-content" : ""}`}>
           {tab === "model" && <ModelTab />}
           {tab === "identity" && <IdentityTab />}
           {tab === "rules" && <RulesTab />}
           {tab === "permissions" && <PermissionsTab />}
+          {tab === "display" && <DisplayTab />}
           {tab === "feedback" && <FeedbackTab />}
+          {tab === "plugins" && <PluginsTab />}
+          {tab === "diagnostics" && <DiagnosticsTab />}
         </div>
       </div>
     </div>
   );
 }
 
-/* ── 模型 tab：固定服务商列表，每家带官方模型 ─────────────────── */
+/* ── 模型 tab：左 provider 列表 + 右详情（master-detail，配置即可用） ── */
+/** 模型列表默认渲染上限：中继平台可能返回数百个模型，超出的折叠为「显示全部」。 */
+const MODEL_VISIBLE_LIMIT = 80;
+
 function ModelTab() {
   const model = useConfigStore((s) => s.model);
   const providers = useConfigStore((s) => s.providers);
@@ -39,308 +48,255 @@ function ModelTab() {
   const error = useConfigStore((s) => s.error);
   const load = useConfigStore((s) => s.load);
   const save = useConfigStore((s) => s.save);
+  const testConnection = useConfigStore((s) => s.testConnection);
+  const fetchRemoteModels = useConfigStore((s) => s.fetchRemoteModels);
   const clearSaved = useConfigStore((s) => s.clearSaved);
+  const showToast = useUiStore((s) => s.showToast);
 
   const [form, setForm] = useState<Record<string, ProviderFormEntry>>({});
-  const [activeProvider, setActiveProvider] = useState("");
-  const [activeModel, setActiveModel] = useState("");
-  const [newModelName, setNewModelName] = useState<Record<string, string>>({});
+  const [order, setOrder] = useState<string[]>([]);
+  const [draftDefault, setDraftDefault] = useState<{ provider: string; model: string } | null>(null);
+  const [selectedId, setSelectedId] = useState<string>("");
+  const [testing, setTesting] = useState<Record<string, boolean>>({});
+  const [testResult, setTestResult] = useState<Record<string, { ok: boolean; error: string | null } | null>>({});
+  const [fetching, setFetching] = useState<Record<string, boolean>>({});
+  const [modelShowAll, setModelShowAll] = useState(false);
+  const [modelQuery, setModelQuery] = useState("");
+  const [fetchResult, setFetchResult] = useState<{ ok: boolean; message: string } | null>(null);
+  useEffect(() => { setModelShowAll(false); setModelQuery(""); setFetchResult(null); }, [selectedId]);
 
-  useEffect(() => {
-    load();
-  }, [load]);
+  useEffect(() => { load(); }, [load]);
 
   useEffect(() => {
     if (!model) return;
     clearSaved();
-    const map = new Map((providers || []).map((p) => [p.id, p]));
+    const savedMap = new Map((providers || []).map((p) => [p.id, p]));
     const next: Record<string, ProviderFormEntry> = {};
+    const nextOrder: string[] = [];
     for (const def of CURATED_PROVIDERS) {
-      const saved = map.get(def.id);
-      const savedModelMap = new Map((saved?.models || []).map((m) => [m.name, m]));
+      const saved = savedMap.get(def.id);
       next[def.id] = {
-        id: def.id,
-        name: def.name,
-        baseURL: saved?.baseURL ?? def.baseURL,
-        apiKey: "", // password never prefilled; empty = keep on disk
-        models: def.models.map((m) => ({
-          name: m.name,
-          maxTokens: savedModelMap.get(m.name)?.maxTokens ?? getTierDefaultTokens(m) ?? null,
+        id: def.id, name: def.name, baseURL: saved?.baseURL ?? def.baseURL, apiKey: "",
+        models: (saved?.models || []).map((m) => ({
+          name: m.name, maxTokens: m.maxTokens ?? null, contextSize: m.contextSize ?? null,
+          temperature: m.temperature ?? null, supportsVision: m.supportsVision ?? false,
         })),
       };
-      // Append custom models the user added to OpenAI / Ollama.
-      if (def.editableModels && saved) {
-        const fixed = new Set(def.models.map((m) => m.name));
-        for (const m of saved.models || []) {
-          if (!fixed.has(m.name)) {
-            next[def.id].models.push({
-              name: m.name,
-              maxTokens: m.maxTokens ?? null,
-              contextSize: m.contextSize ?? null,
-              temperature: m.temperature ?? null,
-            });
-          }
-        }
-      }
+      nextOrder.push(def.id); savedMap.delete(def.id);
     }
-    setForm(next);
-    setActiveProvider(model.provider || "");
-    setActiveModel(model.model || "");
-    setNewModelName({});
-  }, [model, providers, clearSaved]);
+    for (const saved of savedMap.values()) {
+      next[saved.id] = {
+        id: saved.id, name: saved.name, baseURL: saved.baseURL, apiKey: "",
+        models: (saved.models || []).map((m) => ({
+          name: m.name, maxTokens: m.maxTokens ?? null, contextSize: m.contextSize ?? null,
+          temperature: m.temperature ?? null, supportsVision: m.supportsVision ?? false,
+        })),
+      };
+      nextOrder.push(saved.id);
+    }
+    setForm(next); setOrder(nextOrder);
+    setDraftDefault(model.provider && model.model ? { provider: model.provider, model: model.model } : null);
+  }, [providers, clearSaved]);
 
-  if (loading || !model) {
-    return <div className="cat-empty">{error || "加载中…"}</div>;
-  }
+  useEffect(() => {
+    if (selectedId && form[selectedId]) return;
+    const firstReady = order.find((id) => providers.find((p) => p.id === id)?.apiKeyPresent);
+    setSelectedId(firstReady ?? order[0] ?? "");
+  }, [order, form, selectedId, providers]);
+
+  if (loading || !model) return <div className="cat-empty">{error || "加载中…"}</div>;
+
+  const selected = selectedId ? form[selectedId] : null;
+  const selectedDef = selectedId ? getProviderDef(selectedId) : undefined;
+  const selectedSaved = providers.find((x) => x.id === selectedId);
+  const selectedKeyPresent = selectedSaved?.apiKeyPresent ?? false;
 
   function patchProvider(id: string, patch: Partial<ProviderFormEntry>) {
-    clearSaved();
-    setForm((f) => ({ ...f, [id]: { ...f[id], ...patch } }));
+    clearSaved(); setForm((f) => ({ ...f, [id]: { ...f[id], ...patch } }));
   }
-  function addCustomModel(id: string) {
-    const name = (newModelName[id] || "").trim();
-    if (!name) return;
+  function removeModel(id: string, name: string) {
     clearSaved();
-    setForm((f) => {
-      const p = f[id];
-      if (!p || p.models.some((m) => m.name === name)) return f;
-      return { ...f, [id]: { ...p, models: [...p.models, { name, maxTokens: null, contextSize: null, temperature: null }] } };
-    });
-    setNewModelName((s) => ({ ...s, [id]: "" }));
+    setForm((f) => { const p = f[id]; if (!p) return f; return { ...f, [id]: { ...p, models: p.models.filter((m) => m.name !== name) } }; });
+    setDraftDefault((current) => current?.provider === id && current.model === name ? null : current);
   }
-  function removeCustomModel(id: string, name: string) {
-    clearSaved();
-    setForm((f) => {
-      const p = f[id];
-      if (!p) return f;
-      return { ...f, [id]: { ...p, models: p.models.filter((m) => m.name !== name) } };
-    });
-    if (activeProvider === id && activeModel === name) {
-      setActiveModel("");
+
+  async function onTest(id: string) {
+    const p = form[id]; if (!p) return;
+    setTesting((s) => ({ ...s, [id]: true })); setTestResult((s) => ({ ...s, [id]: null }));
+    const res = await testConnection(id, { baseURL: p.baseURL, apiKey: p.apiKey });
+    setTestResult((s) => ({ ...s, [id]: res })); setTesting((s) => ({ ...s, [id]: false }));
+  }
+
+  async function onFetch(id: string) {
+    const p = form[id]; if (!p) return;
+    setFetching((s) => ({ ...s, [id]: true }));
+    setFetchResult(null);
+    const res = await fetchRemoteModels(id, { baseURL: p.baseURL, apiKey: p.apiKey });
+    setFetching((s) => ({ ...s, [id]: false }));
+    if (!res.ok) {
+      // 拉取失败：保留现有列表，但明确告知这不是新拉取的结果——否则换地址后
+      // 旧列表会被误当成新结果，用户选中的旧模型必然 400。
+      setFetchResult({ ok: false, message: `拉取失败：${res.error || "未知错误"}（列表未更新）` });
+      return;
     }
-  }
-  function setModelField<K extends keyof ModelEntry>(id: string, name: string, field: K, value: ModelEntry[K]) {
+    if (!res.models || res.models.length === 0) {
+      // 覆盖语义：该地址返回空列表 → 清空旧的（旧列表来自其他地址，留着会误导）。
+      clearSaved();
+      setForm((f) => { const pp = f[id]; if (!pp) return f; return { ...f, [id]: { ...pp, models: [] } }; });
+      setDraftDefault((current) => current?.provider === id ? null : current);
+      setFetchResult({ ok: false, message: "该服务商未返回可用模型（列表已清空）" });
+      return;
+    }
+    // 拉取是「覆盖」语义：以服务商返回的列表为准，替换当前列表（去重）。
+    const seen = new Set<string>();
+    const fresh = (res.models || [])
+      .map((m: string) => ({ name: m, maxTokens: null, contextSize: null, temperature: null, supportsVision: false }))
+      .filter((m) => { const k = m.name; if (seen.has(k)) return false; seen.add(k); return true; });
     clearSaved();
     setForm((f) => {
-      const p = f[id];
-      if (!p) return f;
-      return {
-        ...f,
-        [id]: {
-          ...p,
-          models: p.models.map((m) => (m.name === name ? { ...m, [field]: value } : m)),
-        },
-      };
+      const pp = f[id]; if (!pp) return f;
+      return { ...f, [id]: { ...pp, models: fresh } };
     });
+    setDraftDefault((current) =>
+      current?.provider === id && !fresh.some((m) => m.name === current.model) ? null : current
+    );
+    setFetchResult({ ok: true, message: `已拉取 ${fresh.length} 个模型` });
   }
-  function selectModel(id: string, name: string) {
+
+  function onSetDefault(id: string, name: string) {
     clearSaved();
-    setActiveProvider(id);
-    setActiveModel(name);
+    setDraftDefault({ provider: id, model: name });
   }
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
-    const providerList = Object.values(form).filter((p) => p.id);
-    await save({ provider: activeProvider, model: activeModel, providers: providerList });
+    if (!draftDefault) {
+      showToast("请先选择默认模型");
+      return;
+    }
+    const selectedProvider = form[draftDefault.provider];
+    const defaultExists = selectedProvider?.models.some((m) => m.name === draftDefault.model) ?? false;
+    const savedProvider = providers.find((p) => p.id === draftDefault.provider);
+    const defaultEligible = draftDefault.provider === "ollama" || !!savedProvider?.apiKeyPresent || !!selectedProvider?.apiKey.trim();
+    if (!defaultExists || !defaultEligible) {
+      showToast(defaultExists ? "请先配置默认模型的 API Key" : "请重新选择默认模型");
+      return;
+    }
+    const enabledList: { provider: string; model: string }[] = [];
+    for (const id of order) { const p = form[id]; if (!p) continue; for (const m of p.models) enabledList.push({ provider: id, model: m.name }); }
+    const providerList = order.map((id) => form[id]).filter((p): p is ProviderFormEntry => !!p && !!p.id);
+    await save({ provider: draftDefault.provider, model: draftDefault.model, enabledModels: enabledList, providers: providerList });
   }
 
   return (
-    <>
-      {envOverrides.length > 0 && (
-        <div className="env-warn">
-          ⚠ 以下环境变量正在覆盖配置文件，GUI 修改不会生效：{envOverrides.join(", ")}
-        </div>
-      )}
+    <div className="model-tab">
+      {envOverrides.length > 0 && <div className="env-warn">⚠ 以下环境变量正在覆盖配置文件，GUI 修改不会生效：{envOverrides.join(", ")}</div>}
       {error && <div className="env-warn error">{error}</div>}
-      {savedAt && (
-        <div className={reloadFailed ? "env-warn" : "save-ok"}>
-          {reloadFailed ? "⚠ 已保存，但热重载失败——重启后生效" : "✓ 已保存并重载模型"}
-        </div>
-      )}
+      {savedAt && <div className={reloadFailed ? "env-warn" : "save-ok"}>{reloadFailed ? "⚠ 已保存，但热重载失败——重启后生效" : "✓ 已保存并重载模型"}</div>}
       <form className="settings-form model-providers" onSubmit={onSubmit}>
         <div className="model-providers-hint">
           <span className="hint-icon">💡</span>
-          <span>
-            官方服务商只需填入 API Key 并点选模型；OpenAI 兼容 / Ollama 本地需要手动配置 Base URL、API Key、模型名以及上下文/温度/输出参数。
-          </span>
+          <span>左侧选择服务商配置 API Key，点击「拉取模型」从服务商获取可用模型列表。模型参数从内置元数据自动填充，无需手动设置。</span>
         </div>
-
-        <div className="provider-grid">
-          {CURATED_PROVIDERS.map((def) => {
-            const p = form[def.id];
-            if (!p) return null;
-            const keyPresent = providers.find((x) => x.id === def.id)?.apiKeyPresent ?? false;
-            return (
-              <div className="provider-card" key={def.id}>
+        <div className="provider-master-detail">
+          <div className="provider-list">
+            {order.map((id) => {
+              const def = getProviderDef(id); const p = form[id]; if (!p) return null;
+              const saved = providers.find((x) => x.id === id);
+              const keyPresent = saved?.apiKeyPresent ?? false;
+              const isLocal = id === "ollama"; const ready = keyPresent || isLocal;
+              return (
+                <button type="button" key={id} className={`provider-list-item${selectedId === id ? " active" : ""}`} onClick={() => setSelectedId(id)}>
+                  <span className="provider-list-icon"><ProviderIcon provider={id} /></span>
+                  <span className="provider-list-name">{def?.name ?? p.name ?? id}</span>
+                  <span className={`provider-list-status${ready ? " ready" : ""}`} title={ready ? "已配置" : "未配置 API Key"} />
+                  {p.models.length > 0 && <span className="provider-list-count">{p.models.length}</span>}
+                </button>
+              );
+            })}
+          </div>
+          <div className="provider-detail">
+            {!selected ? (
+              <div className="cat-empty">请在左侧选择一个服务商</div>
+            ) : (
+              <>
                 <div className="provider-card-head">
                   <div className="provider-title">
-                    <span className="provider-icon">
-                      <ProviderIcon provider={def.id} />
-                    </span>
-                    <span className="provider-name-static">{def.name}</span>
+                    <span className="provider-icon"><ProviderIcon provider={selectedId} /></span>
+                    <span className="provider-name-static">{selectedDef?.name ?? selected.name ?? selectedId}</span>
                   </div>
-                  <button
-                    className="provider-docs"
-                    onClick={(e) => { e.stopPropagation(); openUrl(def.docsURL); }}
-                    title="打开官方文档"
-                    type="button"
-                  >
-                    文档
-                  </button>
+                  {selectedDef?.docsURL && <button className="provider-docs" onClick={(e) => { e.stopPropagation(); openUrl(selectedDef.docsURL); }} title="打开官方文档" type="button">文档</button>}
                 </div>
-
-                <div className={`provider-fields${def.editableModels ? " provider-fields-custom" : ""}`}>
-                  {def.editableModels && (
+                <div className="provider-fields">
+                  {(selectedDef?.editableBaseURL ?? true) && (
                     <label className="field">
                       <span className="field-label">Base URL</span>
-                      <input
-                        value={p.baseURL}
-                        onChange={(e) => patchProvider(def.id, { baseURL: e.target.value })}
-                        placeholder="https://api.example.com/v1"
-                      />
+                      <input value={selected.baseURL} onChange={(e) => patchProvider(selectedId, { baseURL: e.target.value })} placeholder="https://api.example.com/v1" />
                     </label>
                   )}
-                  <label className="field">
-                    <span className="field-label">
-                      API Key {keyPresent && !p.apiKey && <em>（已设置）</em>}
-                    </span>
-                    <input
-                      type="password"
-                      value={p.apiKey}
-                      onChange={(e) => patchProvider(def.id, { apiKey: e.target.value })}
-                      placeholder={keyPresent ? "••••••（留空保持原值）" : "输入 API Key"}
-                      autoComplete="off"
-                    />
+                  <label className="field api-key-field">
+                    <span className="field-label">API Key {selectedKeyPresent && !selected.apiKey && <em>（已设置）</em>}</span>
+                    <div className="api-key-row">
+                      <input type="password" value={selected.apiKey} onChange={(e) => patchProvider(selectedId, { apiKey: e.target.value })} placeholder={selectedKeyPresent ? "••••••（留空保持原值）" : "输入 API Key"} autoComplete="off" />
+                      <button type="button" className="btn-secondary test-btn" onClick={() => onTest(selectedId)} disabled={testing[selectedId]}>{testing[selectedId] ? "检测中…" : "检测连接"}</button>
+                    </div>
+                    {testResult[selectedId] && <div className={testResult[selectedId]!.ok ? "save-ok inline" : "env-warn inline"}>{testResult[selectedId]!.ok ? "✓ 连接成功" : `✕ ${testResult[selectedId]!.error}`}</div>}
                   </label>
                 </div>
-
                 <div className="model-section">
                   <div className="model-section-head">
                     <span className="model-section-title">模型</span>
-                    <span className="model-section-hint">点选使用</span>
-                  </div>
-
-                  {p.models.length === 0 ? (
-                    <div className="model-empty">暂无模型，请在下方添加。</div>
-                  ) : (
-                    <div className="model-rows">
-                      {p.models.map((m) => {
-                        const isCurrent = activeProvider === def.id && activeModel === m.name;
-                        const tier = def.models.find((dm) => dm.name === m.name)?.contextTier;
-                        const isCustom = def.editableModels;
-                        return (
-                          <label
-                            key={m.name}
-                            className={`model-row${isCurrent ? " current" : ""}${isCustom ? " custom" : ""}`}
-                            onClick={() => selectModel(def.id, m.name)}
-                          >
-                            <input
-                              type="radio"
-                              name="active-model"
-                              checked={isCurrent}
-                              onChange={() => selectModel(def.id, m.name)}
-                            />
-                            <span className="model-name">{m.name}</span>
-                            {tier && <span className="model-tier">{tier} 上下文</span>}
-                            {isCurrent && <span className="model-current">当前使用</span>}
-                            <span className="model-row-spacer" />
-                            {isCustom ? (
-                              <>
-                                <input
-                                  type="number"
-                                  className="model-contextsize"
-                                  value={m.contextSize ?? ""}
-                                  onChange={(e) => {
-                                    const v = e.target.value;
-                                    setModelField(def.id, m.name, "contextSize", v === "" ? null : Number(v));
-                                  }}
-                                  onClick={(e) => e.stopPropagation()}
-                                  placeholder="上下文"
-                                  title="上下文大小（tokens）"
-                                />
-                                <input
-                                  type="number"
-                                  step="0.1"
-                                  min="0"
-                                  max="2"
-                                  className="model-temperature"
-                                  value={m.temperature ?? ""}
-                                  onChange={(e) => {
-                                    const v = e.target.value;
-                                    setModelField(def.id, m.name, "temperature", v === "" ? null : Number(v));
-                                  }}
-                                  onClick={(e) => e.stopPropagation()}
-                                  placeholder="温度"
-                                  title="温度"
-                                />
-                                <select
-                                  className="model-maxtokens"
-                                  value={m.maxTokens ?? ""}
-                                  onChange={(e) => {
-                                    const v = e.target.value;
-                                    setModelField(def.id, m.name, "maxTokens", v === "" ? null : Number(v));
-                                  }}
-                                  onClick={(e) => e.stopPropagation()}
-                                  title="最大输出 Token"
-                                >
-                                  <option value="">默认</option>
-                                  <option value="4096">4k</option>
-                                  <option value="8192">8k</option>
-                                  <option value="16384">16k</option>
-                                  <option value="32768">32k</option>
-                                  <option value="65536">64k</option>
-                                  <option value="131072">128k</option>
-                                </select>
-                                <button
-                                  type="button"
-                                  className="model-remove"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    removeCustomModel(def.id, m.name);
-                                  }}
-                                  aria-label={`移除 ${m.name}`}
-                                  title="移除模型"
-                                >
-                                  ✕
-                                </button>
-                              </>
-                            ) : null}
-                          </label>
-                        );
-                      })}
-                    </div>
-                  )}
-
-                  {def.editableModels && (
-                    <div className="model-add">
-                      <input
-                        value={newModelName[def.id] || ""}
-                        onChange={(e) => setNewModelName((s) => ({ ...s, [def.id]: e.target.value }))}
-                        placeholder="添加模型，如 llama3.1:8b"
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") {
-                            e.preventDefault();
-                            addCustomModel(def.id);
-                          }
-                        }}
-                      />
-                      <button type="button" className="btn-secondary" onClick={() => addCustomModel(def.id)}>
-                        ＋ 添加模型
+                    <div className="model-section-actions">
+                      <button type="button" className="btn-secondary fetch-btn" onClick={() => onFetch(selectedId)} disabled={fetching[selectedId]} title="从服务商自动拉取可用模型列表">
+                        {fetching[selectedId] ? "拉取中…" : "↻ 拉取模型"}
                       </button>
                     </div>
+                  </div>
+                  {fetchResult && (
+                    <div className={fetchResult.ok ? "save-ok inline" : "env-warn inline"} role="status">
+                      {fetchResult.ok ? "✓ " : "⚠ "}{fetchResult.message}
+                    </div>
+                  )}
+                  {selected.models.length === 0 ? (
+                    <div className="model-empty">暂无模型，点「拉取模型」从服务商自动获取。</div>
+                  ) : (
+                    <>
+                      <div className="model-rows">
+                        {(modelShowAll ? selected.models : selected.models.slice(0, MODEL_VISIBLE_LIMIT)).map((m) => {
+                          const isDefault = draftDefault?.provider === selectedId && draftDefault.model === m.name;
+                          const isLocal = selectedId === "ollama";
+                          const canDefault = selectedKeyPresent || !!selected.apiKey.trim() || isLocal;
+                          return (
+                            <div key={m.name} className={`model-row${isDefault ? " default" : ""}`}>
+                              <span className="model-name">{m.name}</span>
+                              {m.supportsVision && <span className="model-vision-tag" title="支持图片">👁 视觉</span>}
+                              {isDefault ? (
+                                <span className="model-default-tag">默认</span>
+                              ) : (
+                                <button type="button" className="model-set-default" onClick={() => onSetDefault(selectedId, m.name)} disabled={!canDefault} title={canDefault ? "设为默认模型" : "需先配置 API Key"}>设为默认</button>
+                              )}
+                              <button type="button" className="model-remove" aria-label={`移除 ${m.name}`} title="移除模型" onClick={(e) => { e.stopPropagation(); removeModel(selectedId, m.name); }}>✕</button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                      {selected.models.length > MODEL_VISIBLE_LIMIT && (
+                        <button type="button" className="model-show-all" onClick={() => setModelShowAll((v) => !v)}>
+                          {modelShowAll ? "收起" : `显示全部 ${selected.models.length} 个模型`}
+                        </button>
+                      )}
+                    </>
                   )}
                 </div>
-              </div>
-            );
-          })}
+              </>
+            )}
+          </div>
         </div>
-
-        <button className="save-btn" type="submit" disabled={saving || !activeProvider || !activeModel}>
-          {saving ? "保存中…" : "保存并重载"}
-        </button>
+        <div className="model-save-bar">
+          <button className="save-btn" type="submit" disabled={saving}>{saving ? "保存中…" : "保存并重载"}</button>
+        </div>
       </form>
-    </>
+    </div>
   );
 }
 
@@ -442,6 +398,8 @@ function PermissionsTab() {
       </div>
       {saving && <div className="cat-empty">保存中…</div>}
 
+      <ExternalPathsSection />
+
       {confirmOpen && (
         <div className="modal-overlay" onClick={() => setConfirmOpen(false)}>
           <div className="modal-card" onClick={(e) => e.stopPropagation()}>
@@ -480,6 +438,111 @@ function PermissionsTab() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/** 工作区外文件读取授权管理：列出已注册的外部可读文件，可单独移除。 */
+function ExternalPathsSection() {
+  const showToast = useUiStore((s) => s.showToast);
+  const [paths, setPaths] = useState<string[] | null>(null);
+
+  useEffect(() => {
+    listExternalPaths()
+      .then(setPaths)
+      .catch(() => setPaths([]));
+  }, []);
+
+  async function onRemove(p: string) {
+    try {
+      setPaths(await removeExternalPath(p));
+    } catch {
+      showToast("移除授权失败");
+    }
+  }
+
+  return (
+    <div className="field" style={{ marginTop: "1.2rem" }}>
+      <span className="field-label">外部文件授权</span>
+      <div style={{ fontSize: "12px", color: "var(--muted)", marginBottom: "0.4rem" }}>
+        从资源管理器拖入或粘贴工作区外的文件/文件夹时会自动注册；agent 读取前仍需按权限模式确认。
+      </div>
+      {paths === null ? (
+        <div className="cat-empty">加载中…</div>
+      ) : paths.length === 0 ? (
+        <div className="cat-empty">暂无外部文件授权。</div>
+      ) : (
+        <ul className="external-paths-list">
+          {paths.map((p) => (
+            <li key={p} className="external-path-row" title={p}>
+              <span className="external-path">{p}</span>
+              <button
+                type="button"
+                className="external-path-remove"
+                aria-label={`移除授权 ${p}`}
+                onClick={() => onRemove(p)}
+              >
+                ✕
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/* ── 显示 tab：回合折叠摘要指标开关 ──────────────────────────── */
+function DisplayTab() {
+  const metrics = useConfigStore((s) => s.turnMetrics);
+  const loading = useConfigStore((s) => s.turnMetricsLoading);
+  const saving = useConfigStore((s) => s.turnMetricsSaving);
+  const error = useConfigStore((s) => s.turnMetricsError);
+  const loadTurnMetrics = useConfigStore((s) => s.loadTurnMetrics);
+  const saveTurnMetrics = useConfigStore((s) => s.saveTurnMetrics);
+  const [draft, setDraft] = useState(metrics);
+
+  useEffect(() => { loadTurnMetrics(); }, [loadTurnMetrics]);
+  useEffect(() => { setDraft(metrics); }, [metrics]);
+
+  const dirty =
+    draft.showDuration !== metrics.showDuration ||
+    draft.showToolCount !== metrics.showToolCount ||
+    draft.showTokens !== metrics.showTokens;
+  const patch = (p: Partial<typeof draft>) => setDraft((d) => ({ ...d, ...p }));
+
+  if (loading) return <div className="cat-empty">加载中…</div>;
+  return (
+    <div className="settings-form">
+      <p className="persona-hint">回合完成后折叠栏上展示哪些摘要指标。仅在有足够数据可计算时才显示对应项。</p>
+      {error && <div className="env-warn error">{error}</div>}
+      <div className="field">
+        <span className="field-label">回合摘要指标</span>
+        <label className="toggle" style={{ marginBottom: "0.35rem" }}>
+          <input type="checkbox" checked={draft.showDuration} onChange={(e) => patch({ showDuration: e.target.checked })} disabled={saving} />
+          <span>
+            <strong>耗时</strong>
+            <span style={{ display: "block", fontSize: "12px", color: "var(--muted)", marginTop: "0.1rem" }}>回合开始到结束的经过时间</span>
+          </span>
+        </label>
+        <label className="toggle" style={{ marginBottom: "0.35rem" }}>
+          <input type="checkbox" checked={draft.showToolCount} onChange={(e) => patch({ showToolCount: e.target.checked })} disabled={saving} />
+          <span>
+            <strong>工具调用次数</strong>
+            <span style={{ display: "block", fontSize: "12px", color: "var(--muted)", marginTop: "0.1rem" }}>本回合调用工具的总次数</span>
+          </span>
+        </label>
+        <label className="toggle">
+          <input type="checkbox" checked={draft.showTokens} onChange={(e) => patch({ showTokens: e.target.checked })} disabled={saving} />
+          <span>
+            <strong>输入 / 输出 token</strong>
+            <span style={{ display: "block", fontSize: "12px", color: "var(--muted)", marginTop: "0.1rem" }}>提示与补全的 token 用量</span>
+          </span>
+        </label>
+      </div>
+      <button className="save-btn" type="button" disabled={!dirty || saving} onClick={() => saveTurnMetrics(draft)}>
+        {saving ? "保存中…" : "保存"}
+      </button>
     </div>
   );
 }
@@ -619,5 +682,171 @@ function FeedbackTab() {
         {submitting ? "提交中…" : "提交反馈"}
       </button>
     </form>
+  );
+}
+
+/* ── 插件 tab：Python 原生扩展管理（高级功能，从工作台移入） ── */
+interface PluginInfo {
+  name: string;
+  version: string;
+  description: string;
+  source: string;
+  kind: "file" | "dir";
+  disabled: boolean;
+}
+
+function PluginsTab() {
+  const [plugins, setPlugins] = useState<PluginInfo[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  const load = async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const base = await getBaseUrl();
+      const r = await fetch(`${base}/api/plugins`);
+      if (!r.ok) throw new Error(`status ${r.status}`);
+      setPlugins((await r.json()).plugins ?? []);
+    } catch (e) {
+      setError(`加载插件失败：${(e as Error).message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { void load(); }, []);
+
+  const toggle = async (p: PluginInfo) => {
+    try {
+      const base = await getBaseUrl();
+      const r = await fetch(`${base}/api/plugins/disabled`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ source: p.source, disabled: !p.disabled }),
+      });
+      if (r.ok) await load();
+    } catch (e) {
+      setError(`操作失败：${(e as Error).message}`);
+    }
+  };
+
+  return (
+    <div className="settings-form plugins-tab">
+      <p className="persona-hint">
+        插件是 Python 原生扩展，引擎启动时自动加载，可注册新工具和事件 hook。
+        将插件放入 <code>~/.floodmind/plugins/</code>（单文件 .py 或含 plugin.json 的目录）即可被识别。
+      </p>
+
+      <div className="plugin-warning">
+        ⚠️ 插件是<b>受信代码</b>——加载时会执行任意 Python。请只安装你信任来源的插件。
+        启用/禁用会在下次发送任务时生效。
+      </div>
+
+      {error && <div className="blk blk-error">⚠️ {error}</div>}
+      {loading && <div className="empty-hint">加载中…</div>}
+      {!loading && plugins.length === 0 && <div className="empty-hint">暂无插件。</div>}
+
+      <div className="plugin-list">
+        {plugins.map((p) => (
+          <div className={`plugin-card ${p.disabled ? "disabled" : ""}`} key={p.source}>
+            <div className="plugin-card-head">
+              <span className="plugin-name">{p.name}</span>
+              {p.version && <span className="cat-tag">v{p.version}</span>}
+              <span className="plugin-kind">{p.kind === "dir" ? "目录插件" : "单文件"}</span>
+              <span className={`plugin-state ${p.disabled ? "off" : "on"}`}>
+                {p.disabled ? "已禁用" : "已启用"}
+              </span>
+            </div>
+            {p.description && <div className="plugin-desc">{p.description}</div>}
+            <div className="plugin-source" title={p.source}>{p.source}</div>
+            <div className="plugin-actions">
+              <button
+                className={p.disabled ? "btn-primary" : "btn-secondary"}
+                onClick={() => toggle(p)}
+                type="button"
+              >
+                {p.disabled ? "启用" : "禁用"}
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ── 诊断 tab：模型 codec + 工具加载摘要 + 上下文块/token ── */
+interface DiagnosticsData {
+  model: { codec: string; conservative: boolean; model: string; provider: string; base_url: string };
+  tools: { mode: string; max_loaded: number; total: number; loaded: number };
+  context: { estimated_tokens: number; blocks: { label: string; priority: number; chars: number }[] };
+}
+
+function DiagnosticsTab() {
+  const [data, setData] = useState<DiagnosticsData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  const load = async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const base = await getBaseUrl();
+      const r = await fetch(`${base}/api/diagnostics`);
+      if (!r.ok) throw new Error(`status ${r.status}`);
+      setData(await r.json());
+    } catch (e) {
+      setError(`加载诊断失败：${(e as Error).message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { void load(); }, []);
+
+  if (loading) return <div className="settings-form"><div className="empty-hint">加载中…</div></div>;
+  if (error) return <div className="settings-form"><div className="blk blk-error">⚠️ {error}</div></div>;
+  if (!data) return <div className="settings-form"><div className="empty-hint">无诊断数据</div></div>;
+
+  const { model, tools, context } = data;
+  const labelMap: Record<string, string> = {
+    project_rules: "项目规则", long_term_memory: "长期记忆", current_time: "当前时间",
+    system_env: "系统环境", recent_result: "最近结果", last_tool_use: "上次工具调用",
+    rag_context: "RAG 上下文",
+  };
+
+  return (
+    <div className="settings-form diagnostics">
+      <section>
+        <h3>模型连接</h3>
+        <div className="diag-row"><span className="diag-key">codec</span><span>{model.codec || "—"}{model.conservative ? "（保守模式）" : ""}</span></div>
+        <div className="diag-row"><span className="diag-key">模型</span><span>{model.model || "—"}</span></div>
+        <div className="diag-row"><span className="diag-key">provider</span><span>{model.provider || "—"}</span></div>
+        <div className="diag-row"><span className="diag-key">base_url</span><span className="diag-mono">{model.base_url || "—"}</span></div>
+      </section>
+
+      <section>
+        <h3>工具运行</h3>
+        <div className="diag-row"><span className="diag-key">加载状态</span><span>{tools.loaded}/{tools.total}</span></div>
+        <div className="diag-row"><span className="diag-key">加载模式</span><span>{tools.mode || "—"}</span></div>
+        <div className="diag-row"><span className="diag-key">加载上限</span><span>{tools.max_loaded || "—"}</span></div>
+      </section>
+
+      <section>
+        <h3>上下文块（约 {context.estimated_tokens} tokens）</h3>
+        {context.blocks.length === 0 && <div className="empty-hint">无上下文块</div>}
+        <ul className="diag-context">
+          {context.blocks.map((b) => (
+            <li key={b.label}>
+              <span className="diag-key">{labelMap[b.label] ?? b.label}</span>
+              <span className="diag-chars">{b.chars} 字符</span>
+            </li>
+          ))}
+        </ul>
+      </section>
+
+      <button className="btn-secondary" onClick={load} type="button">刷新</button>
+    </div>
   );
 }

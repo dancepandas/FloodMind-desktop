@@ -1,4 +1,24 @@
+import type { ImageAttachmentWire } from "../state/attachment-store";
+
+// Re-export so chat-store.ts (and other callers) can import the canonical wire
+// type from either location. attachment-store.ts is the single source of truth
+// (see Task 7) — do not duplicate the union here.
+export type { ImageAttachmentWire } from "../state/attachment-store";
+
 export type ChatMessage = { role: string; content: string };
+
+export type ArtifactSource = "declared" | "fallback";
+
+export type ArtifactEvent = {
+  type: "artifact";
+  kind: "file" | "image";
+  name: string;
+  path: string;
+  final?: boolean;
+  exists?: boolean;
+  size?: number;
+  source?: ArtifactSource;
+};
 
 export type ChatEvent =
   | { type: "text"; content: string }
@@ -7,10 +27,13 @@ export type ChatEvent =
   | { type: "tool_end"; call_id: string; tool_name: string; status: string; output: string }
   | { type: "plan"; title: string; steps: unknown[] }
   | { type: "step"; key: string; status: string; title?: string; outcome?: string }
-  | { type: "artifact"; kind: "file" | "image"; name: string; path: string }
+  | ArtifactEvent
   | { type: "permission"; ask_id: string; call_id: string; tool_name: string; reason: string; input: unknown; approved?: boolean; auto_approved?: boolean }
   | { type: "usage"; prompt: number; completion: number; total: number }
   | { type: "error"; content: string }
+  | { type: "round_start"; iteration: number }
+  | { type: "finish"; reason: string }
+  | { type: "context"; label: string; content: string }
   | { type: "done" };
 
 export async function appendInstruction(baseUrl: string, text: string): Promise<void> {
@@ -46,22 +69,9 @@ export async function respondToPermissionAsk(
   }
 }
 
-export async function* streamChat(
-  baseUrl: string,
-  messages: ChatMessage[],
-  signal?: AbortSignal
-): AsyncGenerator<ChatEvent> {
-  const res = await fetch(`${baseUrl}/api/chat`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ messages }),
-    signal,
-  });
-  if (!res.ok || !res.body) {
-    throw new Error(`chat request failed: ${res.status}`);
-  }
-
-  const reader = res.body.getReader();
+/** Parse an NDJSON response body into ChatEvents. */
+async function* readNdjson(res: Response): AsyncGenerator<ChatEvent> {
+  const reader = res.body!.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
 
@@ -98,4 +108,23 @@ export async function* streamChat(
     const ev = parseLine(tail);
     if (ev) yield ev;
   }
+}
+
+export async function* streamChat(
+  baseUrl: string,
+  messages: ChatMessage[],
+  signal?: AbortSignal,
+  attachments?: ImageAttachmentWire[],
+  mode?: "craft" | "ask" | "plan",
+): AsyncGenerator<ChatEvent> {
+  const res = await fetch(`${baseUrl}/api/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ messages, attachments: attachments ?? [], mode: mode ?? "craft" }),
+    signal,
+  });
+  if (!res.ok || !res.body) {
+    throw new Error(`chat request failed: ${res.status}`);
+  }
+  yield* readNdjson(res);
 }

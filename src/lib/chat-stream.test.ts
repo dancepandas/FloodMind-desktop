@@ -83,6 +83,37 @@ describe("streamChat", () => {
     expect(events.map((e) => e.type)).toEqual(["tool_start", "text", "artifact", "done"]);
   });
 
+  it("parses full and legacy artifact events without inventing metadata", async () => {
+    (globalThis.fetch as any).mockResolvedValue(
+      ndjsonResponse([
+        '{"type":"artifact","kind":"file","name":"r.xlsx","path":"/r","final":true,"exists":true,"size":42,"source":"fallback"}\n',
+        '{"type":"artifact","kind":"image","name":"old.png","path":"/old"}\n',
+      ])
+    );
+
+    const events = [];
+    for await (const event of streamChat("http://x", [{ role: "user", content: "hi" }])) {
+      events.push(event);
+    }
+
+    expect(events[0]).toEqual({
+      type: "artifact",
+      kind: "file",
+      name: "r.xlsx",
+      path: "/r",
+      final: true,
+      exists: true,
+      size: 42,
+      source: "fallback",
+    });
+    expect(events[1]).toEqual({
+      type: "artifact",
+      kind: "image",
+      name: "old.png",
+      path: "/old",
+    });
+  });
+
   it("skips a malformed line without aborting the stream", async () => {
     (globalThis.fetch as any).mockResolvedValue(
       ndjsonResponse([
@@ -97,5 +128,23 @@ describe("streamChat", () => {
     }
     // The bad line is dropped; valid events still arrive, including the terminal.
     expect(events.map((e) => e.type)).toEqual(["text", "done"]);
+  });
+
+  it("sends the work mode in the request body (default craft)", async () => {
+    (globalThis.fetch as any).mockResolvedValue(ndjsonResponse(['{"type":"done"}\n']));
+    for await (const _ of streamChat("http://x", [{ role: "user", content: "hi" }], undefined, undefined, "ask")) {
+      // drain
+    }
+    const [url, init] = (globalThis.fetch as any).mock.calls[0];
+    expect(url).toBe("http://x/api/chat");
+    expect(JSON.parse(init.body)).toMatchObject({ mode: "ask" });
+
+    // Default mode is craft when omitted.
+    (globalThis.fetch as any).mockClear();
+    (globalThis.fetch as any).mockResolvedValue(ndjsonResponse(['{"type":"done"}\n']));
+    for await (const _ of streamChat("http://x", [{ role: "user", content: "hi" }])) {
+      // drain
+    }
+    expect(JSON.parse((globalThis.fetch as any).mock.calls[0][1].body)).toMatchObject({ mode: "craft" });
   });
 });

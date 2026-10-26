@@ -42,7 +42,8 @@ def test_create_validates_command_and_schedule(tmp_path, monkeypatch):
         "workspace": "/ws/A", "command": "x", "repeat": "none"}).status_code == 400                     # one-shot needs scheduled_at
 
 
-def test_update_enable_disable_and_delete(tmp_path, monkeypatch):
+def test_update_enable_disable(tmp_path, monkeypatch):
+    """Tasks can be enabled/disabled but NOT manually deleted (只能增加不能删)."""
     client, rt, idx, rs = _client(tmp_path, monkeypatch)
     task = client.post("/api/scheduled-tasks", json={
         "workspace": "/ws/A", "command": "c", "repeat": "none",
@@ -50,8 +51,9 @@ def test_update_enable_disable_and_delete(tmp_path, monkeypatch):
     r = client.patch(f"/api/scheduled-tasks/{task['id']}", json={"enabled": False})
     assert r.status_code == 200
     assert r.get_json()["task"]["enabled"] is False
-    assert client.delete(f"/api/scheduled-tasks/{task['id']}").status_code == 200
-    assert client.get(f"/api/scheduled-tasks/{task['id']}").status_code == 404
+    # 手动删除已被移除：DELETE 路由不存在（405）。
+    assert client.delete(f"/api/scheduled-tasks/{task['id']}").status_code == 405
+    assert client.get(f"/api/scheduled-tasks/{task['id']}").status_code == 200
 
 
 def test_update_ignores_status_field(tmp_path, monkeypatch):

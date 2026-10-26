@@ -3,6 +3,7 @@ import { useChatStore } from "../state/chat-store";
 import { useConversationStore, type ConvSummary } from "../state/conversation-store";
 import { useUiStore, type View } from "../state/ui-store";
 import { useWorkspaceStore, type WorkspaceSummary } from "../state/workspace-store";
+import { getBaseUrl } from "../lib/sidecar-client";
 import Logo from "./Logo";
 
 function NavIcon({ children }: { children: ReactNode }) {
@@ -28,6 +29,13 @@ const PlusIcon = () => (
     <line x1="12" y1="5" x2="12" y2="19" />
     <line x1="5" y1="12" x2="19" y2="12" />
   </NavIcon>
+);
+
+const FolderIcon = ({ add = false }: { add?: boolean }) => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M20 20H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2Z" />
+    {add && <path d="M12 10v7m-3.5-3.5h7" />}
+  </svg>
 );
 
 const ChatIcon = () => (
@@ -62,13 +70,69 @@ const SlidersIcon = () => (
   </NavIcon>
 );
 
+const BookIcon = () => (
+  <NavIcon>
+    <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+    <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
+  </NavIcon>
+);
+
+interface SearchHit {
+  conv_id: string;
+  title: string;
+  snippet: string;
+}
+
+function SidebarSearch({ workspace, onOpen, onGoChat }: { workspace: string; onOpen: (id: string) => void; onGoChat: () => void }) {
+  const [query, setQuery] = useState("");
+  const [hits, setHits] = useState<SearchHit[]>([]);
+  const [searching, setSearching] = useState(false);
+
+  useEffect(() => {
+    if (!query.trim() || !workspace) { setHits([]); return; }
+    setSearching(true);
+    const t = setTimeout(async () => {
+      try {
+        const base = await getBaseUrl();
+        const r = await fetch(`${base}/api/conversations/search?workspace=${encodeURIComponent(workspace)}&q=${encodeURIComponent(query)}`);
+        if (r.ok) setHits((await r.json()).hits ?? []);
+      } catch { setHits([]); } finally { setSearching(false); }
+    }, 250);
+    return () => clearTimeout(t);
+  }, [query, workspace]);
+
+  const open = (id: string) => { onOpen(id); onGoChat(); setQuery(""); setHits([]); };
+
+  return (
+    <div className="sidebar-search">
+      <input
+        type="search"
+        placeholder="搜索会话…"
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+      />
+      {query.trim() && hits.length > 0 && (
+        <div className="sidebar-search-results">
+          {hits.map((h) => (
+            <button className="sidebar-search-hit" key={h.conv_id} onClick={() => open(h.conv_id)} type="button">
+              <span className="hit-title">{h.title}</span>
+              <span className="hit-snippet">{h.snippet}</span>
+            </button>
+          ))}
+        </div>
+      )}
+      {query.trim() && !searching && hits.length === 0 && workspace && (
+        <div className="sidebar-search-results"><div className="sidebar-search-empty">无匹配会话</div></div>
+      )}
+    </div>
+  );
+}
+
 const NAV: { view: View; label: string; icon: ReactNode }[] = [
-  { view: "chat", label: "新建任务", icon: <PlusIcon /> },
-  { view: "chat", label: "对话", icon: <ChatIcon /> },
   { view: "skills", label: "Skills", icon: <ZapIcon /> },
   { view: "mcp", label: "MCP", icon: <LinkIcon /> },
   { view: "tasks", label: "自动化", icon: <ClockIcon /> },
-  { view: "settings", label: "设置", icon: <SlidersIcon /> },
+  { view: "experience", label: "经验", icon: <BookIcon /> },
 ];
 
 function getWorkspaceConversations(
@@ -78,10 +142,9 @@ function getWorkspaceConversations(
   return byWorkspace[path] ?? [];
 }
 
-export default function Sidebar() {
+export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const current = useWorkspaceStore((s) => s.current);
   const recent = useWorkspaceStore((s) => s.recent);
-  const load = useWorkspaceStore((s) => s.load);
   const openPath = useWorkspaceStore((s) => s.openPath);
   const pickAndOpen = useWorkspaceStore((s) => s.pickAndOpen);
   const removeWorkspace = useWorkspaceStore((s) => s.remove);
@@ -98,11 +161,17 @@ export default function Sidebar() {
   const view = useUiStore((s) => s.view);
   const setView = useUiStore((s) => s.setView);
 
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set(current ? [current.path] : []));
 
+  // Reveal the active workspace on mount and when switching workspaces, without
+  // forcing it open again after the user deliberately collapses it.
+  const currentWorkspacePath = current?.path;
   useEffect(() => {
-    load();
-  }, [load]);
+    if (!currentWorkspacePath) return;
+    setExpanded((previous) => previous.has(currentWorkspacePath)
+      ? previous
+      : new Set([...previous, currentWorkspacePath]));
+  }, [currentWorkspacePath]);
 
   const workspaces = useMemo<WorkspaceSummary[]>(() => {
     const out: WorkspaceSummary[] = current ? [current] : [];
@@ -113,13 +182,14 @@ export default function Sidebar() {
     return out;
   }, [current, recent]);
 
-  const handleNavClick = (item: (typeof NAV)[number]) => {
-    if (item.label === "新建任务") {
-      if (current) startNew(current.path);
-      setView("chat");
-      return;
-    }
-    setView(item.view);
+  const navigate = (nextView: View) => {
+    setView(nextView);
+    onNavigate?.();
+  };
+
+  const handleNewTask = () => {
+    if (current) startNew(current.path);
+    navigate("chat");
   };
 
   const toggleWorkspace = (ws: WorkspaceSummary) => {
@@ -137,7 +207,7 @@ export default function Sidebar() {
 
   const handleWorkspaceClick = (ws: WorkspaceSummary) => {
     openPath(ws.path);
-    setView("chat");
+    navigate("chat");
     const next = new Set(expanded);
     next.add(ws.path);
     setExpanded(next);
@@ -147,6 +217,7 @@ export default function Sidebar() {
   };
 
   const handleConversationClick = (c: ConvSummary) => {
+    onNavigate?.();
     loadConversation(c.id);
     setView("chat");
   };
@@ -192,25 +263,24 @@ export default function Sidebar() {
         FloodMind
       </div>
 
+      <button
+        className="sidebar-item sidebar-new-task"
+        onClick={handleNewTask}
+        disabled={!current || streaming}
+        title={!current ? "请先打开一个工作区" : "新建任务"}
+        type="button"
+      >
+        <span className="nav-icon" aria-hidden="true"><PlusIcon /></span>
+        <span className="item-name">新建任务</span>
+      </button>
+
+      <SidebarSearch workspace={current?.path ?? ""} onOpen={loadConversation} onGoChat={() => navigate("chat")} />
+
       <nav className="sidebar-nav-list" aria-label="主导航">
-        {NAV.map((n) => {
-          const isNewTask = n.label === "新建任务";
-          const active = isNewTask ? false : view === n.view;
-          const disabled = isNewTask && (!current || streaming);
-          return (
-            <button
-              key={n.label}
-              className={active ? "sidebar-item active" : "sidebar-item"}
-              onClick={() => handleNavClick(n)}
-              disabled={disabled}
-              title={isNewTask && !current ? "请先打开一个工作区" : n.label}
-              type="button"
-            >
-              <span className="nav-icon" aria-hidden="true">{n.icon}</span>
-              <span className="item-name">{n.label}</span>
-            </button>
-          );
-        })}
+        <button className={`sidebar-item${view === "chat" ? " active" : ""}`} onClick={() => navigate("chat")} type="button">
+          <span className="nav-icon" aria-hidden="true"><ChatIcon /></span>
+          <span className="item-name">对话</span>
+        </button>
       </nav>
 
       <div className="sidebar-scroll">
@@ -234,7 +304,20 @@ export default function Sidebar() {
                     type="button"
                     title={ws.path}
                   >
-                    {isOpen ? "▾" : "▸"}
+                    <svg
+                      className="workspace-chevron-icon"
+                      viewBox="0 0 16 16"
+                      width="16"
+                      height="16"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.5"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      aria-hidden="true"
+                    >
+                      <path d="m6 4 4 4-4 4" />
+                    </svg>
                   </button>
                   <button
                     className={current?.path === ws.path ? "sidebar-item active" : "sidebar-item"}
@@ -243,6 +326,7 @@ export default function Sidebar() {
                     title={ws.path}
                     type="button"
                   >
+                    <span className="workspace-folder"><FolderIcon /></span>
                     <span className="item-name">{ws.name}</span>
                   </button>
                   <button
@@ -292,18 +376,41 @@ export default function Sidebar() {
           })}
 
           <button
-            className="sidebar-item"
-            onClick={pickAndOpen}
+            className="sidebar-item workspace-open"
+            onClick={async () => {
+              await pickAndOpen();
+              if (useWorkspaceStore.getState().current) navigate("chat");
+            }}
             disabled={streaming}
             title={streaming ? "生成中，请稍候再切换工作区" : "打开其他工作区"}
             type="button"
           >
-            <span className="nav-icon" aria-hidden="true">＋</span>
+            <span className="workspace-folder"><FolderIcon add /></span>
             <span className="item-name">打开其他工作区…</span>
           </button>
         </div>
         </div>
+      <nav className="sidebar-nav-list sidebar-tools" aria-label="工具">
+        <div className="sidebar-label">工具与自动化</div>
+        {NAV.map((item) => (
+          <button
+            key={item.view}
+            className={`sidebar-item${view === item.view ? " active" : ""}`}
+            onClick={() => navigate(item.view)}
+            type="button"
+          >
+            <span className="nav-icon" aria-hidden="true">{item.icon}</span>
+            <span className="item-name">{item.label}</span>
+          </button>
+        ))}
+      </nav>
       </div>
+      <footer className="sidebar-footer">
+        <button className={`sidebar-item${view === "settings" ? " active" : ""}`} onClick={() => navigate("settings")} type="button">
+          <span className="nav-icon" aria-hidden="true"><SlidersIcon /></span>
+          <span className="item-name">设置</span>
+        </button>
+      </footer>
     </aside>
   );
 }

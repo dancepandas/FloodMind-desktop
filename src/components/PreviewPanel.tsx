@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
-import { fetchFilePreview } from "../lib/preview";
+import { fetchFilePreview, type PreviewData } from "../lib/preview";
 import { openFileInSystem } from "../lib/open-file";
+import { useUiStore } from "../state/ui-store";
 
 const DocxPreview = lazy(() => import("./office/DocxPreview"));
 const XlsxPreview = lazy(() => import("./office/XlsxPreview"));
@@ -35,12 +36,8 @@ function base64ToBuffer(b64: string): ArrayBuffer {
 }
 
 export default function PreviewPanel({ path, onClose }: PreviewPanelProps) {
-  const [data, setData] = useState<{
-    content: string;
-    mime: string;
-    previewable: boolean;
-    path: string;
-  } | null>(null);
+  const setPreviewPath = useUiStore((s) => s.setPreviewPath);
+  const [data, setData] = useState<PreviewData | null>(null);
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -49,16 +46,19 @@ export default function PreviewPanel({ path, onClose }: PreviewPanelProps) {
       .catch((e) => setError(e.message));
   }, [path]);
 
+  // Directory listings (dropped external folders) have no content/mime fields.
+  const file = data && data.kind === "file" ? data : null;
+
   const pdfUrl = useMemo(() => {
-    if (!data || !data.mime.startsWith("application/pdf")) return null;
+    if (!file || !file.mime?.startsWith("application/pdf")) return null;
     try {
-      const bytes = Uint8Array.from(atob(data.content), (c) => c.charCodeAt(0));
-      const blob = new Blob([bytes], { type: data.mime });
+      const bytes = Uint8Array.from(atob(file.content), (c) => c.charCodeAt(0));
+      const blob = new Blob([bytes], { type: file.mime });
       return URL.createObjectURL(blob);
     } catch {
       return null;
     }
-  }, [data]);
+  }, [file]);
 
   useEffect(() => {
     return () => {
@@ -66,20 +66,20 @@ export default function PreviewPanel({ path, onClose }: PreviewPanelProps) {
     };
   }, [pdfUrl]);
 
-  const office = data ? officeKind(data.mime) : null;
+  const office = file ? officeKind(file.mime) : null;
   const officeBuffer = useMemo(
-    () => (office && office !== "legacy" && data ? base64ToBuffer(data.content) : null),
-    [office, data],
+    () => (office && office !== "legacy" && file ? base64ToBuffer(file.content) : null),
+    [office, file],
   );
 
   const isUnsupportedDoc =
-    data &&
-    !data.previewable &&
+    file &&
+    !file.previewable &&
     !office &&
-    !data.mime.startsWith("image/") &&
-    !data.mime.startsWith("application/pdf");
+    !file.mime?.startsWith("image/") &&
+    !file.mime?.startsWith("application/pdf");
 
-  const officeFallback = (data && (office === "legacy")) || false;
+  const officeFallback = office === "legacy";
 
   return (
     <div className="preview-panel">
@@ -111,10 +111,33 @@ export default function PreviewPanel({ path, onClose }: PreviewPanelProps) {
       <div className="preview-body">
         {error && <div className="preview-error">{error}</div>}
         {!data && !error && <div className="preview-loading">加载中…</div>}
-        {data && data.mime.startsWith("image/") && (
-          <img src={`data:${data.mime};base64,${data.content}`} alt={path} />
+        {data && data.kind === "dir" && (
+          <div className="preview-dir">
+            <div className="preview-dir-path" title={data.path}>
+              {data.path}
+            </div>
+            <ul className="preview-dir-list">
+              {(data.entries ?? []).map((en) => (
+                <li key={en.path}>
+                  <button
+                    type="button"
+                    className="preview-dir-row"
+                    onClick={() => setPreviewPath(en.path)}
+                  >
+                    <span className="preview-dir-icon" aria-hidden="true">
+                      {en.type === "dir" ? "📁" : "📄"}
+                    </span>
+                    <span className="preview-dir-name">{en.name}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
         )}
-        {data && data.mime.startsWith("application/pdf") && (
+        {file && file.mime?.startsWith("image/") && (
+          <img src={`data:${file.mime};base64,${file.content}`} alt={path} />
+        )}
+        {file && file.mime?.startsWith("application/pdf") && (
           pdfUrl ? (
             <iframe
               src={pdfUrl}
@@ -129,17 +152,17 @@ export default function PreviewPanel({ path, onClose }: PreviewPanelProps) {
         )}
         {office === "docx" && officeBuffer && (
           <Suspense fallback={<div className="preview-loading">加载中…</div>}>
-            <DocxPreview data={officeBuffer} path={data!.path} />
+            <DocxPreview data={officeBuffer} path={file!.path} />
           </Suspense>
         )}
         {office === "xlsx" && officeBuffer && (
           <Suspense fallback={<div className="preview-loading">加载中…</div>}>
-            <XlsxPreview data={officeBuffer} path={data!.path} />
+            <XlsxPreview data={officeBuffer} path={file!.path} />
           </Suspense>
         )}
         {office === "pptx" && officeBuffer && (
           <Suspense fallback={<div className="preview-loading">加载中…</div>}>
-            <PptxPreview data={officeBuffer} path={data!.path} />
+            <PptxPreview data={officeBuffer} path={file!.path} />
           </Suspense>
         )}
         {officeFallback && (
@@ -148,7 +171,7 @@ export default function PreviewPanel({ path, onClose }: PreviewPanelProps) {
             <button
               type="button"
               className="btn-secondary"
-              onClick={() => data && openFileInSystem(data.path)}
+              onClick={() => file && openFileInSystem(file.path)}
             >
               在系统中打开
             </button>
@@ -160,14 +183,14 @@ export default function PreviewPanel({ path, onClose }: PreviewPanelProps) {
             <button
               type="button"
               className="btn-secondary"
-              onClick={() => data && openFileInSystem(data.path)}
+              onClick={() => file && openFileInSystem(file.path)}
             >
               在系统中打开
             </button>
           </div>
         )}
-        {data && data.previewable && !office && !data.mime.startsWith("image/") && !data.mime.startsWith("application/pdf") && (
-          <pre className="preview-text">{data.content}</pre>
+        {file && file.previewable && !office && !file.mime?.startsWith("image/") && !file.mime?.startsWith("application/pdf") && (
+          <pre className="preview-text">{file.content}</pre>
         )}
       </div>
     </div>

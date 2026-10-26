@@ -75,6 +75,30 @@ describe("Sidebar", () => {
     expect(screen.getByText("other")).toBeInTheDocument();
   });
 
+  it("uses decorative SVG chevrons and preserves workspace expansion", () => {
+    render(<Sidebar />);
+    const collapse = screen.getByRole("button", { name: "折叠工作区" });
+    const expand = screen.getByRole("button", { name: "展开工作区" });
+    expect(collapse.querySelector("svg")).toHaveAttribute("aria-hidden", "true");
+    expect(expand.querySelector("svg")).toHaveAttribute("aria-hidden", "true");
+    expect(collapse).not.toHaveTextContent("▾");
+    expect(expand).not.toHaveTextContent("▸");
+    fireEvent.click(expand);
+    expect(expand).toHaveAttribute("aria-expanded", "true");
+    fireEvent.click(collapse);
+    expect(collapse).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("uses matching decorative folder SVGs for workspaces and opening a directory", () => {
+    render(<Sidebar />);
+    for (const name of ["test", "other", "打开其他工作区…"]) {
+      const button = screen.getByRole("button", { name });
+      expect(button.querySelector(".workspace-folder svg")).toHaveAttribute("aria-hidden", "true");
+      expect(button).not.toHaveTextContent("＋");
+    }
+    expect(screen.getByRole("button", { name: "打开其他工作区…" })).toHaveClass("workspace-open");
+  });
+
   it("shows open-other-workspace row", () => {
     render(<Sidebar />);
     expect(screen.getByText("打开其他工作区…")).toBeInTheDocument();

@@ -1,3 +1,4 @@
+mod clipboard;
 mod sidecar;
 
 use sidecar::SidecarHandle;
@@ -20,7 +21,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             ping,
             sidecar::get_sidecar_base_url,
-            open_path
+            open_path,
+            clipboard::get_clipboard_file_paths
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -42,7 +44,9 @@ fn open_path(path: String) -> Result<(), String> {
     // URLs (https/mailto) aren't absolute filesystem paths; skip the check so
     // `open::that` can route them to the system browser / mail client.
     let lower = path.to_lowercase();
-    let is_url = lower.starts_with("http://") || lower.starts_with("https://") || lower.starts_with("mailto:");
+    let is_url = lower.starts_with("http://")
+        || lower.starts_with("https://")
+        || lower.starts_with("mailto:");
     if !is_url {
         let p = std::path::Path::new(&path);
         if !p.is_absolute() {

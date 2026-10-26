@@ -6,7 +6,18 @@ import json
 from pathlib import Path
 
 from floodmind_desktop_sidecar.agent import StubAgent
-from floodmind_desktop_sidecar.app import create_app
+from floodmind_desktop_sidecar.app import _first_user_text, create_app
+
+
+def test_first_user_text_strips_image_marker():
+    assert _first_user_text([
+        {"role": "user", "content": "[已附图片：a.png, b.jpg]\n看这两张图"}
+    ]) == "看这两张图"
+
+
+def test_first_user_text_passes_through_plain_content():
+    assert _first_user_text([{"role": "user", "content": "分析降雨数据"}]) == "分析降雨数据"
+    assert _first_user_text([]) == ""
 
 
 def test_permission_respond_requires_ask_id(client):
@@ -117,11 +128,65 @@ def test_read_workspace_file_forbidden(client, tmp_path, monkeypatch):
     assert r.status_code == 403
 
 
-def test_read_workspace_file_directory(client, tmp_path, monkeypatch):
+def test_read_workspace_file_directory_returns_listing(client, tmp_path, monkeypatch):
+    """A directory target returns a browseable listing (dropped folder chips)."""
     monkeypatch.setenv("FLOODMIND_DESKTOP_WORKSPACE", str(tmp_path))
     (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "a.txt").write_text("a", encoding="utf-8")
     r = client.get("/api/workspace/file?path=sub")
-    assert r.status_code == 400
+    assert r.status_code == 200
+    j = r.get_json()
+    assert j["kind"] == "dir"
+    assert [e["name"] for e in j["entries"]] == ["a.txt"]
+
+
+def test_read_workspace_file_serves_authorized_external(client, tmp_path, monkeypatch):
+    """An explicitly registered external file is previewable (not 禁止访问)."""
+    from floodmind_desktop_sidecar.external_paths import add_external_paths
+
+    monkeypatch.setenv("FLOODMIND_DESKTOP_WORKSPACE", str(tmp_path))
+    outside = tmp_path.parent / "outside" / "report.txt"
+    outside.parent.mkdir(parents=True, exist_ok=True)
+    outside.write_text("ext content", encoding="utf-8")
+    add_external_paths(str(tmp_path), [str(outside)])
+
+    r = client.get(f"/api/workspace/file?path={outside}")
+    assert r.status_code == 200
+    j = r.get_json()
+    assert j["kind"] == "file"
+    assert j["content"] == "ext content"
+
+
+def test_read_workspace_file_lists_authorized_external_folder(client, tmp_path, monkeypatch):
+    """A registered external FOLDER is browseable + its files previewable."""
+    from floodmind_desktop_sidecar.external_paths import add_external_paths
+
+    monkeypatch.setenv("FLOODMIND_DESKTOP_WORKSPACE", str(tmp_path))
+    folder = tmp_path.parent / "skill" / "nature-figure"
+    (folder / "references").mkdir(parents=True, exist_ok=True)
+    (folder / "SKILL.md").write_text("# skill", encoding="utf-8")
+    (folder / "references" / "api.md").write_text("api", encoding="utf-8")
+    add_external_paths(str(tmp_path), [str(folder)])
+
+    r = client.get(f"/api/workspace/file?path={folder}")
+    assert r.status_code == 200
+    j = r.get_json()
+    assert j["kind"] == "dir"
+    names = [e["name"] for e in j["entries"]]
+    assert "SKILL.md" in names and "references" in names
+
+    r2 = client.get(f"/api/workspace/file?path={folder}/SKILL.md")
+    assert r2.status_code == 200
+    assert r2.get_json()["content"] == "# skill"
+
+
+def test_read_workspace_file_external_unauthorized_still_403(client, tmp_path, monkeypatch):
+    """Unregistered external absolute paths remain forbidden."""
+    monkeypatch.setenv("FLOODMIND_DESKTOP_WORKSPACE", str(tmp_path))
+    outside = tmp_path.parent / "secret.txt"
+    outside.write_text("x", encoding="utf-8")
+    r = client.get(f"/api/workspace/file?path={outside}")
+    assert r.status_code == 403
 
 
 def test_read_workspace_file_serves_docx_bytes(client, tmp_path, monkeypatch):
@@ -186,3 +251,31 @@ def test_read_workspace_file_serves_legacy_doc_bytes(client, tmp_path, monkeypat
     assert j["previewable"] is True
     assert j["mime"] == "application/msword"
     assert base64.b64decode(j["content"])[:4] == b"\xd0\xcf\x11\xe0"
+
+
+def test_attachment_thumb_returns_base64_for_workspace_image(client, tmp_path, monkeypatch):
+    # repo convention: shared `client` fixture + monkeypatched FLOODMIND_DESKTOP_WORKSPACE
+    # (the brief's `client_with_ws` fixture maps to this pattern — see existing
+    # /api/workspace/file tests above).
+    monkeypatch.setenv("FLOODMIND_DESKTOP_WORKSPACE", str(tmp_path))
+    (tmp_path / "pic.png").write_bytes(b"\x89PNG\r\n\x1a\n")  # tiny png-ish bytes
+    r = client.get("/api/attachment/thumb?path=pic.png")
+    assert r.status_code == 200
+    data = r.get_json()
+    assert data["mime"] == "image/png"
+    assert data["content"]  # base64 non-empty
+
+
+def test_attachment_thumb_rejects_non_image(client, tmp_path, monkeypatch):
+    monkeypatch.setenv("FLOODMIND_DESKTOP_WORKSPACE", str(tmp_path))
+    (tmp_path / "note.txt").write_text("hi")
+    r = client.get("/api/attachment/thumb?path=note.txt")
+    assert r.status_code == 400
+
+
+def test_attachment_thumb_rejects_oversized(client, tmp_path, monkeypatch):
+    from floodmind_desktop_sidecar.attachments import MAX_IMAGE_BYTES
+    monkeypatch.setenv("FLOODMIND_DESKTOP_WORKSPACE", str(tmp_path))
+    (tmp_path / "big.png").write_bytes(b"\0" * (MAX_IMAGE_BYTES + 1))
+    r = client.get("/api/attachment/thumb?path=big.png")
+    assert r.status_code == 413

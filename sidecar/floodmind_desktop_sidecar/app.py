@@ -18,10 +18,14 @@ from . import __version__
 
 
 def _first_user_text(turns: list) -> str:
-    """First user-message content in a turn pair (for title generation)."""
+    """First user-message content in a turn pair (for title generation).
+
+    Strips a leading ``[已附图片：…]`` marker the client prefixes onto stored
+    user turns that carried images, so it doesn't pollute the LLM title."""
     for t in turns or []:
         if isinstance(t, dict) and t.get("role") == "user":
-            return str(t.get("content", ""))
+            text = str(t.get("content", ""))
+            return re.sub(r"^\[已附图片：[^\]]*\]\s*\n?", "", text)
     return ""
 
 
@@ -79,6 +83,14 @@ def create_app(agent: Agent, workspace_manager=None, conversation_store=None,
                task_run_store=None, task_runner=None, start_runner=True) -> Flask:
     app = Flask(__name__)
 
+    # Clear clipboard-image staging orphans left by a previous session.
+    try:
+        from .attachments import cleanup_staging
+        from .workspace import _app_data_dir
+        cleanup_staging(_app_data_dir() / "image-staging")
+    except Exception as e:  # pragma: no cover - never block startup over cleanup
+        print(f"[sidecar] image-staging cleanup failed: {e}", file=sys.stderr)
+
     # The Tauri WebView and the sidecar are different origins, so a POST with
     # Content-Type: application/json triggers a CORS preflight and the GETs need
     # an Access-Control-Allow-Origin echo. Restrict to the Tauri webview origins
@@ -113,15 +125,26 @@ def create_app(agent: Agent, workspace_manager=None, conversation_store=None,
     def health():
         return jsonify({"status": "ok", "version": __version__})
 
+    @app.get("/api/diagnostics")
+    def diagnostics():
+        return jsonify(agent.diagnostics())
+
     @app.post("/api/chat")
     def chat():
         body = request.get_json(silent=True) or {}
         messages: list[Message] = body.get("messages", [])
+        # Images are single-turn only — only /api/chat reads attachments; the
+        # /api/chat/append steering path stays text-only. None when absent so
+        # stream()'s `if attachments:` guard skips the normalize path entirely.
+        attachments = body.get("attachments") or None
+        # Per-request work mode (craft/ask/plan). The sidecar rebuilds the agent
+        # when the requested mode differs from the current one.
+        mode = body.get("mode", "craft")
         if not messages:
             return jsonify({"error": "messages must be a non-empty list"}), 400
 
         def generate():
-            gen = agent.stream(messages)
+            gen = agent.stream(messages, attachments=attachments, mode=mode)
             try:
                 for event in gen:
                     yield json.dumps(event, ensure_ascii=False) + "\n"
@@ -132,6 +155,16 @@ def create_app(agent: Agent, workspace_manager=None, conversation_store=None,
                 gen.close()
 
         return Response(generate(), mimetype="application/x-ndjson")
+
+    @app.get("/api/chat/events")
+    def chat_events():
+        """重连对账：按游标返回当前 run 缓冲的 wire 事件（from index ``since``）。"""
+        try:
+            since = int(request.args.get("since", 0))
+        except ValueError:
+            return jsonify({"error": "since must be an int"}), 400
+        events, done = agent.run_events_since(since)
+        return jsonify({"events": events, "done": done})
 
     @app.post("/api/chat/append")
     def chat_append():
@@ -160,6 +193,29 @@ def create_app(agent: Agent, workspace_manager=None, conversation_store=None,
         agent.pause()
         return jsonify({"status": "paused"})
 
+    @app.post("/api/chat/resume")
+    def chat_resume():
+        """Resume an interrupted run from a checkpoint (断点续跑).
+
+        Streams the resumed run as NDJSON (same wire dialect as /api/chat):
+        thinking/text/tool deltas, live permission asks, then artifacts + done.
+        """
+        body = request.get_json(silent=True) or {}
+        checkpoint_id = body.get("checkpoint_id", "")
+        if not checkpoint_id:
+            return jsonify({"error": "checkpoint_id required"}), 400
+        user_message = body.get("user_message", "") or ""
+
+        def generate():
+            gen = agent.resume_stream(checkpoint_id, user_message)
+            try:
+                for event in gen:
+                    yield json.dumps(event, ensure_ascii=False) + "\n"
+            finally:
+                gen.close()
+
+        return Response(generate(), mimetype="application/x-ndjson")
+
     @app.get("/api/permissions")
     def permissions_get():
         from .config_api import read_permissions_config
@@ -181,6 +237,42 @@ def create_app(agent: Agent, workspace_manager=None, conversation_store=None,
         except Exception as e:  # pragma: no cover - defensive
             app.logger.warning("agent.set_permission_mode failed: %s", e)
         return jsonify({"ok": True, "permissions": snapshot})
+
+    @app.get("/api/work-mode")
+    def work_mode_get():
+        from .config_api import read_work_mode_config
+        try:
+            return jsonify(read_work_mode_config())
+        except Exception as e:  # pragma: no cover - defensive
+            return jsonify({"error": str(e)}), 500
+
+    @app.post("/api/work-mode")
+    def work_mode_set():
+        from .config_api import write_work_mode_config
+        body = request.get_json(silent=True) or {}
+        try:
+            snapshot = write_work_mode_config(body)
+        except Exception as e:  # pragma: no cover - defensive
+            return jsonify({"error": str(e)}), 500
+        return jsonify({"ok": True, "work_mode": snapshot})
+
+    @app.get("/api/turn-metrics")
+    def turn_metrics_get():
+        from .config_api import read_turn_metrics_config
+        try:
+            return jsonify(read_turn_metrics_config())
+        except Exception as e:  # pragma: no cover - defensive
+            return jsonify({"error": str(e)}), 500
+
+    @app.post("/api/turn-metrics")
+    def turn_metrics_set():
+        from .config_api import write_turn_metrics_config
+        body = request.get_json(silent=True) or {}
+        try:
+            snapshot = write_turn_metrics_config(body)
+        except Exception as e:  # pragma: no cover - defensive
+            return jsonify({"error": str(e)}), 500
+        return jsonify({"ok": True, "turn_metrics": snapshot})
 
     @app.post("/api/permission/respond")
     def permission_respond():
@@ -211,6 +303,12 @@ def create_app(agent: Agent, workspace_manager=None, conversation_store=None,
         ws = request.args.get("workspace", "")
         return jsonify({"conversations": conversation_store.list(ws)})
 
+    @app.get("/api/conversations/search")
+    def conversations_search():
+        ws = request.args.get("workspace", "")
+        q = request.args.get("q", "")
+        return jsonify({"hits": conversation_store.search(ws, q)})
+
     @app.post("/api/conversations")
     def conversations_create():
         body = request.get_json(silent=True) or {}
@@ -230,6 +328,18 @@ def create_app(agent: Agent, workspace_manager=None, conversation_store=None,
         if rec is None:
             return jsonify({"error": "未找到"}), 404
         return jsonify(rec)
+
+    @app.get("/api/conversations/<conv_id>/checkpoints")
+    def conversation_checkpoints(conv_id):
+        """List the conversation's checkpoints (for 断点续跑), newest first."""
+        rec = conversation_store.get(conv_id)
+        if rec is None:
+            return jsonify({"error": "未找到"}), 404
+        session_id = rec.get("session_id", "")
+        workspace = rec.get("workspace", "")
+        if not session_id or not workspace:
+            return jsonify({"checkpoints": []})
+        return jsonify({"checkpoints": agent.list_checkpoints(session_id, workspace)})
 
     @app.post("/api/conversations/<conv_id>/activate")
     def conversations_activate(conv_id):
@@ -270,6 +380,30 @@ def create_app(agent: Agent, workspace_manager=None, conversation_store=None,
         if session_id is None:
             return jsonify({"error": "未找到"}), 404
         return jsonify({"ok": True})
+
+    @app.get("/api/conversations/<conv_id>/model")
+    def conversation_model_get(conv_id):
+        from .conversation_meta import read_conversation_model
+        try:
+            return jsonify({"model": read_conversation_model(conv_id)})
+        except Exception as e:  # pragma: no cover - defensive
+            return jsonify({"error": str(e)}), 500
+
+    @app.put("/api/conversations/<conv_id>/model")
+    def conversation_model_set(conv_id):
+        from .conversation_meta import write_conversation_model
+        body = request.get_json(silent=True) or {}
+        provider = str(body.get("provider", "")).strip()
+        model = str(body.get("model", "")).strip()
+        if not provider or not model:
+            return jsonify({"error": "provider and model required"}), 400
+        try:
+            bound = write_conversation_model(conv_id, provider, model)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        except Exception as e:  # pragma: no cover - defensive
+            return jsonify({"error": str(e)}), 500
+        return jsonify({"ok": True, "model": bound})
 
     # ── Scheduled tasks ───────────────────────────────────────
     @app.get("/api/scheduled-tasks")
@@ -338,15 +472,6 @@ def create_app(agent: Agent, workspace_manager=None, conversation_store=None,
         except Exception as e:
             return jsonify({"error": str(e)}), 400
         return jsonify({"task": task})
-
-    @app.delete("/api/scheduled-tasks/<task_id>")
-    def scheduled_tasks_delete(task_id):
-        try:
-            task_runtime.delete_task(task_id)
-        except Exception as e:
-            return jsonify({"error": str(e)}), 400
-        task_index.remove(task_id)
-        return jsonify({"ok": True})
 
     @app.post("/api/scheduled-tasks/<task_id>/run")
     def scheduled_tasks_run_now(task_id):
@@ -430,6 +555,10 @@ def create_app(agent: Agent, workspace_manager=None, conversation_store=None,
             "category": s.category,
             "provides_tools": s.provides_tools,
             "version": s.version,
+            "scripts": getattr(s, "scripts", []) or [],
+            "references": getattr(s, "references", []) or [],
+            "assets": getattr(s, "assets", []) or [],
+            "is_knowledge_only": getattr(s, "is_knowledge_only", False),
             "disabled": s.name in set(read_skills_disabled()),
             "builtin": s.name in set(list_builtin_skills()),
         })
@@ -502,6 +631,64 @@ def create_app(agent: Agent, workspace_manager=None, conversation_store=None,
             return jsonify({"error": str(e)}), 404
         except PermissionError as e:
             return jsonify({"error": str(e)}), 403
+
+    # ── 经验库 (记忆与经验) ──────────────────────────────────
+    @app.get("/api/experience")
+    def experience_list():
+        return jsonify(agent.list_experiences())
+
+    @app.get("/api/experience/search")
+    def experience_search():
+        q = request.args.get("q", "")
+        try:
+            top_k = int(request.args.get("top_k", 10))
+        except ValueError:
+            top_k = 10
+        return jsonify({"results": agent.search_experiences(q, top_k)})
+
+    @app.post("/api/experience/feedback")
+    def experience_feedback():
+        body = request.get_json(silent=True) or {}
+        node_id = str(body.get("node_id", ""))
+        helpful = bool(body.get("helpful"))
+        if not node_id:
+            return jsonify({"error": "node_id required"}), 400
+        ok = agent.experience_feedback(node_id, helpful)
+        return jsonify({"ok": ok})
+
+    @app.post("/api/experience/maintain")
+    def experience_maintain():
+        return jsonify(agent.maintain_experiences())
+
+    # ── 建议技能 (记忆与经验) ────────────────────────────────
+    @app.get("/api/skills/drafts")
+    def skill_drafts():
+        return jsonify({"drafts": agent.list_draft_skills()})
+
+    @app.post("/api/skills/drafts/<name>/approve")
+    def skill_draft_approve(name):
+        ok = agent.approve_draft_skill(name)
+        return jsonify({"ok": ok}) if ok else (jsonify({"error": "未找到或已生效"}), 404)
+
+    @app.post("/api/skills/drafts/<name>/reject")
+    def skill_draft_reject(name):
+        ok = agent.reject_draft_skill(name)
+        return jsonify({"ok": ok}) if ok else (jsonify({"error": "未找到"}), 404)
+
+    # ── 插件管理器 (可扩展性) ────────────────────────────────
+    @app.get("/api/plugins")
+    def plugins_list():
+        return jsonify({"plugins": agent.list_plugins()})
+
+    @app.post("/api/plugins/disabled")
+    def plugin_set_disabled():
+        body = request.get_json(silent=True) or {}
+        source = str(body.get("source", ""))
+        disabled = bool(body.get("disabled"))
+        if not source:
+            return jsonify({"error": "source required"}), 400
+        ok = agent.set_plugin_disabled(source, disabled)
+        return jsonify({"ok": ok}) if ok else (jsonify({"error": "未找到"}), 404)
 
     @app.get("/api/mcp")
     def mcp_list():
@@ -650,6 +837,45 @@ def create_app(agent: Agent, workspace_manager=None, conversation_store=None,
             app.logger.warning("agent.reload_model failed: %s", e)
         return jsonify({"ok": True, "reloaded": reloaded, "model": snapshot})
 
+    @app.post("/api/config/active-model")
+    def config_active_model_set():
+        """Lightweight switch: set active model + reload, without rewriting providers."""
+        from .config_api import write_active_model
+        body = request.get_json(silent=True) or {}
+        try:
+            snapshot = write_active_model(body)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        except Exception as e:  # pragma: no cover - defensive
+            return jsonify({"error": str(e)}), 500
+        reloaded = False
+        try:
+            reloaded = bool(agent.reload_model())
+        except Exception as e:  # pragma: no cover - defensive
+            app.logger.warning("agent.reload_model failed: %s", e)
+        return jsonify({"ok": True, "reloaded": reloaded, "model": snapshot})
+
+    @app.post("/api/config/model/test")
+    def config_model_test():
+        """Verify a provider's baseURL+apiKey by probing its /models endpoint.
+
+        Body: {provider, baseURL?, apiKey?}. Blanks fall back to saved values so
+        the GUI can test a freshly typed key before saving.
+        """
+        from .config_api import test_model_connection
+        body = request.get_json(silent=True) or {}
+        return jsonify(test_model_connection(body))
+
+    @app.post("/api/config/model/list")
+    def config_model_list():
+        """Fetch the available model id list from a provider's /models endpoint.
+
+        Same body shape as /test; returns {ok, models, error}.
+        """
+        from .config_api import list_remote_models
+        body = request.get_json(silent=True) or {}
+        return jsonify(list_remote_models(body))
+
     @app.get("/api/config/soul")
     def config_soul_get():
         from .config_api import read_soul
@@ -705,24 +931,116 @@ def create_app(agent: Agent, workspace_manager=None, conversation_store=None,
                 return current
         return os.environ.get("FLOODMIND_DESKTOP_WORKSPACE", "")
 
+    def _external_paths_root():
+        """Workspace root the external-path registry keys to (default-workspace when none open).
+
+        Prefers the real agent's current_workspace_root() so a no-workspace-open
+        registration lands in the same default-workspace dir the agent binds;
+        falls back for StubAgent tests.
+        """
+        from .workspace import _app_data_dir
+
+        fn = getattr(agent, "current_workspace_root", None)
+        if callable(fn):
+            try:
+                return fn()
+            except Exception:  # pragma: no cover - defensive
+                pass
+        ws = _require_workspace()
+        if ws:
+            return ws
+        return str(_app_data_dir() / "default-workspace")
+
+    @app.get("/api/external-paths")
+    def external_paths_get():
+        from . import external_paths
+
+        return jsonify({"paths": external_paths.read_external_paths(_external_paths_root())})
+
+    @app.post("/api/external-paths")
+    def external_paths_add():
+        from . import external_paths
+
+        body = request.get_json(silent=True) or {}
+        paths = body.get("paths")
+        if not isinstance(paths, list) or not paths:
+            return jsonify({"error": "paths 列表不能为空"}), 400
+        try:
+            out = external_paths.add_external_paths(_external_paths_root(), [str(p) for p in paths])
+        except Exception as e:  # pragma: no cover - defensive
+            return jsonify({"error": str(e)}), 500
+        return jsonify({"paths": out})
+
+    @app.delete("/api/external-paths")
+    def external_paths_remove():
+        from . import external_paths
+
+        body = request.get_json(silent=True) or {}
+        path = str(body.get("path", "")).strip()
+        if not path:
+            return jsonify({"error": "path 不能为空"}), 400
+        return jsonify({"paths": external_paths.remove_external_path(_external_paths_root(), path)})
+
+    @app.get("/api/background-tasks")
+    def background_tasks_list():
+        """Running/completed background Bash tasks (exec_bash run_in_background)."""
+        fn = getattr(agent, "list_background_tasks", None)
+        tasks = fn() if callable(fn) else []
+        return jsonify({"tasks": tasks})
+
+    @app.post("/api/background-tasks/<task_id>/kill")
+    def background_tasks_kill(task_id):
+        fn = getattr(agent, "kill_background_task", None)
+        ok = fn(task_id) if callable(fn) else False
+        return jsonify({"ok": ok}) if ok else (jsonify({"error": "任务不存在或已结束"}), 404)
+
     @app.get("/api/workspace/file")
     def read_workspace_file():
-        workspace = _require_workspace()
-        if not workspace:
-            return jsonify({"error": "未打开工作区"}), 400
-        rel = request.args.get("path", "").lstrip("/\\")
-        if not rel:
+        from . import external_paths
+
+        raw_path = request.args.get("path", "").strip()
+        if not raw_path:
             return jsonify({"error": "需要提供路径"}), 400
-        target = Path(workspace) / rel
-        target = target.resolve()
-        root = Path(workspace).resolve()
-        # Prevent escape outside the workspace.
-        if root not in target.parents and target != root:
+        workspace = _require_workspace()
+        root = Path(workspace).resolve() if workspace else None
+        if os.path.isabs(raw_path):
+            # 拖入/粘贴的工作区外文件：绝对路径，按外部授权列表校验。
+            target = Path(raw_path).resolve()
+        else:
+            if not workspace:
+                return jsonify({"error": "未打开工作区"}), 400
+            target = (Path(workspace) / raw_path).resolve()
+
+        # Authorized: 工作区内，或显式注册的外部可读路径（该文件本身、或其所在
+        # 目录被拖入授权过）。未授权的外部路径仍禁止预览。
+        def _preview_allowed(p: Path) -> bool:
+            if root is not None and (p == root or root in p.parents):
+                return True
+            for auth in external_paths.read_external_paths(_external_paths_root()):
+                ap = Path(auth).resolve()
+                if p == ap or ap in p.parents:
+                    return True
+            return False
+
+        if not _preview_allowed(target):
             return jsonify({"error": "禁止访问"}), 403
         if not target.exists():
             return jsonify({"error": "未找到"}), 404
+        # 目录 → 返回可浏览的文件列表（拖入的文件夹 chip 可点进其内容）。
         if target.is_dir():
-            return jsonify({"error": "路径是目录"}), 400
+            entries = []
+            try:
+                for p in sorted(target.iterdir()):
+                    if p.name.startswith("."):
+                        continue
+                    entries.append({
+                        "name": p.name,
+                        "type": "dir" if p.is_dir() else "file",
+                        "path": str(p.resolve()),
+                    })
+            except OSError:
+                pass
+            return jsonify({"kind": "dir", "entries": entries, "path": str(target)})
         mime = "text/plain"
         ext = target.suffix.lower()
         image_exts = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"}
@@ -757,11 +1075,55 @@ def create_app(agent: Agent, workspace_manager=None, conversation_store=None,
             content = target.read_text(encoding="utf-8", errors="replace")
             previewable = True
         return jsonify({
+            "kind": "file",
             "content": content,
             "mime": mime,
             "previewable": previewable,
             "path": str(target),
         })
+
+    @app.get("/api/attachment/thumb")
+    def attachment_thumb():
+        """Return base64 + mime of an image for thumbnail display.
+
+        ``path`` may be workspace-relative (resolved against the current
+        workspace) or absolute (a drag-drop target the user explicitly attached).
+        Image extensions only, 10MB cap. CORS is already restricted to the Tauri
+        webview origins, and only images are returned — reading a file the user
+        is actively attaching for display is intended.
+        """
+        from .attachments import IMAGE_EXTS, MAX_IMAGE_BYTES
+        raw_path = request.args.get("path", "").strip()
+        if not raw_path:
+            return jsonify({"error": "需要提供路径"}), 400
+        if os.path.isabs(raw_path):
+            target = Path(raw_path)
+        else:
+            workspace = _require_workspace()
+            if not workspace:
+                return jsonify({"error": "未打开工作区"}), 400
+            target = (Path(workspace) / raw_path).resolve()
+            root = Path(workspace).resolve()
+            if root not in target.parents and target != root:
+                return jsonify({"error": "禁止访问"}), 403
+        target = target.resolve()
+        ext = target.suffix.lower()
+        if ext not in IMAGE_EXTS:
+            return jsonify({"error": "仅支持图片"}), 400
+        if not target.exists() or not target.is_file():
+            return jsonify({"error": "未找到"}), 404
+        try:
+            size = target.stat().st_size
+        except OSError:
+            return jsonify({"error": "无法读取"}), 500
+        if size > MAX_IMAGE_BYTES:
+            return jsonify({"error": "图片过大（>10MB）"}), 413
+        if ext == ".jpg":
+            mime = "image/jpeg"
+        else:
+            mime = f"image/{ext.lstrip('.').lower()}"
+        content = base64.b64encode(target.read_bytes()).decode()
+        return jsonify({"content": content, "mime": mime, "size": size})
 
     if workspace_manager is not None:
         @app.get("/api/workspace")
@@ -825,7 +1187,10 @@ def create_app(agent: Agent, workspace_manager=None, conversation_store=None,
             entries = []
             try:
                 for p in sorted(target.iterdir()):
-                    if p.name.startswith(".") and p.name != ".floodmind":
+                    # Hide hidden / SDK-managed dirs (`.floodmind` holds sessions,
+                    # checkpoints, memory, artifacts archives) — never expose them
+                    # as referenceable files in the @ picker.
+                    if p.name.startswith("."):
                         continue
                     entries.append({
                         "name": p.name,

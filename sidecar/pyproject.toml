@@ -2,7 +2,19 @@
 name = "floodmind-desktop-sidecar"
 version = "0.1.0"
 requires-python = ">=3.10"
-dependencies = ["flask>=3.0", "flask-cors>=4.0"]
+dependencies = [
+    "flask>=3.0",
+    "flask-cors>=4.0",
+    "floodmind @ git+https://github.com/dancepandas/FloodMind.git@v2.4.0",
+]
+
+[project.optional-dependencies]
+build = [
+    "Nuitka==4.2",
+    "ordered-set==4.1.0",
+    "zstandard==0.24.0",
+]
+test = ["pytest>=8,<10"]
 
 [project.scripts]
 floodmind-sidecar = "floodmind_desktop_sidecar.__main__:main"

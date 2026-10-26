@@ -23,6 +23,8 @@ from __future__ import annotations
 
 import json
 import os
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -38,11 +40,14 @@ _ENV_VARS = [
     "FLOODMIND_ENABLE_SEARCH",
 ]
 
-# Code-internal fallbacks when a model definition omits a field. These mirror
-# the SDK's own defaults in model_resolver._build() and are NOT user-facing.
+# Code-internal fallbacks when a model definition omits a field. The desktop keeps
+# a larger output default than the SDK core (SDK v1.0.1 falls back to 8192 in
+# model_resolver._build()) because this GUI previously treated missing/stale
+# maxTokens metadata as a desktop model-catalog default. Prefer each model's own
+# default_max_tokens whenever it is present.
 DEFAULT_TEMPERATURE = 0.3
 DEFAULT_MAX_TOKENS = 65_536
-DEFAULT_CONTEXT_WINDOW = 32_768
+DEFAULT_CONTEXT_WINDOW = 256_000
 
 
 # ── Paths & raw load ─────────────────────────────────────────
@@ -58,13 +63,22 @@ def _legacy_config_path() -> Path:
 
 
 def _load_raw_settings() -> dict:
-    """Load the raw ``~/.floodmind/settings.json`` without SDK merging."""
+    """Load ``~/.floodmind/settings.json`` without SDK merging.
+
+    SDK v2.3.1 encrypts credential fields at rest (``enc:v1:...``, DPAPI on
+    Windows). Decrypt on read so callers see the same plaintext representation
+    the SDK holds in memory (``save_config`` re-protects on write).
+    """
     path = _settings_path()
     if path.exists():
         try:
+            from floodmind.config.secret_store import unprotect_tree
+        except ImportError:  # older SDK: no at-rest encryption
+            unprotect_tree = lambda cfg: cfg  # noqa: E731
+        try:
             data = json.loads(path.read_text(encoding="utf-8"))
             if isinstance(data, dict):
-                return data
+                return unprotect_tree(data)
         except Exception:
             pass
     return {}
@@ -91,12 +105,34 @@ def _neutralize_legacy_config() -> None:
 # ── Model ↔ GUI field translation ────────────────────────────
 
 def _model_to_gui(m: dict) -> dict:
-    """SDK model dict → GUI {name, maxTokens, contextSize, temperature}."""
+    """SDK model dict → GUI {name, maxTokens, contextSize, temperature, supportsVision}.
+
+    Context window is filled from the stored value, but if the stored value is
+    the SDK's hardcoded fallback (32768) and the metadata table has a better
+    match for this model, the metadata wins.  This corrects stale records that
+    were saved before the model-metadata feature existed.
+    """
+    name = m.get("id", "")
+    ctx = m.get("context_window", m.get("contextSize")) or 0
+    tok = m.get("default_max_tokens", m.get("maxTokens"))
+    # If the stored values are the old SDK defaults (never explicitly set),
+    # metadata should correct them — both context_window and max_tokens.
+    if (ctx == 32768 or not ctx) or (not tok or tok == DEFAULT_MAX_TOKENS):
+        try:
+            from .model_metadata import lookup_model_metadata
+            meta = lookup_model_metadata(name)
+            if ctx == 32768 or not ctx:
+                ctx = meta["context_window"]
+            if not tok or tok == DEFAULT_MAX_TOKENS:
+                tok = meta["max_output_tokens"]
+        except Exception:
+            pass
     return {
-        "name": m.get("id", ""),
-        "maxTokens": m.get("default_max_tokens", m.get("maxTokens")),
-        "contextSize": m.get("context_window", m.get("contextSize")),
+        "name": name,
+        "maxTokens": tok,
+        "contextSize": ctx,
         "temperature": m.get("default_temperature", m.get("temperature")),
+        "supportsVision": bool(m.get("supports_vision", m.get("supportsVision", False))),
     }
 
 
@@ -164,6 +200,34 @@ def _active_provider(raw: dict) -> str:
     return ""
 
 
+def _normalize_enabled(raw: dict) -> list[dict]:
+    """desktop.enabledModels → list of {provider, model} (drop malformed)."""
+    desktop = raw.get("desktop")
+    if not isinstance(desktop, dict):
+        return []
+    items = desktop.get("enabledModels")
+    if not isinstance(items, list):
+        return []
+    out = []
+    for e in items:
+        if isinstance(e, dict) and e.get("provider") and e.get("model"):
+            out.append({"provider": str(e["provider"]), "model": str(e["model"])})
+    return out
+
+
+def _all_catalog_models(raw: dict) -> list[dict]:
+    """Every {provider, model} present in the providers catalog (default-enabled fallback)."""
+    out = []
+    for pid, pdata in (raw.get("providers") or {}).items():
+        if not isinstance(pdata, dict):
+            continue
+        for m in _iter_models(pdata):
+            mid = m.get("id", "")
+            if mid:
+                out.append({"provider": pid, "model": mid})
+    return out
+
+
 # ── Read ─────────────────────────────────────────────────────
 
 def read_model_config() -> dict:
@@ -188,6 +252,12 @@ def read_model_config() -> dict:
 
     active_id = _active_model_key(raw)
     active_provider_id = _active_provider(raw)
+    enabled = _normalize_enabled(raw) or _all_catalog_models(raw)
+    enabled_keys = {(e["provider"], e["model"]) for e in enabled}
+    if enabled and (active_provider_id, active_id) not in enabled_keys:
+        fb = enabled[0]
+        active_id = fb["model"]
+        active_provider_id = fb["provider"]
     found = _find_model(raw, active_id, active_provider_id) if active_id else None
     if found:
         pid, pdata, m = found
@@ -195,11 +265,23 @@ def read_model_config() -> dict:
         api_key_present = bool(pdata.get("api_key"))
         temperature = m.get("default_temperature", DEFAULT_TEMPERATURE)
         max_tokens = m.get("default_max_tokens", DEFAULT_MAX_TOKENS)
+        context_size = m.get("context_window", m.get("contextSize"))
+        # Correct stale SDK-default values from metadata (pre-model-metadata saves).
+        if context_size == 32768 or not context_size or max_tokens == DEFAULT_MAX_TOKENS:
+            from .model_metadata import lookup_model_metadata
+            meta = lookup_model_metadata(active_id)
+            if context_size == 32768 or not context_size:
+                context_size = meta["context_window"]
+            if max_tokens == DEFAULT_MAX_TOKENS:
+                max_tokens = meta["max_output_tokens"]
+        supports_vision = bool(m.get("supports_vision", m.get("supportsVision", False)))
     else:
         active_provider = active_base = ""
         api_key_present = False
         temperature = DEFAULT_TEMPERATURE
         max_tokens = DEFAULT_MAX_TOKENS
+        context_size = None
+        supports_vision = False
 
     desktop = raw.get("desktop")
     desktop_cfg = desktop if isinstance(desktop, dict) else {}
@@ -210,12 +292,15 @@ def read_model_config() -> dict:
             "model": active_id,
             "temperature": temperature,
             "maxTokens": max_tokens,
+            "contextSize": context_size,
             "enableReasoning": bool(desktop_cfg.get("enableReasoning", False)),
             "enableSearch": bool(desktop_cfg.get("enableSearch", False)),
+            "supportsVision": supports_vision,
         },
         "apiKeyPresent": api_key_present,
         "baseURL": active_base,
         "providers": providers,
+        "enabledModels": enabled,
         "envOverrides": [v for v in _ENV_VARS if os.getenv(v)],
     }
 
@@ -223,29 +308,47 @@ def read_model_config() -> dict:
 # ── Write ────────────────────────────────────────────────────
 
 def _gui_model_to_sdk(mi: dict, prev_model: dict | None) -> dict:
-    """GUI model entry → SDK model dict (id + context_window + defaults)."""
+    """GUI model entry → SDK model dict (id + context_window + defaults).
+
+    Context window and max output tokens are auto-filled from the model-metadata
+    table (name-based lookup) when the GUI does not supply explicit values, so
+    the user never has to type context sizes manually.
+    """
+    from .model_metadata import lookup_model_metadata
+
     prev_model = prev_model or {}
     mtok = mi.get("maxTokens")
     mctx = mi.get("contextSize")
     mtemp = mi.get("temperature")
+    model_name = mi.get("name", "")
+
+    # Context window: explicit GUI value > previous stored value > metadata
+    # lookup > sensible fallback.
+    ctx = int(mctx) if mctx else int(prev_model.get("context_window") or 0)
+    if not ctx:
+        ctx = lookup_model_metadata(model_name)["context_window"]
+
+    # Max output tokens: same priority chain.
+    tok = int(mtok) if mtok else int(prev_model.get("default_max_tokens") or 0)
+    if not tok:
+        tok = lookup_model_metadata(model_name)["max_output_tokens"]
 
     # Preserve supports_* / description seeded earlier, then apply GUI values.
     sdk = dict(prev_model)
-    sdk["id"] = mi.get("name", "")
+    sdk["id"] = model_name
     sdk["name"] = mi.get("name", sdk.get("name", sdk["id"]))
 
-    ctx = int(mctx) if mctx else int(prev_model.get("context_window") or 0)
-    if not ctx:
-        ctx = int(mtok) if mtok else DEFAULT_CONTEXT_WINDOW
     sdk["context_window"] = ctx
-
-    sdk["default_max_tokens"] = int(mtok) if mtok else int(
-        prev_model.get("default_max_tokens") or DEFAULT_MAX_TOKENS
-    )
+    sdk["default_max_tokens"] = tok
     sdk["default_temperature"] = (
         float(mtemp) if mtemp is not None
         else float(prev_model.get("default_temperature") or DEFAULT_TEMPERATURE)
     )
+    # Preserve the GUI's vision flag (curated models seed it; custom default false).
+    if "supportsVision" in mi:
+        sdk["supports_vision"] = bool(mi.get("supportsVision"))
+    elif "supports_vision" not in sdk and "supportsVision" not in sdk:
+        sdk["supports_vision"] = False
     return sdk
 
 
@@ -306,10 +409,40 @@ def write_model_config(body: dict[str, Any]) -> dict:
         desktop["activeModel"] = model_name
     if body.get("provider"):
         desktop["activeProvider"] = body["provider"]
+    if isinstance(body.get("enabledModels"), list):
+        desktop["enabledModels"] = [
+            {"provider": str(e.get("provider", "")), "model": str(e.get("model", ""))}
+            for e in body["enabledModels"]
+            if isinstance(e, dict) and e.get("provider") and e.get("model")
+        ]
     raw["desktop"] = desktop
 
     save_config(raw)  # full write of the patched raw dict; clears the SDK cache
     _neutralize_legacy_config()  # stop the SDK's legacy-config migration churn
+    return read_model_config()
+
+
+def write_active_model(body: dict[str, Any]) -> dict:
+    """Lightweight active-model switch: patch ``desktop.activeModel/activeProvider``
+    only and save. Does NOT rebuild the providers section or touch api keys —
+    that's the heavy ``write_model_config`` path's job (settings save). Returns
+    the refreshed ``read_model_config()`` snapshot.
+    """
+    from floodmind.config.settings import save_config
+
+    provider = str((body or {}).get("provider", "")).strip()
+    model = str((body or {}).get("model", "")).strip()
+    if not provider or not model:
+        raise ValueError("provider and model required")
+
+    raw = _load_raw_settings()
+    desktop = raw.get("desktop") if isinstance(raw.get("desktop"), dict) else {}
+    desktop = dict(desktop)
+    desktop["activeModel"] = model
+    desktop["activeProvider"] = provider
+    raw["desktop"] = desktop
+    save_config(raw)
+    _neutralize_legacy_config()
     return read_model_config()
 
 
@@ -413,3 +546,158 @@ def write_permissions_config(body: dict[str, Any]) -> dict:
     raw.setdefault("permissions", {})["mode"] = mode
     save_config(raw)
     return read_permissions_config()
+
+
+_WORK_MODES = ("craft", "ask", "plan")
+
+
+def read_work_mode_config() -> dict:
+    """Return the desktop work-mode block from raw settings (default craft)."""
+    raw = _load_raw_settings()
+    desktop = raw.get("desktop") if isinstance(raw.get("desktop"), dict) else {}
+    mode = desktop.get("workMode", "craft")
+    if mode not in _WORK_MODES:
+        mode = "craft"
+    return {"mode": mode}
+
+
+def write_work_mode_config(body: dict[str, Any]) -> dict:
+    """Persist the desktop work-mode block and return the new snapshot."""
+    from floodmind.config.settings import save_config
+
+    raw = _load_raw_settings()
+    mode = body.get("mode", "craft")
+    if mode not in _WORK_MODES:
+        mode = "craft"
+    desktop = raw.get("desktop") if isinstance(raw.get("desktop"), dict) else {}
+    desktop = dict(desktop)
+    desktop["workMode"] = mode
+    raw["desktop"] = desktop
+    save_config(raw)
+    return read_work_mode_config()
+
+
+_TURN_METRIC_KEYS = ("show_duration", "show_tool_count", "show_tokens")
+
+
+def read_turn_metrics_config() -> dict:
+    """Return the desktop turn-metrics display prefs (all default True)."""
+    raw = _load_raw_settings()
+    desktop = raw.get("desktop") if isinstance(raw.get("desktop"), dict) else {}
+    metrics = desktop.get("turnMetrics") if isinstance(desktop.get("turnMetrics"), dict) else {}
+    return {k: bool(metrics.get(k, True)) for k in _TURN_METRIC_KEYS}
+
+
+def write_turn_metrics_config(body: dict[str, Any]) -> dict:
+    """Persist the turn-metrics display prefs and return the new snapshot."""
+    from floodmind.config.settings import save_config
+
+    raw = _load_raw_settings()
+    desktop = raw.get("desktop") if isinstance(raw.get("desktop"), dict) else {}
+    desktop = dict(desktop)
+    metrics = dict(desktop.get("turnMetrics") or {})
+    for k in _TURN_METRIC_KEYS:
+        if k in body:
+            metrics[k] = bool(body[k])
+    desktop["turnMetrics"] = metrics
+    raw["desktop"] = desktop
+    save_config(raw)
+    return read_turn_metrics_config()
+
+
+# ── Connection probe & remote model listing ─────────────────
+# Two helpers for the Settings GUI's "检测连接" / "拉取模型" affordances.
+# Both hit the provider's OpenAI-compatible ``/models`` endpoint with the
+# standard library (no httpx dependency). baseURL/apiKey come from the request
+# body when the GUI is mid-edit, falling back to the on-disk saved values when
+# omitted (the password field is blank on load, so an empty apiKey means "use
+# the saved one").
+
+def _resolve_probe_target(body: dict[str, Any]) -> tuple[str, str]:
+    """Return (base_url, api_key) for a probe.
+
+    body keys: provider (id), baseURL?, apiKey?. Saved on-disk values fill in
+    blanks so the GUI can test before saving a freshly typed key.
+    """
+    raw = _load_raw_settings()
+    providers = raw.get("providers") or {}
+    pid = str((body or {}).get("provider", "")).strip()
+    saved = providers.get(pid, {}) if isinstance(providers, dict) else {}
+    if not isinstance(saved, dict):
+        saved = {}
+    base = str((body or {}).get("baseURL") or saved.get("base_url", "") or "").strip()
+    key = str((body or {}).get("apiKey") or saved.get("api_key", "") or "")
+    return base, key
+
+
+def _fetch_remote_model_ids(base_url: str, api_key: str, *, timeout: float = 8.0) -> list[str]:
+    """GET {base_url}/models (OpenAI-compatible) → list of model ids.
+
+    Raises urllib.error.HTTPError/URLError on failure so callers can map to a
+    user-facing message. Handles both the OpenAI shape ``{data:[{id}]}`` and
+    Ollama's ``{models:[{model}]}`` shape (its /v1/models endpoint returns the
+    OpenAI shape, but /api/tags returns the latter — we tolerate either).
+    """
+    url = base_url.rstrip("/") + "/models"
+    headers = {"Accept": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    req = urllib.request.Request(url, headers=headers, method="GET")
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        raw_bytes = resp.read()
+    try:
+        payload = json.loads(raw_bytes.decode("utf-8", "replace"))
+    except Exception:
+        return []
+    ids: list[str] = []
+    if isinstance(payload, dict):
+        data = payload.get("data")
+        if isinstance(data, list):
+            for m in data:
+                if isinstance(m, dict) and m.get("id"):
+                    ids.append(str(m["id"]))
+        models_field = payload.get("models")
+        if isinstance(models_field, list):
+            for m in models_field:
+                if isinstance(m, dict) and (m.get("model") or m.get("id")):
+                    ids.append(str(m.get("model") or m.get("id")))
+    # De-dup, preserve order.
+    seen: set[str] = set()
+    out: list[str] = []
+    for i in ids:
+        if i and i not in seen:
+            seen.add(i)
+            out.append(i)
+    return out
+
+
+def test_model_connection(body: dict[str, Any]) -> dict[str, Any]:
+    """Verify baseURL+apiKey by hitting /models. Returns {ok, error}."""
+    try:
+        base, key = _resolve_probe_target(body)
+        if not base:
+            return {"ok": False, "error": "未配置 Base URL"}
+        _fetch_remote_model_ids(base, key)
+        return {"ok": True, "error": None}
+    except urllib.error.HTTPError as e:
+        return {"ok": False, "error": f"HTTP {e.code}：{e.reason}"}
+    except urllib.error.URLError as e:
+        return {"ok": False, "error": f"连接失败：{e.reason}"}
+    except Exception as e:  # pragma: no cover - defensive
+        return {"ok": False, "error": str(e)}
+
+
+def list_remote_models(body: dict[str, Any]) -> dict[str, Any]:
+    """Fetch available model ids from a provider. Returns {ok, models, error}."""
+    try:
+        base, key = _resolve_probe_target(body)
+        if not base:
+            return {"ok": False, "models": [], "error": "未配置 Base URL"}
+        ids = _fetch_remote_model_ids(base, key)
+        return {"ok": True, "models": ids, "error": None}
+    except urllib.error.HTTPError as e:
+        return {"ok": False, "models": [], "error": f"HTTP {e.code}：{e.reason}"}
+    except urllib.error.URLError as e:
+        return {"ok": False, "models": [], "error": f"连接失败：{e.reason}"}
+    except Exception as e:  # pragma: no cover - defensive
+        return {"ok": False, "models": [], "error": str(e)}
