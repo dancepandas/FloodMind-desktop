@@ -7,8 +7,11 @@ export interface ModelConfig {
   model: string;
   temperature: number;
   maxTokens: number;
+  /** Per-model context-window size (tokens). Used by the context-usage ring. */
+  contextSize?: number | null;
   enableReasoning: boolean;
   enableSearch: boolean;
+  supportsVision: boolean;
 }
 export interface ModelEntry {
   name: string;
@@ -17,6 +20,8 @@ export interface ModelEntry {
   contextSize?: number | null;
   /** Per-model temperature; only meaningful for custom OpenAI/Ollama models. */
   temperature?: number | null;
+  /** 该模型是否接受 image_url 多模态输入。未核实的模型默认 false。 */
+  supportsVision?: boolean;
 }
 export interface ProviderInfo {
   id: string;
@@ -39,56 +44,77 @@ export interface ModelForm {
   provider: string;   // active provider id
   model: string;      // active model name
   providers: ProviderFormEntry[];
+  enabledModels?: EnabledModel[];
+}
+
+export interface EnabledModel {
+  provider: string;
+  model: string;
 }
 
 export type PermissionMode = "always-trust" | "trust-once" | "always-ask";
 
-/** Merge providers returned by the backend with the curated provider list. Saved
- *  values (apiKeyPresent, baseURL, models) are preserved; missing curated
- *  providers are injected with their defaults so the UI always shows them. */
+/** Composer work mode: craft (execute directly) / ask (Q&A only) / plan (propose then confirm). */
+export type WorkMode = "craft" | "ask" | "plan";
+
+const WORK_MODES: WorkMode[] = ["craft", "ask", "plan"];
+export function isWorkMode(v: unknown): v is WorkMode {
+  return typeof v === "string" && (WORK_MODES as string[]).includes(v);
+}
+
+/** Turn-fold summary-bar metric visibility (persisted in desktop.turnMetrics). */
+export interface TurnMetrics {
+  showDuration: boolean;
+  showToolCount: boolean;
+  showTokens: boolean;
+}
+export const DEFAULT_TURN_METRICS: TurnMetrics = {
+  showDuration: true,
+  showToolCount: true,
+  showTokens: true,
+};
+
+/** Merge providers returned by the backend with the curated provider list.
+ *  Authoritative: saved model list wins (this is what makes "delete a model"
+ *  stick); curated defaults are seeded only when a provider is absent from
+ *  saved. Non-curated providers (e.g. user's openai-compatible) are appended. */
 function mergeWithCurated(saved: ProviderInfo[]): ProviderInfo[] {
   const byId = new Map(saved.map((p) => [p.id, p]));
-  return CURATED_PROVIDERS.map((def) => {
+  const merged: ProviderInfo[] = CURATED_PROVIDERS.map((def) => {
     const savedProvider = byId.get(def.id);
     if (savedProvider) {
-      const savedModelMap = new Map((savedProvider.models || []).map((m) => [m.name, m]));
-      const mergedModels = def.models.map((dm) => {
-        const savedModel = savedModelMap.get(dm.name);
-        const defaultTokens = getTierDefaultTokens(dm);
-        return {
-          name: dm.name,
-          maxTokens: savedModel?.maxTokens ?? defaultTokens ?? null,
-        };
-      });
-      // Append any extra models the user saved (OpenAI/Ollama custom models).
-      const fixedNames = new Set(def.models.map((m) => m.name));
-      const extraModels = (savedProvider.models || [])
-        .filter((m) => !fixedNames.has(m.name))
-        .map((m) => ({
-          name: m.name,
-          maxTokens: m.maxTokens ?? null,
-          contextSize: m.contextSize ?? null,
-          temperature: m.temperature ?? null,
-        }));
-      return {
-        ...savedProvider,
-        name: def.name,
-        baseURL: savedProvider.baseURL || def.baseURL,
-        models: [...mergedModels, ...extraModels],
-      };
+      const models = (savedProvider.models || []).map((m) => ({
+        name: m.name,
+        maxTokens: m.maxTokens ?? null,
+        contextSize: m.contextSize ?? null,
+        temperature: m.temperature ?? null,
+        supportsVision: m.supportsVision ?? false,
+      }));
+      return { ...savedProvider, name: def.name, models };
     }
     return {
       id: def.id,
       name: def.name,
       baseURL: def.baseURL,
-      models: def.models.map((m) => ({ name: m.name, maxTokens: getTierDefaultTokens(m) ?? null })),
+      models: def.models.map((m) => ({
+        name: m.name,
+        maxTokens: getTierDefaultTokens(m) ?? null,
+        supportsVision: m.supportsVision ?? false,
+      })),
       apiKeyPresent: false,
     };
   });
+  // Keep non-curated custom providers (e.g. user added under openai-compatible).
+  for (const p of saved) {
+    if (!CURATED_PROVIDER_IDS.has(p.id)) merged.push(p);
+  }
+  return merged;
 }
 
 interface ConfigState {
   model: ModelConfig | null;
+  enabledModels: EnabledModel[];
+  switching: boolean;
   providers: ProviderInfo[];
   apiKeyPresent: boolean;
   baseURL: string;
@@ -111,19 +137,41 @@ interface ConfigState {
   permissionSaving: boolean;
   permissionSavedAt: number | null;
   permissionError: string | null;
+  // work-mode slice
+  workMode: WorkMode;
+  workModeLoading: boolean;
+  workModeSaving: boolean;
+  workModeSavedAt: number | null;
+  workModeError: string | null;
+  // turn-metrics slice (summary-bar metric visibility)
+  turnMetrics: TurnMetrics;
+  turnMetricsLoading: boolean;
+  turnMetricsSaving: boolean;
+  turnMetricsError: string | null;
+  loadTurnMetrics: () => Promise<void>;
+  saveTurnMetrics: (metrics: TurnMetrics) => Promise<boolean>;
   load: () => Promise<void>;
   save: (form: ModelForm) => Promise<boolean>;
   clearSaved: () => void;
+  resolveActiveModel: (convOverride?: EnabledModel | null) => EnabledModel | null;
+  switchActive: (provider: string, model: string, convId?: string) => Promise<boolean>;
+  loadConversationModel: (convId: string) => Promise<EnabledModel | null>;
   loadPersona: () => Promise<void>;
   saveSoul: (text: string) => Promise<boolean>;
   saveAgents: (text: string) => Promise<boolean>;
   resetSoul: () => Promise<void>;
   loadPermissions: () => Promise<void>;
   savePermissions: (mode: PermissionMode) => Promise<boolean>;
+  loadWorkMode: () => Promise<void>;
+  saveWorkMode: (mode: WorkMode) => Promise<boolean>;
+  testConnection: (provider: string, opts?: { baseURL?: string; apiKey?: string }) => Promise<{ ok: boolean; error: string | null }>;
+  fetchRemoteModels: (provider: string, opts?: { baseURL?: string; apiKey?: string }) => Promise<{ ok: boolean; models: string[]; error: string | null }>;
 }
 
 export const useConfigStore = create<ConfigState>((set) => ({
   model: null,
+  enabledModels: [],
+  switching: false,
   providers: [],
   apiKeyPresent: false,
   baseURL: "",
@@ -145,6 +193,17 @@ export const useConfigStore = create<ConfigState>((set) => ({
   permissionSaving: false,
   permissionSavedAt: null,
   permissionError: null,
+  // work-mode slice
+  workMode: "craft",
+  workModeLoading: false,
+  workModeSaving: false,
+  workModeSavedAt: null,
+  workModeError: null,
+  // turn-metrics slice
+  turnMetrics: DEFAULT_TURN_METRICS,
+  turnMetricsLoading: false,
+  turnMetricsSaving: false,
+  turnMetricsError: null,
 
   async load() {
     set({ loading: true, error: null });
@@ -157,11 +216,12 @@ export const useConfigStore = create<ConfigState>((set) => ({
       }
       const data = await r.json();
       set({
-        model: data.model,
+        model: { ...data.model, supportsVision: !!data.model?.supportsVision } as ModelConfig,
         providers: mergeWithCurated(data.providers || []),
         apiKeyPresent: !!data.apiKeyPresent,
         baseURL: data.baseURL || "",
         envOverrides: data.envOverrides || [],
+        enabledModels: (data.enabledModels || []) as EnabledModel[],
         loading: false,
       });
     } catch {
@@ -195,13 +255,15 @@ export const useConfigStore = create<ConfigState>((set) => ({
                 const entry: Record<string, unknown> = { name: m.name.trim(), maxTokens: m.maxTokens };
                 if (m.contextSize != null) entry.contextSize = m.contextSize;
                 if (m.temperature != null) entry.temperature = m.temperature;
+                entry.supportsVision = !!m.supportsVision;
                 return entry;
               }),
           };
           if (p.apiKey) entry.apiKey = p.apiKey;
           return entry;
         });
-      const body = { provider: form.provider, model: form.model, providers };
+      const body = { provider: form.provider, model: form.model,
+                     enabledModels: form.enabledModels ?? [], providers };
       const r = await fetch(`${b}/api/config/model`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -212,10 +274,13 @@ export const useConfigStore = create<ConfigState>((set) => ({
         return false;
       }
       const data = await r.json();
+      const snap = data.model || {};
       set({
-        model: data.model?.model ?? null,
-        apiKeyPresent: data.model?.apiKeyPresent ?? false,
-        baseURL: data.model?.baseURL ?? "",
+        model: snap.model ?? null,
+        providers: snap.providers ?? [],
+        apiKeyPresent: !!snap.apiKeyPresent,
+        baseURL: snap.baseURL ?? "",
+        enabledModels: snap.enabledModels ?? [],
         saving: false,
         savedAt: Date.now(),
         reloadFailed: data.reloaded === false,
@@ -228,6 +293,73 @@ export const useConfigStore = create<ConfigState>((set) => ({
   },
 
   clearSaved: () => set({ savedAt: null, reloadFailed: false }),
+
+  resolveActiveModel(convOverride) {
+    const s: ConfigState = useConfigStore.getState();
+    if (convOverride && convOverride.provider && convOverride.model) return convOverride;
+    const active = s.model;
+    if (active && active.provider && active.model) {
+      const inEnabled = s.enabledModels.some(
+        (e: EnabledModel) => e.provider === active.provider && e.model === active.model,
+      );
+      if (inEnabled || s.enabledModels.length === 0) {
+        return { provider: active.provider, model: active.model };
+      }
+    }
+    return s.enabledModels[0] ?? null;
+  },
+
+  async switchActive(provider, model, convId) {
+    const prev = useConfigStore.getState().model;
+    useConfigStore.setState((s: ConfigState) => ({
+      switching: true,
+      model: { ...(s.model as any), provider, model } as any,
+    }));
+    try {
+      const b = await getBaseUrl();
+      const [, activeRes] = await Promise.all([
+        convId
+          ? fetch(`${b}/api/conversations/${encodeURIComponent(convId)}/model`, {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ provider, model }),
+            })
+          : Promise.resolve({ ok: true } as Response),
+        fetch(`${b}/api/config/active-model`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ provider, model }),
+        }),
+      ]);
+      if (!activeRes.ok) throw new Error("active-model failed");
+      const data = await activeRes.json();
+      const snap = data.model || {};
+      useConfigStore.setState({
+        model: snap.model ?? null,
+        enabledModels: snap.enabledModels ?? useConfigStore.getState().enabledModels,
+        switching: false,
+        savedAt: Date.now(),
+        reloadFailed: data.reloaded === false,
+      });
+      return true;
+    } catch {
+      useConfigStore.setState({ model: prev, switching: false });
+      return false;
+    }
+  },
+
+  async loadConversationModel(convId) {
+    try {
+      const b = await getBaseUrl();
+      const r = await fetch(`${b}/api/conversations/${encodeURIComponent(convId)}/model`);
+      if (!r.ok) return null;
+      const data = await r.json();
+      const m = data?.model;
+      return m && m.provider && m.model ? m : null;
+    } catch {
+      return null;
+    }
+  },
 
   async loadPersona() {
     set({ personaLoading: true, personaError: null });
@@ -350,6 +482,140 @@ export const useConfigStore = create<ConfigState>((set) => ({
     } catch {
       set({ permissionSaving: false, permissionError: "无法连接到 sidecar" });
       return false;
+    }
+  },
+
+  async loadWorkMode() {
+    set({ workModeLoading: true, workModeError: null });
+    try {
+      const b = await getBaseUrl();
+      const r = await fetch(`${b}/api/work-mode`);
+      if (!r.ok) {
+        set({ workModeLoading: false, workModeError: "加载工作模式失败" });
+        return;
+      }
+      const data = await r.json();
+      const mode = data.work_mode?.mode ?? data.mode;
+      set({
+        workMode: isWorkMode(mode) ? mode : "craft",
+        workModeLoading: false,
+      });
+    } catch {
+      set({ workModeLoading: false, workModeError: "无法连接到 sidecar" });
+    }
+  },
+
+  async saveWorkMode(mode: WorkMode) {
+    set({ workModeSaving: true, workModeError: null, workModeSavedAt: null });
+    try {
+      const b = await getBaseUrl();
+      const r = await fetch(`${b}/api/work-mode`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode }),
+      });
+      if (!r.ok) {
+        set({ workModeSaving: false, workModeError: "保存失败" });
+        return false;
+      }
+      const data = await r.json();
+      const saved = data.work_mode?.mode;
+      set({
+        workMode: isWorkMode(saved) ? saved : mode,
+        workModeSaving: false,
+        workModeSavedAt: Date.now(),
+      });
+      return true;
+    } catch {
+      set({ workModeSaving: false, workModeError: "无法连接到 sidecar" });
+      return false;
+    }
+  },
+
+  async loadTurnMetrics() {
+    set({ turnMetricsLoading: true, turnMetricsError: null });
+    try {
+      const b = await getBaseUrl();
+      const r = await fetch(`${b}/api/turn-metrics`);
+      if (!r.ok) {
+        set({ turnMetricsLoading: false, turnMetricsError: "加载显示设置失败" });
+        return;
+      }
+      const data = await r.json();
+      set({
+        turnMetrics: {
+          showDuration: data.show_duration !== false,
+          showToolCount: data.show_tool_count !== false,
+          showTokens: data.show_tokens !== false,
+        },
+        turnMetricsLoading: false,
+      });
+    } catch {
+      set({ turnMetricsLoading: false, turnMetricsError: "无法连接到 sidecar" });
+    }
+  },
+
+  async saveTurnMetrics(metrics: TurnMetrics) {
+    set({ turnMetricsSaving: true, turnMetricsError: null });
+    try {
+      const b = await getBaseUrl();
+      const r = await fetch(`${b}/api/turn-metrics`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          show_duration: metrics.showDuration,
+          show_tool_count: metrics.showToolCount,
+          show_tokens: metrics.showTokens,
+        }),
+      });
+      if (!r.ok) {
+        set({ turnMetricsSaving: false, turnMetricsError: "保存失败" });
+        return false;
+      }
+      const data = await r.json();
+      const snap = data.turn_metrics ?? {};
+      set({
+        turnMetrics: {
+          showDuration: snap.show_duration !== false,
+          showToolCount: snap.show_tool_count !== false,
+          showTokens: snap.show_tokens !== false,
+        },
+        turnMetricsSaving: false,
+      });
+      return true;
+    } catch {
+      set({ turnMetricsSaving: false, turnMetricsError: "无法连接到 sidecar" });
+      return false;
+    }
+  },
+
+  async testConnection(provider, opts) {
+    try {
+      const b = await getBaseUrl();
+      const r = await fetch(`${b}/api/config/model/test`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider, baseURL: opts?.baseURL, apiKey: opts?.apiKey }),
+      });
+      if (!r.ok) return { ok: false, error: "检测失败" };
+      return await r.json();
+    } catch {
+      return { ok: false, error: "无法连接到 sidecar" };
+    }
+  },
+
+  async fetchRemoteModels(provider, opts) {
+    try {
+      const b = await getBaseUrl();
+      const r = await fetch(`${b}/api/config/model/list`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider, baseURL: opts?.baseURL, apiKey: opts?.apiKey }),
+      });
+      if (!r.ok) return { ok: false, models: [], error: "拉取失败" };
+      return await r.json();
+    } catch {
+      return { ok: false, models: [], error: "无法连接到 sidecar" };
     }
   },
 }));

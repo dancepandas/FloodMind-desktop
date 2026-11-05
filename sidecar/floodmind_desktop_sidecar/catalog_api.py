@@ -196,11 +196,20 @@ def _mcp_path() -> Path:
 
 
 def read_mcp_config() -> list[dict[str, Any]]:
+    """Read mcp.json as plaintext config.
+
+    Since SDK v2.3.1 credential values (auth headers, ``env`` secrets) are
+    encrypted at rest; decrypt here so the UI and round-trips see real values.
+    """
     path = _mcp_path()
     if not path.exists():
         return []
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        from floodmind.config.secret_store import unprotect_tree
+    except ImportError:  # older SDK: no at-rest encryption
+        unprotect_tree = lambda cfg: cfg  # noqa: E731
+    try:
+        data = unprotect_tree(json.loads(path.read_text(encoding="utf-8")))
         servers = data.get("servers") or []
         return [s for s in servers if isinstance(s, dict)]
     except Exception:
@@ -226,8 +235,15 @@ def _validate_mcp_server_transport(server_config: dict[str, Any]) -> None:
 def write_mcp_config(servers: list[dict[str, Any]]) -> None:
     for server in servers:
         _validate_mcp_server_transport(server)
+    try:
+        from floodmind.config.secret_store import protect_tree
+    except ImportError:  # older SDK: no at-rest encryption
+        protect_tree = lambda cfg: cfg  # noqa: E731
     path = _mcp_path()
-    path.write_text(json.dumps({"servers": servers}, ensure_ascii=False, indent=2), encoding="utf-8")
+    path.write_text(
+        json.dumps(protect_tree({"servers": servers}), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
     _reconnect_mcp(servers)
 
 

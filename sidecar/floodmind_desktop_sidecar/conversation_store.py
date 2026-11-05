@@ -133,9 +133,57 @@ class ConversationStore:
                 "title": r.get("title") or "新会话",
                 "updated_at": r.get("updated_at", ""),
                 "active": r["id"] == active,
+                # 空会话判定：无任何 turns 即未发起对话（用于前端新建任务时清理空会话）。
+                "turns_count": len(r.get("turns") or []),
             }
             for r in out
         ]
+
+    def search(self, workspace: str, query: str, limit: int = 20) -> list[dict]:
+        """跨会话关键词搜索：在当前工作区的所有会话 turn 内容里匹配 query。
+
+        返回命中的 turn 片段（会话 id/标题 + role + 命中内容片段 + 会话时间），
+        按会话更新时间倒序。turns 存储是 opaque 的（sidecar 不解释 block 结构），
+        这里只匹配 role/user 的 content 字符串与 assistant 的 text 块 content。
+        """
+        q = (query or "").strip()
+        if not q:
+            return []
+        hits: list[dict] = []
+        for p in self._root.glob("conv-*.json"):
+            try:
+                rec = json.loads(p.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if rec.get("workspace") != workspace:
+                continue
+            for turn in rec.get("turns") or []:
+                content = turn.get("content", "") if isinstance(turn, dict) else ""
+                if not isinstance(content, str):
+                    continue
+                idx = content.find(q)
+                if idx < 0:
+                    continue
+                start = max(0, idx - 40)
+                snippet = content[start:idx + len(q) + 80]
+                hits.append({
+                    "conv_id": rec.get("id", ""),
+                    "title": rec.get("title") or "新会话",
+                    "role": turn.get("role", ""),
+                    "snippet": snippet,
+                    "updated_at": rec.get("updated_at", ""),
+                })
+        # 去重（同一会话多命中只留首条）+ 按更新时间倒序 + 限流。
+        seen: set[str] = set()
+        uniq = []
+        for h in sorted(hits, key=lambda r: r["updated_at"], reverse=True):
+            if h["conv_id"] in seen:
+                continue
+            seen.add(h["conv_id"])
+            uniq.append(h)
+            if len(uniq) >= limit:
+                break
+        return uniq
 
     def append_turns(self, conv_id: str, turns: list) -> Optional[dict]:
         if not _is_valid_conv_id(conv_id):

@@ -118,3 +118,31 @@ def test_traversal_conv_id_is_rejected(tmp_path, monkeypatch):
     assert client.post(f"/api/conversations/{bad}/activate").status_code == 404
     assert client.delete(f"/api/conversations/{bad}").status_code == 404
 
+
+
+# ── checkpoints (断点续跑) ──────────────────────────────────
+def test_conversation_checkpoints_lists_from_agent(tmp_path, monkeypatch):
+    class CheckpointAgent(SpyAgent):
+        def list_checkpoints(self, session_id, workspace_path):
+            assert session_id  # non-empty conversation session id
+            assert workspace_path  # conversation workspace
+            return [{
+                "checkpoint_id": "cp-1",
+                "status": "running",
+                "iteration": 3,
+                "created_at": "2026-08-13T00:00:00",
+                "has_files_snapshot": False,
+            }]
+
+    client, _ = _client(tmp_path, monkeypatch, spy=CheckpointAgent())
+    rec = client.post("/api/conversations", json={"workspace": "/ws/A"}).get_json()
+
+    r = client.get(f"/api/conversations/{rec['id']}/checkpoints")
+    assert r.status_code == 200
+    cps = r.get_json()["checkpoints"]
+    assert cps == [{"checkpoint_id": "cp-1", "status": "running", "iteration": 3,
+                    "created_at": "2026-08-13T00:00:00", "has_files_snapshot": False}]
+
+
+def test_conversation_checkpoints_404_for_unknown(client):
+    assert client.get("/api/conversations/nope/checkpoints").status_code == 404

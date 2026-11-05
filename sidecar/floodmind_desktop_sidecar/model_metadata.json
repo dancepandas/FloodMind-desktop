@@ -1,0 +1,542 @@
+{
+  "deepseek-v4-pro": {
+    "context_window": 1000000,
+    "max_output_tokens": 384000
+  },
+  "deepseek-v4-flash": {
+    "context_window": 1000000,
+    "max_output_tokens": 384000
+  },
+  "glm-5.2": {
+    "context_window": 1000000,
+    "max_output_tokens": 128000
+  },
+  "glm-5.1": {
+    "context_window": 200000,
+    "max_output_tokens": 128000
+  },
+  "glm-5": {
+    "context_window": 200000,
+    "max_output_tokens": 128000
+  },
+  "kimi-k2.7": {
+    "context_window": 256000,
+    "max_output_tokens": 128000
+  },
+  "kimi-k2.6": {
+    "context_window": 256000,
+    "max_output_tokens": 128000
+  },
+  "kimi-2.6": {
+    "context_window": 256000,
+    "max_output_tokens": 128000
+  },
+  "kimi-k2.5": {
+    "context_window": 256000,
+    "max_output_tokens": 128000
+  },
+  "kimi-2.5": {
+    "context_window": 256000,
+    "max_output_tokens": 128000
+  },
+  "qwen3.7": {
+    "context_window": 1000000,
+    "max_output_tokens": 64000
+  },
+  "qwen3.6": {
+    "context_window": 1000000,
+    "max_output_tokens": 64000
+  },
+  "minimax3": {
+    "context_window": 1000000,
+    "max_output_tokens": 128000
+  },
+  "minimax2.7": {
+    "context_window": 200000,
+    "max_output_tokens": 64000
+  },
+  "minimax2.5": {
+    "context_window": 200000,
+    "max_output_tokens": 64000
+  },
+  "minimax2": {
+    "context_window": 200000,
+    "max_output_tokens": 64000
+  },
+  "llama4 scout": {
+    "context_window": 10000000,
+    "max_output_tokens": 256000
+  },
+  "llama4 maverick": {
+    "context_window": 1000000,
+    "max_output_tokens": 256000
+  },
+  "llama3.3": {
+    "context_window": 128000,
+    "max_output_tokens": 32000
+  },
+  "llama3.2-vision": {
+    "context_window": 128000,
+    "max_output_tokens": 16000
+  },
+  "llama3.2": {
+    "context_window": 128000,
+    "max_output_tokens": 16000
+  },
+  "llama3.1": {
+    "context_window": 128000,
+    "max_output_tokens": 32000
+  },
+  "llama3": {
+    "context_window": 8192,
+    "max_output_tokens": 8192
+  },
+  "llama2": {
+    "context_window": 4096,
+    "max_output_tokens": 4096
+  },
+  "mistral-small3.2": {
+    "context_window": 128000,
+    "max_output_tokens": 32000
+  },
+  "mistral-small3": {
+    "context_window": 32000,
+    "max_output_tokens": 8000
+  },
+  "mistral-nemo": {
+    "context_window": 128000,
+    "max_output_tokens": 32000
+  },
+  "mistral-large": {
+    "context_window": 128000,
+    "max_output_tokens": 32000
+  },
+  "mixtral8x22": {
+    "context_window": 64000,
+    "max_output_tokens": 16000
+  },
+  "mixtral8x7": {
+    "context_window": 32000,
+    "max_output_tokens": 8000
+  },
+  "mixtral": {
+    "context_window": 32000,
+    "max_output_tokens": 8000
+  },
+  "mistral": {
+    "context_window": 32000,
+    "max_output_tokens": 8000
+  },
+  "phi4-mini": {
+    "context_window": 128000,
+    "max_output_tokens": 16000
+  },
+  "phi4": {
+    "context_window": 16000,
+    "max_output_tokens": 4000
+  },
+  "phi3.5": {
+    "context_window": 128000,
+    "max_output_tokens": 16000
+  },
+  "phi3": {
+    "context_window": 32000,
+    "max_output_tokens": 8000
+  },
+  "phi2": {
+    "context_window": 2048,
+    "max_output_tokens": 2048
+  },
+  "gemma3": {
+    "context_window": 128000,
+    "max_output_tokens": 32000
+  },
+  "gemma2": {
+    "context_window": 8192,
+    "max_output_tokens": 8192
+  },
+  "gemma": {
+    "context_window": 8192,
+    "max_output_tokens": 8192
+  },
+  "codegemma": {
+    "context_window": 8192,
+    "max_output_tokens": 8192
+  },
+  "qwen3-coder": {
+    "context_window": 256000,
+    "max_output_tokens": 32000
+  },
+  "qwen3-vl": {
+    "context_window": 256000,
+    "max_output_tokens": 16000
+  },
+  "qwen3": {
+    "context_window": 128000,
+    "max_output_tokens": 32000
+  },
+  "qwen2.5-coder": {
+    "context_window": 32000,
+    "max_output_tokens": 8000
+  },
+  "qwen2.5": {
+    "context_window": 128000,
+    "max_output_tokens": 32000
+  },
+  "qwen2": {
+    "context_window": 32000,
+    "max_output_tokens": 8000
+  },
+  "deepseek-r1": {
+    "context_window": 128000,
+    "max_output_tokens": 32000
+  },
+  "deepseek-coder-v2": {
+    "context_window": 160000,
+    "max_output_tokens": 32000
+  },
+  "deepseek-coder": {
+    "context_window": 16000,
+    "max_output_tokens": 8000
+  },
+  "deepseek-v3.1": {
+    "context_window": 160000,
+    "max_output_tokens": 32000
+  },
+  "deepseek-v3": {
+    "context_window": 128000,
+    "max_output_tokens": 32000
+  },
+  "deepseek-v2": {
+    "context_window": 128000,
+    "max_output_tokens": 8000
+  },
+  "command-r": {
+    "context_window": 128000,
+    "max_output_tokens": 16000
+  },
+  "gpt-oss": {
+    "context_window": 128000,
+    "max_output_tokens": 32000
+  },
+  "starcoder2": {
+    "context_window": 16000,
+    "max_output_tokens": 8000
+  },
+  "codestral": {
+    "context_window": 256000,
+    "max_output_tokens": 32000
+  },
+  "llava": {
+    "context_window": 32000,
+    "max_output_tokens": 4000
+  },
+  "granite4": {
+    "context_window": 128000,
+    "max_output_tokens": 8000
+  },
+  "granite3": {
+    "context_window": 128000,
+    "max_output_tokens": 8000
+  },
+  "nomic-embed": {
+    "context_window": 8192,
+    "max_output_tokens": 1
+  },
+  "mxbai-embed": {
+    "context_window": 512,
+    "max_output_tokens": 1
+  },
+  "snowflake-arctic": {
+    "context_window": 8192,
+    "max_output_tokens": 1
+  },
+  "bge": {
+    "context_window": 512,
+    "max_output_tokens": 1
+  },
+  "all-minilm": {
+    "context_window": 512,
+    "max_output_tokens": 1
+  },
+  "e5": {
+    "context_window": 512,
+    "max_output_tokens": 1
+  },
+  "granite-embedding": {
+    "context_window": 8192,
+    "max_output_tokens": 1
+  },
+  "command-r-plus": {
+    "context_window": 128000,
+    "max_output_tokens": 32000
+  },
+  "command-r7b": {
+    "context_window": 128000,
+    "max_output_tokens": 8000
+  },
+  "command-a": {
+    "context_window": 256000,
+    "max_output_tokens": 32000
+  },
+  "aya-expanse": {
+    "context_window": 8000,
+    "max_output_tokens": 4000
+  },
+  "aya": {
+    "context_window": 8000,
+    "max_output_tokens": 4000
+  },
+  "dbrx": {
+    "context_window": 32000,
+    "max_output_tokens": 16000
+  },
+  "falcon3": {
+    "context_window": 32000,
+    "max_output_tokens": 8000
+  },
+  "falcon2": {
+    "context_window": 8000,
+    "max_output_tokens": 4000
+  },
+  "falcon": {
+    "context_window": 2048,
+    "max_output_tokens": 2048
+  },
+  "nemotron3-ultra": {
+    "context_window": 128000,
+    "max_output_tokens": 32000
+  },
+  "nemotron3-super": {
+    "context_window": 128000,
+    "max_output_tokens": 32000
+  },
+  "nemotron3-nano": {
+    "context_window": 128000,
+    "max_output_tokens": 8000
+  },
+  "nemotron-cascade": {
+    "context_window": 128000,
+    "max_output_tokens": 32000
+  },
+  "nemotron-mini": {
+    "context_window": 4096,
+    "max_output_tokens": 4096
+  },
+  "nemotron": {
+    "context_window": 8192,
+    "max_output_tokens": 8192
+  },
+  "olmo-3.1": {
+    "context_window": 128000,
+    "max_output_tokens": 32000
+  },
+  "olmo-3": {
+    "context_window": 128000,
+    "max_output_tokens": 32000
+  },
+  "olmo2": {
+    "context_window": 128000,
+    "max_output_tokens": 8000
+  },
+  "olmo": {
+    "context_window": 4096,
+    "max_output_tokens": 4096
+  },
+  "dolphincoder": {
+    "context_window": 16000,
+    "max_output_tokens": 8000
+  },
+  "dolphin3": {
+    "context_window": 32000,
+    "max_output_tokens": 8000
+  },
+  "dolphin-llama3": {
+    "context_window": 8192,
+    "max_output_tokens": 8000
+  },
+  "dolphin-mixtral": {
+    "context_window": 32000,
+    "max_output_tokens": 8000
+  },
+  "dolphin-mistral": {
+    "context_window": 32000,
+    "max_output_tokens": 8000
+  },
+  "dolphin-phi": {
+    "context_window": 4000,
+    "max_output_tokens": 4000
+  },
+  "dolphin": {
+    "context_window": 16000,
+    "max_output_tokens": 8000
+  },
+  "megadolphin": {
+    "context_window": 32000,
+    "max_output_tokens": 8000
+  },
+  "tinydolphin": {
+    "context_window": 2048,
+    "max_output_tokens": 2048
+  },
+  "nous-hermes2-mixtral": {
+    "context_window": 32000,
+    "max_output_tokens": 8000
+  },
+  "nous-hermes2": {
+    "context_window": 4096,
+    "max_output_tokens": 4096
+  },
+  "nous-hermes": {
+    "context_window": 4096,
+    "max_output_tokens": 4096
+  },
+  "hermes3": {
+    "context_window": 128000,
+    "max_output_tokens": 32000
+  },
+  "openchat": {
+    "context_window": 8192,
+    "max_output_tokens": 8000
+  },
+  "vicuna": {
+    "context_window": 2048,
+    "max_output_tokens": 2048
+  },
+  "wizardlm2": {
+    "context_window": 32000,
+    "max_output_tokens": 8000
+  },
+  "wizardlm": {
+    "context_window": 4096,
+    "max_output_tokens": 4096
+  },
+  "wizardcoder": {
+    "context_window": 4096,
+    "max_output_tokens": 4096
+  },
+  "wizard-math": {
+    "context_window": 4096,
+    "max_output_tokens": 4096
+  },
+  "magicoder": {
+    "context_window": 16000,
+    "max_output_tokens": 8000
+  },
+  "sqlcoder": {
+    "context_window": 16000,
+    "max_output_tokens": 8000
+  },
+  "yi-coder": {
+    "context_window": 128000,
+    "max_output_tokens": 16000
+  },
+  "yi": {
+    "context_window": 200000,
+    "max_output_tokens": 32000
+  },
+  "codellama": {
+    "context_window": 16000,
+    "max_output_tokens": 8000
+  },
+  "goliath": {
+    "context_window": 4096,
+    "max_output_tokens": 4000
+  },
+  "internlm2": {
+    "context_window": 200000,
+    "max_output_tokens": 16000
+  },
+  "lfm2.5": {
+    "context_window": 32000,
+    "max_output_tokens": 16000
+  },
+  "lfm2": {
+    "context_window": 32000,
+    "max_output_tokens": 16000
+  },
+  "marco-o1": {
+    "context_window": 32000,
+    "max_output_tokens": 8000
+  },
+  "minicpm-v4.6": {
+    "context_window": 128000,
+    "max_output_tokens": 8000
+  },
+  "minicpm-v": {
+    "context_window": 128000,
+    "max_output_tokens": 8000
+  },
+  "nexusraven": {
+    "context_window": 32000,
+    "max_output_tokens": 8000
+  },
+  "openthinker": {
+    "context_window": 128000,
+    "max_output_tokens": 32000
+  },
+  "orca2": {
+    "context_window": 4096,
+    "max_output_tokens": 4000
+  },
+  "orca-mini": {
+    "context_window": 2048,
+    "max_output_tokens": 2048
+  },
+  "reflection": {
+    "context_window": 32000,
+    "max_output_tokens": 8000
+  },
+  "smollm2": {
+    "context_window": 8192,
+    "max_output_tokens": 4000
+  },
+  "smollm": {
+    "context_window": 8192,
+    "max_output_tokens": 4000
+  },
+  "solar-pro": {
+    "context_window": 4096,
+    "max_output_tokens": 4000
+  },
+  "solar": {
+    "context_window": 4096,
+    "max_output_tokens": 4000
+  },
+  "stable-code": {
+    "context_window": 16000,
+    "max_output_tokens": 8000
+  },
+  "stablelm2": {
+    "context_window": 4096,
+    "max_output_tokens": 4000
+  },
+  "stablelm": {
+    "context_window": 4096,
+    "max_output_tokens": 4000
+  },
+  "starling-lm": {
+    "context_window": 4096,
+    "max_output_tokens": 4000
+  },
+  "tulu3": {
+    "context_window": 8192,
+    "max_output_tokens": 8000
+  },
+  "xwinlm": {
+    "context_window": 8192,
+    "max_output_tokens": 8000
+  },
+  "yarn-mistral": {
+    "context_window": 128000,
+    "max_output_tokens": 16000
+  },
+  "yarn-llama2": {
+    "context_window": 128000,
+    "max_output_tokens": 16000
+  },
+  "zephyr": {
+    "context_window": 32000,
+    "max_output_tokens": 8000
+  }
+}

@@ -51,7 +51,6 @@ interface State {
   load: (workspace: string) => Promise<SchedTask[]>;
   create: (body: TaskCreateBody) => Promise<SchedTask | null>;
   update: (id: string, patch: Record<string, unknown>) => Promise<SchedTask | null>;
-  remove: (id: string) => Promise<boolean>;
   runNow: (id: string) => Promise<string | null>;
   loadRuns: (id: string) => Promise<RunSummary[]>;
   loadRun: (id: string, runId: string) => Promise<RunDetail | null>;
@@ -95,11 +94,6 @@ export const useScheduledTaskStore = create<State>((set) => ({
       body: JSON.stringify(patch),
     });
     return v?.task ?? null;
-  },
-
-  async remove(id) {
-    const v = await getJson(`/api/scheduled-tasks/${encodeURIComponent(id)}`, { method: "DELETE" });
-    return v !== null;
   },
 
   async runNow(id) {

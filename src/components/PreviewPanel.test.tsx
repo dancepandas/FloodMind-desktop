@@ -2,6 +2,7 @@ import { render, screen, waitFor, fireEvent, cleanup } from "@testing-library/re
 import { test, expect, vi, afterEach } from "vitest";
 import PreviewPanel from "./PreviewPanel";
 import * as preview from "../lib/preview";
+import { useUiStore } from "../state/ui-store";
 
 // The office renderers lazy-import their libraries; stub them so jsdom doesn't
 // try to actually parse/render binary documents.
@@ -17,19 +18,20 @@ vi.mock("pptx-preview", () => ({
 afterEach(cleanup);
 
 test("renders text preview", async () => {
-  vi.spyOn(preview, "fetchFilePreview").mockResolvedValue({ content: "hello", mime: "text/plain", previewable: true, path: "/ws/notes.txt" });
+  vi.spyOn(preview, "fetchFilePreview").mockResolvedValue({ kind: "file", content: "hello", mime: "text/plain", previewable: true, path: "/ws/notes.txt" });
   render(<PreviewPanel path="notes.txt" onClose={() => {}} />);
   await waitFor(() => expect(screen.getByText("hello")).toBeInTheDocument());
 });
 
 test("renders image preview", async () => {
-  vi.spyOn(preview, "fetchFilePreview").mockResolvedValue({ content: "base64data", mime: "image/png", previewable: true, path: "/ws/pic.png" });
+  vi.spyOn(preview, "fetchFilePreview").mockResolvedValue({ kind: "file", content: "base64data", mime: "image/png", previewable: true, path: "/ws/pic.png" });
   render(<PreviewPanel path="pic.png" onClose={() => {}} />);
   await waitFor(() => expect(document.querySelector("img")).toBeInTheDocument());
 });
 
 test("routes .docx to the office renderer", async () => {
   vi.spyOn(preview, "fetchFilePreview").mockResolvedValue({
+    kind: "file",
     content: btoa("test"),
     mime: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     previewable: true,
@@ -41,6 +43,7 @@ test("routes .docx to the office renderer", async () => {
 
 test("routes .xlsx to the office renderer with a table", async () => {
   vi.spyOn(preview, "fetchFilePreview").mockResolvedValue({
+    kind: "file",
     content: btoa("test"),
     mime: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     previewable: true,
@@ -52,13 +55,31 @@ test("routes .xlsx to the office renderer with a table", async () => {
 });
 
 test("renders unsupported document message for unknown non-office type", async () => {
-  vi.spyOn(preview, "fetchFilePreview").mockResolvedValue({ content: "", mime: "application/octet-stream", previewable: false, path: "/ws/blob.bin" });
+  vi.spyOn(preview, "fetchFilePreview").mockResolvedValue({ kind: "file", content: "", mime: "application/octet-stream", previewable: false, path: "/ws/blob.bin" });
   render(<PreviewPanel path="blob.bin" onClose={() => {}} />);
   await waitFor(() => expect(screen.getByText("该文件类型暂不支持内置预览。")).toBeInTheDocument());
 });
 
+test("lists an external folder's contents and navigates into a file", async () => {
+  useUiStore.setState({ previewPath: null });
+  vi.spyOn(preview, "fetchFilePreview").mockResolvedValue({
+    kind: "dir",
+    path: "D:\\ext\\nature-figure",
+    entries: [
+      { name: "SKILL.md", type: "file", path: "D:\\ext\\nature-figure\\SKILL.md" },
+      { name: "references", type: "dir", path: "D:\\ext\\nature-figure\\references" },
+    ],
+  });
+  render(<PreviewPanel path="D:\\ext\\nature-figure" onClose={() => {}} />);
+  await waitFor(() => expect(screen.getByText("SKILL.md")).toBeInTheDocument());
+  expect(screen.getByText("references")).toBeInTheDocument();
+
+  fireEvent.click(screen.getByText("SKILL.md"));
+  expect(useUiStore.getState().previewPath).toBe("D:\\ext\\nature-figure\\SKILL.md");
+});
+
 test("calls onClose when close button clicked", async () => {
-  vi.spyOn(preview, "fetchFilePreview").mockResolvedValue({ content: "hello", mime: "text/plain", previewable: true, path: "/ws/notes.txt" });
+  vi.spyOn(preview, "fetchFilePreview").mockResolvedValue({ kind: "file", content: "hello", mime: "text/plain", previewable: true, path: "/ws/notes.txt" });
   const onClose = vi.fn();
   render(<PreviewPanel path="notes.txt" onClose={onClose} />);
   await waitFor(() => expect(screen.getByText("hello")).toBeInTheDocument());

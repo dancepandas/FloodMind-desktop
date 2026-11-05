@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef } from "react";
-import { useChatStore, type AssistantTurn, type Block } from "../state/chat-store";
-import { useUiStore } from "../state/ui-store";
+import { useMemo } from "react";
+import { useChatStore } from "../state/chat-store";
+import { findLatestPlan } from "../lib/context-data";
 import { scrollToBlock } from "../lib/scroll-to-block";
 
 function statusDotClass(status: string): string {
@@ -12,50 +12,12 @@ function statusDotClass(status: string): string {
 
 export default function PlanPanel() {
   const turns = useChatStore((s) => s.turns);
-  const open = useUiStore((s) => s.planPanelOpen);
-  const setOpen = useUiStore((s) => s.setPlanPanelOpen);
-  const autoOpened = useRef<Set<string>>(new Set());
+  const plan = useMemo(() => findLatestPlan(turns), [turns]);
 
-  const currentPlan = useMemo(() => {
-    for (let i = turns.length - 1; i >= 0; i--) {
-      const t = turns[i];
-      if (t.role !== "assistant") continue;
-      const plan = t.blocks.find((b): b is Extract<Block, { kind: "plan" }> => b.kind === "plan");
-      if (plan) return { plan, turn: t as AssistantTurn };
-    }
-    return null;
-  }, [turns]);
-
-  // Auto-open the panel when a new plan block appears.
-  useEffect(() => {
-    if (currentPlan && !open && !autoOpened.current.has(currentPlan.plan.id)) {
-      setOpen(true);
-      autoOpened.current.add(currentPlan.plan.id);
-    }
-  }, [currentPlan, open, setOpen]);
-
-  if (!open) return null;
-
-  if (!currentPlan) {
-    return (
-      <aside className="plan-panel">
-        <div className="plan-panel-header">
-          <span className="plan-panel-title">执行计划</span>
-          <button
-            className="plan-panel-close"
-            onClick={() => setOpen(false)}
-            type="button"
-            aria-label="收起"
-          >
-            ›
-          </button>
-        </div>
-        <div className="plan-panel-empty">当前没有执行计划</div>
-      </aside>
-    );
+  if (!plan) {
+    return <section className="plan-panel"><div className="plan-panel-empty">当前没有执行计划</div></section>;
   }
 
-  const { plan } = currentPlan;
   const done = plan.steps.filter((s) =>
     ["completed", "ok", "done", "finished"].includes((s.status || "").toLowerCase())
   ).length;
@@ -66,18 +28,7 @@ export default function PlanPanel() {
   const pct = total ? Math.round((done / total) * 100) : 0;
 
   return (
-    <aside className="plan-panel">
-      <div className="plan-panel-header">
-        <span className="plan-panel-title">执行计划</span>
-        <button
-          className="plan-panel-close"
-          onClick={() => setOpen(false)}
-          type="button"
-          aria-label="收起"
-        >
-          ›
-        </button>
-      </div>
+    <section className="plan-panel" aria-label="执行计划">
 
       {plan.title && <div className="plan-panel-subtitle">{plan.title}</div>}
 
@@ -105,6 +56,6 @@ export default function PlanPanel() {
           </button>
         ))}
       </div>
-    </aside>
+    </section>
   );
 }

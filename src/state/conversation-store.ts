@@ -7,6 +7,8 @@ export interface ConvSummary {
   title: string;
   updated_at: string;
   active: boolean;
+  /** number of persisted turns; 0 = empty conversation (nothing sent yet). */
+  turns_count?: number;
 }
 export interface Conversation extends ConvSummary {
   session_id: string;
@@ -24,6 +26,9 @@ interface ConversationState {
   open: (id: string) => Promise<Conversation | null>;
   activate: (id: string) => Promise<boolean>;
   remove: (id: string) => Promise<boolean>;
+  /** Delete every empty conversation in a workspace except `exceptId` (keeps the
+   *  sidebar free of "新会话" stubs the user never used). */
+  removeEmpty: (workspace: string, exceptId?: string) => Promise<void>;
 }
 
 async function getJson(url: string, init?: RequestInit): Promise<any | null> {
@@ -75,5 +80,15 @@ export const useConversationStore = create<ConversationState>((set) => ({
   async remove(id) {
     const v = await getJson(`/api/conversations/${encodeURIComponent(id)}`, { method: "DELETE" });
     return v !== null;
+  },
+
+  async removeEmpty(workspace, exceptId) {
+    const data = await getJson(`/api/conversations?workspace=${encodeURIComponent(workspace)}`);
+    const items: ConvSummary[] = (data && data.conversations) || [];
+    for (const c of items) {
+      if (c.id === exceptId) continue;
+      if ((c.turns_count ?? 0) > 0) continue;
+      await getJson(`/api/conversations/${encodeURIComponent(c.id)}`, { method: "DELETE" });
+    }
   },
 }));

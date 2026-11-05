@@ -13,6 +13,10 @@ export interface SkillSummary {
 export interface SkillDetail extends SkillSummary {
   prompt?: string;
   provides_tools?: string[];
+  scripts?: string[];
+  references?: string[];
+  assets?: string[];
+  is_knowledge_only?: boolean;
 }
 export interface SkillForm {
   name?: string;

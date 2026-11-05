@@ -1,4 +1,5 @@
 import { useChatStore } from "../state/chat-store";
+import { formatTokens } from "../lib/format-tokens";
 
 export default function UsageBadge() {
   // Usage lives on the last assistant turn now (accumulated across that turn).
@@ -11,10 +12,9 @@ export default function UsageBadge() {
   });
   if (!usage) return null;
 
-  const fmt = (n: number) => new Intl.NumberFormat("en-US").format(n);
   return (
     <span className="usage-pill" title="当前回合 token 统计">
-      {fmt(usage.total)} <span className="usage-unit">tokens</span>
+      {formatTokens(usage.total)}
     </span>
   );
 }

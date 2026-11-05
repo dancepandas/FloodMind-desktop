@@ -15,11 +15,17 @@ def test_workspace_files_endpoint(tmp_path, monkeypatch):
     (ws / "data").mkdir()
     (ws / "data" / "info.csv").write_text("a,b")
     (ws / ".hidden").write_text("nope")
+    # SDK-managed state (sessions/checkpoints/artifacts archives) must NOT be
+    # referenceable in the @ picker.
+    ckpt = ws / ".floodmind" / "sessions" / "s1" / "checkpoints" / "ckpt-1"
+    ckpt.mkdir(parents=True)
+    (ckpt / "manifest.json").write_text("{}")
+    (ckpt / "state.json").write_text("{}")
 
     client = create_app(StubAgent(), workspace_manager=mgr).test_client()
     client.post("/api/workspace/open", json={"path": str(ws)})
 
-    # Root listing — .hidden excluded, .floodmind (if any) allowed.
+    # Root listing — hidden dirs and .floodmind excluded.
     r = client.get("/api/workspace/files")
     assert r.status_code == 200
     entries = r.get_json()["entries"]
@@ -27,6 +33,7 @@ def test_workspace_files_endpoint(tmp_path, monkeypatch):
     assert "readme.txt" in names
     assert "data" in names
     assert ".hidden" not in names
+    assert ".floodmind" not in names
     for e in entries:
         assert "name" in e and "type" in e and "path" in e
 

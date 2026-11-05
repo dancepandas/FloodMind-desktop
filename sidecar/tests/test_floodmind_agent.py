@@ -1,4 +1,45 @@
+import os
+
 from floodmind_desktop_sidecar.floodmind_agent import translate_event
+
+
+def test_diagnostics_returns_compact_tool_summary(monkeypatch):
+    from floodmind_desktop_sidecar.floodmind_agent import FloodMindAgent
+
+    class Tool:
+        def __init__(self, name, description):
+            self.name = name
+            self.description = description
+            self.is_readonly = False
+            self.is_destructive = True
+
+    registry = type("Registry", (), {"all": lambda self: [
+        Tool("Bash", "[必填] command: should stay out of diagnostics"),
+        Tool("mcp_demo", "[MCP:demo] should stay out too"),
+    ]})()
+    loader = type("Loader", (), {
+        "loaded_tools": {"Bash", "stale_tool"},
+        "mode": "progressive",
+        "config": type("Config", (), {"max_loaded_tools": 6})(),
+    })()
+    raw = type("Raw", (), {
+        "_orchestrator_registry": registry,
+        "_orchestrator_tool_loader": loader,
+        "_context_runtime": None,
+    })()
+    agent = FloodMindAgent.__new__(FloodMindAgent)
+    agent._agent = raw
+    agent._llm = type("LLM", (), {"provider": "openai", "model_name": "m", "base_url": "https://example.com"})()
+    monkeypatch.setattr(FloodMindAgent, "_desktop_block", lambda self: {})
+
+    result = agent.diagnostics()
+
+    assert result["tools"] == {
+        "mode": "progressive", "max_loaded": 6, "total": 2, "loaded": 1,
+    }
+    assert "items" not in result["tools"]
+    assert "command" not in str(result)
+    assert "MCP:demo" not in str(result)
 
 
 def test_answer_delta_becomes_text():
@@ -32,12 +73,33 @@ def test_final_text_dropped():
     assert translate_event({"type": "final_text", "content": "full answer"}) == []
 
 
-def test_context_compress_dropped():
-    # The agent emits `context_compress`; only the *_start/*_done variants are
-    # defined-but-never-called. Make sure the real one is dropped, not passed
-    # through as noise.
-    assert translate_event({"type": "context_compress", "summary": "...", "saved_tokens": 10,
-                            "original_messages": 5, "compressed_messages": 2}) == []
+def test_context_compress_becomes_context():
+    # context_compress (legacy) + the *_start/*_done variants all forward as a
+    # single context block so the fold bar can show the injection activity.
+    assert translate_event({"type": "context_compress", "summary": "已压缩为 200 字",
+                            "saved_tokens": 10, "original_messages": 5,
+                            "compressed_messages": 2}) == \
+        [{"type": "context", "label": "上下文压缩", "content": "已压缩为 200 字"}]
+    assert translate_event({"type": "context_compress_done", "summary_preview": "概要"}) == \
+        [{"type": "context", "label": "上下文压缩", "content": "概要"}]
+
+
+def test_attachment_context_becomes_context():
+    out = translate_event({"type": "attachment_context", "images": ["a.png", "b.png"]})
+    assert out == [{"type": "context", "label": "上下文注入", "content": "附图片 2 张"}]
+
+
+def test_llm_step_start_becomes_round_start():
+    assert translate_event({"type": "llm_step_start", "iteration": 3,
+                            "model": "test-model"}) == \
+        [{"type": "round_start", "iteration": 3}]
+
+
+def test_llm_step_end_becomes_finish():
+    assert translate_event({"type": "llm_step_end", "finish_reason": "stop"}) == \
+        [{"type": "finish", "reason": "stop"}]
+    assert translate_event({"type": "llm_step_end", "finish_reason": "tool_calls"}) == \
+        [{"type": "finish", "reason": "tool_calls"}]
 
 
 def test_permission_ask_carries_session_id():
@@ -51,39 +113,33 @@ def test_permission_ask_carries_session_id():
 
 
 def test_mcp_call_health_tracks_outcome():
-    # The McpClientPool.call_tool wrapper records the most-recent tool-call
-    # outcome per server, so the UI can flag a connected wrapper whose backend
-    # is actually down (e.g. hydro-rag "无法连接").
+    # The SDK MCP pool records the most-recent tool-call outcome per server, so
+    # the UI can flag a connected wrapper whose backend is actually down.
     from floodmind.agent.mcp_client import McpClientPool
-    from floodmind_desktop_sidecar.floodmind_agent import _MCP_CALL_HEALTH
 
-    saved = dict(_MCP_CALL_HEALTH)
-    try:
-        pool = McpClientPool()
+    pool = McpClientPool()
 
-        class DownConn:
-            def call_tool(self, tool, args):
-                return "知识库服务无法连接"
-            def list_tools(self):
-                return []
+    class DownConn:
+        def call_tool(self, tool, args):
+            # v2.0.0: health 依赖 result.is_error / 异常，不再按字符串关键词。
+            return type("R", (), {"is_error": True, "error": "知识库服务无法连接"})()
+        def list_tools(self):
+            return []
 
-        class UpConn:
-            def call_tool(self, tool, args):
-                return "正常的检索结果"
-            def list_tools(self):
-                return []
+    class UpConn:
+        def call_tool(self, tool, args):
+            return "正常的检索结果"
+        def list_tools(self):
+            return []
 
-        pool._connections["hydro-rag"] = DownConn()
-        pool.call_tool("mcp:hydro-rag:search", {})
-        assert _MCP_CALL_HEALTH["hydro-rag"]["ok"] is False
-        assert "无法连接" in _MCP_CALL_HEALTH["hydro-rag"]["error"]
+    pool._connections["hydro-rag"] = DownConn()
+    pool.call_tool("mcp:hydro-rag:search", {})
+    assert pool.call_health()["hydro-rag"]["ok"] is False
+    assert "无法连接" in pool.call_health()["hydro-rag"]["error"]
 
-        pool._connections["ok-svc"] = UpConn()
-        pool.call_tool("mcp:ok-svc:query", {})
-        assert _MCP_CALL_HEALTH["ok-svc"]["ok"] is True
-    finally:
-        _MCP_CALL_HEALTH.clear()
-        _MCP_CALL_HEALTH.update(saved)
+    pool._connections["ok-svc"] = UpConn()
+    pool.call_tool("mcp:ok-svc:query", {})
+    assert pool.call_health()["ok-svc"]["ok"] is True
 
 
 def test_persist_runtime_mcp_writes_and_dedupes(tmp_path, monkeypatch):
@@ -110,9 +166,48 @@ def test_persist_runtime_mcp_writes_and_dedupes(tmp_path, monkeypatch):
     assert sum(1 for s in data["servers"] if s["name"] == "chronos-flow-predictor") == 1
 
 
+def test_mcp_persist_uses_sdk_connected_listener(tmp_path, monkeypatch):
+    import importlib
+    import json
+    from floodmind.agent.mcp_client import get_mcp_client_pool
+    from floodmind_desktop_sidecar import catalog_api
+
+    monkeypatch.setattr(catalog_api, "_mcp_path", lambda: tmp_path / "mcp.json")
+    pool = get_mcp_client_pool()
+    before = list(getattr(pool, "_server_connected_listeners", []))
+    importlib.reload(importlib.import_module("floodmind_desktop_sidecar.floodmind_agent"))
+    after = list(getattr(pool, "_server_connected_listeners", []))
+    listener = next(l for l in after if l not in before)
+
+    listener({"name": "runtime-svc", "transport": "stdio", "command": "python"}, object())
+
+    data = json.loads((tmp_path / "mcp.json").read_text(encoding="utf-8"))
+    assert [s["name"] for s in data["servers"]] == ["runtime-svc"]
+
+
 def test_file_generated_becomes_artifact():
     out = translate_event({"type": "file_generated", "filename": "r.xlsx", "download_url": "/x", "size": 10})
-    assert out == [{"type": "artifact", "kind": "file", "name": "r.xlsx", "path": "/x"}]
+    assert out == [{"type": "artifact", "kind": "file", "name": "r.xlsx", "path": "/x", "size": 10}]
+
+
+def test_file_generated_preserves_explicit_artifact_metadata():
+    out = translate_event({
+        "type": "file_generated",
+        "filename": "r.xlsx",
+        "download_url": "/x",
+        "final": False,
+        "exists": False,
+        "source": "declared",
+    })
+    assert out == [{
+        "type": "artifact",
+        "kind": "file",
+        "name": "r.xlsx",
+        "path": "/x",
+        "final": False,
+        "exists": False,
+        "source": "declared",
+    }]
 
 
 def test_token_usage_becomes_usage():
@@ -151,7 +246,64 @@ def test_unknown_event_passes_through_minimal():
     assert out == [{"type": "something_new", "content": "x"}]
 
 
-def test_reload_model_resolves_active_model_and_rebuilds(monkeypatch):
+def test_resolve_llm_passes_provider_to_model_client(monkeypatch):
+    """SDK v1.0.1 routes provider-specific pipelines from ModelClient.provider.
+
+    The desktop resolves activeModel + activeProvider itself, so it must pass the
+    resolved provider through when constructing ModelClient; otherwise DeepSeek /
+    DashScope / Kimi / MiniMax requests fall back to generic OpenAI-compatible
+    handling.
+    """
+    import importlib
+    from floodmind.config.model_resolver import ResolvedModel
+    from floodmind_desktop_sidecar.floodmind_agent import FloodMindAgent
+
+    captured = {}
+
+    class FakeMC:
+        def __init__(self, **kw):
+            captured.update(kw)
+
+    rm = ResolvedModel(
+        provider="deepseek",
+        id="deepseek-reasoner",
+        name="DeepSeek Reasoner",
+        api_key="sk-ds",
+        base_url="https://api.deepseek.com/v1",
+        temperature=0.1,
+        max_tokens=8192,
+        context_window=65536,
+        supports_reasoning=True,
+        supports_vision=False,
+    )
+
+    monkeypatch.setattr(
+        importlib.import_module("floodmind.config.model_resolver"),
+        "resolve_model",
+        lambda model_key=None, provider_id=None: rm,
+    )
+    monkeypatch.setattr(
+        importlib.import_module("floodmind.agent.native.model_client"),
+        "ModelClient",
+        FakeMC,
+    )
+
+    a = FloodMindAgent.__new__(FloodMindAgent)
+    monkeypatch.setattr(
+        FloodMindAgent,
+        "_desktop_block",
+        lambda self: {"activeModel": "deepseek-reasoner", "activeProvider": "deepseek", "enableReasoning": True},
+    )
+
+    llm = a._resolve_llm()
+
+    assert isinstance(llm, FakeMC)
+    assert captured["provider"] == "deepseek"
+    assert captured["model_name"] == "deepseek-reasoner"
+    assert captured["enable_thinking"] is True
+    assert a._resolved_context_window == 65536
+
+
     # reload_model() must re-read settings.json, resolve the desktop's active
     # model via resolve_model() (single source of truth), construct a ModelClient
     # with that model's credentials/params, and rebuild the agent.
@@ -168,7 +320,7 @@ def test_reload_model_resolves_active_model_and_rebuilds(monkeypatch):
     a = FloodMindAgent.__new__(FloodMindAgent)
     a._llm = "OLD_LLM"
     a._agent = type("A", (), {"session_id": "desktop-default"})()
-    a._build_agent = lambda sid, pd: ("AGENT", sid, pd)  # avoid real create_flood_agent
+    a._build_agent = lambda sid, pd, mode=None: ("AGENT", sid, pd)  # avoid real agent construction
 
     rm = ResolvedModel(
         provider="openai", id="gpt-4o-mini", name="GPT-4o mini",
@@ -205,7 +357,362 @@ def test_reload_model_resolves_active_model_and_rebuilds(monkeypatch):
     assert captured["temperature"] == 0.9
     assert captured["max_tokens"] == 2048
     assert captured["enable_thinking"] is True
+    assert captured["provider"] == "openai"
     assert isinstance(a._llm, FakeMC)
+
+
+def test_resolve_llm_defaults_reasoning_to_model_capability(monkeypatch):
+    """无 enableReasoning 标志时，推理模型默认开启 thinking（v2.0.1 修复）。"""
+    import importlib
+    from floodmind.config.model_resolver import ResolvedModel
+    from floodmind_desktop_sidecar.floodmind_agent import FloodMindAgent
+
+    captured: dict = {}
+    instances: list = []
+
+    class FakeMC:
+        def __init__(self, **kw):
+            captured.update(kw)
+            instances.append(self)
+
+    # 推理模型，desktop 块无 enableReasoning → 默认开
+    rm = ResolvedModel(
+        provider="minimax", id="MiniMax-M3", name="MiniMax M3",
+        api_key="sk", base_url="https://api.minimaxi.com/v1",
+        temperature=0.3, max_tokens=8192, context_window=131072,
+        supports_reasoning=True, supports_vision=False,
+    )
+    monkeypatch.setattr(
+        importlib.import_module("floodmind.config.model_resolver"),
+        "resolve_model", lambda model_key=None, provider_id=None: rm,
+    )
+    monkeypatch.setattr(
+        importlib.import_module("floodmind.agent.native.model_client"),
+        "ModelClient", FakeMC,
+    )
+    monkeypatch.setattr(
+        importlib.import_module("floodmind.config.settings"),
+        "reload_config", lambda: None,
+    )
+    monkeypatch.setattr(
+        FloodMindAgent, "_desktop_block",
+        lambda self: {"activeModel": "MiniMax-M3", "activeProvider": "minimax"},
+    )
+
+    a = FloodMindAgent.__new__(FloodMindAgent)
+    a._agent = type("A", (), {"session_id": "s1"})()
+    a._build_agent = lambda sid, pd, mode=None: ("AGENT", sid, pd)
+    assert a.reload_model() is True
+    assert captured["enable_thinking"] is True
+    assert a._model_supports_reasoning is True
+    # 壳：enable_reasoning 实例属性让 SDK _init_model_client 读到 thinking 开关。
+    assert instances and getattr(instances[-1], "enable_reasoning", False) is True
+
+    # 非推理模型 → 默认关
+    rm2 = ResolvedModel(
+        provider="openai", id="plain", name="Plain",
+        api_key="sk", base_url="https://x/v1",
+        temperature=0.3, max_tokens=8192, context_window=32768,
+        supports_reasoning=False, supports_vision=False,
+    )
+    monkeypatch.setattr(
+        importlib.import_module("floodmind.config.model_resolver"),
+        "resolve_model", lambda model_key=None, provider_id=None: rm2,
+    )
+    captured.clear()
+    a2 = FloodMindAgent.__new__(FloodMindAgent)
+    a2._agent = type("A", (), {"session_id": "s2"})()
+    a2._build_agent = lambda sid, pd, mode=None: ("AGENT", sid, pd)
+    assert a2.reload_model() is True
+    assert captured["enable_thinking"] is False
+    assert a2._model_supports_reasoning is False
+
+
+def test_build_agent_uses_public_agent_full_runtime(monkeypatch, tmp_path):
+    import importlib
+    from floodmind_desktop_sidecar.floodmind_agent import FloodMindAgent
+    import floodmind_desktop_sidecar.floodmind_agent as fagent
+
+    captured = {}
+
+    class FakeMemory:
+        def __init__(self, **kw):
+            captured["memory_kwargs"] = kw
+
+    class FakeRaw:
+        def __init__(self, memory, session_id):
+            self.memory = memory
+            self.session_id = session_id
+            self._orchestrator_registry = type("R", (), {"all": lambda self: []})()
+            self._specialist_registry = type("R", (), {"all": lambda self: []})()
+
+    class FakePublicAgent:
+        def __init__(self, **kw):
+            captured["agent_kwargs"] = kw
+            self.raw = FakeRaw(kw["memory"], kw["session_id"])
+
+    monkeypatch.setattr(importlib.import_module("floodmind.memory.dual_memory"), "DualMemory", FakeMemory)
+    monkeypatch.setattr(importlib.import_module("floodmind.agent"), "Agent", FakePublicAgent, raising=False)
+
+    workspace = type("WS", (), {"workspace_dir": tmp_path})()
+    a = FloodMindAgent.__new__(FloodMindAgent)
+    a._llm = "LLM"
+    a._resolved_context_window = 1234
+    a._permission_handler = object()
+    a._desktop_block = lambda: {"enableReasoning": True, "enableSearch": True}
+
+    agent = a._build_agent("sid-1", str(tmp_path / "mem"), workspace=workspace)
+
+    assert isinstance(agent, FakePublicAgent)
+    assert captured["memory_kwargs"]["session_id"] == "sid-1"
+    assert captured["memory_kwargs"]["persist_dir"] == str(tmp_path / "mem")
+    assert captured["memory_kwargs"]["llm"] == "LLM"
+    assert captured["memory_kwargs"]["context_window"] == 1234
+    kwargs = captured["agent_kwargs"]
+    assert kwargs["llm"] == "LLM"
+    assert kwargs["memory"] is agent.raw.memory
+    assert kwargs["session_id"] == "sid-1"
+    assert kwargs["permission_handler"] is a._permission_handler
+    assert kwargs["max_iterations"] == 50
+    assert kwargs["enable_reasoning"] is True
+    assert kwargs["enable_search"] is True
+    assert kwargs["workspace"] is workspace
+    assert kwargs["bare"] is False
+    assert kwargs["permission_decision_hook"] is fagent._permission_decision_hook
+    assert str(tmp_path) in kwargs["system_prompt"]
+
+
+def test_build_agent_raises_if_public_agent_drops_memory(monkeypatch, tmp_path):
+    import importlib
+    import pytest
+
+    from floodmind_desktop_sidecar.floodmind_agent import FloodMindAgent
+
+    captured = {}
+
+    class FakeMemory:
+        pass
+
+    class MisbehavingPublicAgent:
+        def __init__(self, **kw):
+            captured["agent_kwargs"] = kw
+            # raw does NOT expose the desktop memory/session_id → invariant fails
+            self.raw = type("R", (), {"memory": None, "session_id": None})()
+
+    monkeypatch.setattr(importlib.import_module("floodmind.memory.dual_memory"), "DualMemory", lambda **_kw: FakeMemory())
+    monkeypatch.setattr(importlib.import_module("floodmind.agent"), "Agent", MisbehavingPublicAgent, raising=False)
+
+    workspace = type("WS", (), {"workspace_dir": tmp_path})()
+    a = FloodMindAgent.__new__(FloodMindAgent)
+    a._llm = "LLM"
+    a._resolved_context_window = 1000
+    a._permission_handler = object()
+    a._desktop_block = lambda: {}
+
+    with pytest.raises(RuntimeError):
+        a._build_agent("sid-2", str(tmp_path / "mem"), workspace=workspace)
+    assert captured["agent_kwargs"]["permission_decision_hook"] is not None
+
+
+def test_build_agent_mode_ask_uses_bare_no_tools(monkeypatch, tmp_path):
+    import importlib
+    from floodmind_desktop_sidecar.floodmind_agent import FloodMindAgent
+
+    captured = {}
+
+    class FakeMemory:
+        pass
+
+    class FakeRaw:
+        def __init__(self, memory, session_id):
+            self.memory = memory
+            self.session_id = session_id
+
+    class FakePublicAgent:
+        def __init__(self, **kw):
+            captured["agent_kwargs"] = kw
+            self.raw = FakeRaw(kw["memory"], kw["session_id"])
+
+    monkeypatch.setattr(importlib.import_module("floodmind.memory.dual_memory"), "DualMemory", lambda **_kw: FakeMemory())
+    monkeypatch.setattr(importlib.import_module("floodmind.agent"), "Agent", FakePublicAgent, raising=False)
+
+    workspace = type("WS", (), {"workspace_dir": tmp_path})()
+    a = FloodMindAgent.__new__(FloodMindAgent)
+    a._llm = "LLM"
+    a._resolved_context_window = 1234
+    a._permission_handler = object()
+    a._desktop_block = lambda: {}
+
+    agent = a._build_agent("sid-1", str(tmp_path / "mem"), workspace=workspace, mode="ask")
+    kwargs = captured["agent_kwargs"]
+    assert isinstance(agent, FakePublicAgent)
+    assert kwargs["bare"] is True
+    assert kwargs["tools"] == []
+    assert "问答" in kwargs["system_prompt"]
+    assert str(tmp_path) in kwargs["system_prompt"]
+
+
+def test_build_agent_mode_plan_uses_full_runtime(monkeypatch, tmp_path):
+    """Plan mode runs the full runtime so the model can call create_plan."""
+    import importlib
+    from floodmind_desktop_sidecar.floodmind_agent import FloodMindAgent
+
+    captured = {}
+
+    class FakeMemory:
+        pass
+
+    class FakeRaw:
+        def __init__(self, memory, session_id):
+            self.memory = memory
+            self.session_id = session_id
+
+    class FakePublicAgent:
+        def __init__(self, **kw):
+            captured["agent_kwargs"] = kw
+            self.raw = FakeRaw(kw["memory"], kw["session_id"])
+
+    monkeypatch.setattr(importlib.import_module("floodmind.memory.dual_memory"), "DualMemory", lambda **_kw: FakeMemory())
+    monkeypatch.setattr(importlib.import_module("floodmind.agent"), "Agent", FakePublicAgent, raising=False)
+
+    workspace = type("WS", (), {"workspace_dir": tmp_path})()
+    a = FloodMindAgent.__new__(FloodMindAgent)
+    a._llm = "LLM"
+    a._resolved_context_window = 1234
+    a._permission_handler = object()
+    a._desktop_block = lambda: {}
+
+    a._build_agent("sid-1", str(tmp_path / "mem"), workspace=workspace, mode="plan")
+    kwargs = captured["agent_kwargs"]
+    assert kwargs["bare"] is False
+    assert kwargs["tools"] is None
+    assert "计划" in kwargs["system_prompt"]
+    assert "create_plan" in kwargs["system_prompt"]
+
+
+def test_stream_rebuilds_agent_on_mode_change(tmp_path, monkeypatch):
+    import threading
+    from floodmind_desktop_sidecar.floodmind_agent import FloodMindAgent
+
+    built: list[str] = []
+
+    class FakeAgent:
+        def __init__(self, sid="sid-1"):
+            self.session_id = sid
+            self.memory = object()
+
+        def stream(self, _msg, **_kw):
+            yield {"type": "answer_delta", "content": "hi"}
+
+    def _fake_build(sid, persist_dir, workspace=None, mode="craft"):
+        built.append(mode)
+        return FakeAgent(sid)
+
+    monkeypatch.chdir(tmp_path)
+    a = FloodMindAgent.__new__(FloodMindAgent)
+    a._stream_lock = threading.Lock()
+    a._abort = threading.Event()
+    a._agent = FakeAgent("sid-1")
+    a._agent_mode = "craft"
+    a._build_agent = _fake_build
+    a._memory_target = lambda sid: (sid, "/tmp/mem")
+    a._set_workspace = lambda: None
+    a._snapshot_outputs = lambda: {}
+    a._artifact_events_from_agent = lambda _a: []
+    a._diff_outputs = lambda _b: []
+
+    # ask mode differs from current (craft) → rebuild to ask.
+    events = list(a.stream([{"role": "user", "content": "x"}], mode="ask"))
+    assert built == ["ask"]
+    assert a._agent_mode == "ask"
+    assert a._agent.session_id == "sid-1"
+    assert events[-1]["type"] == "done"
+
+    # Same mode again → no rebuild.
+    list(a.stream([{"role": "user", "content": "x"}], mode="ask"))
+    assert built == ["ask"]
+
+    # Back to craft → rebuild again.
+    list(a.stream([{"role": "user", "content": "x"}], mode="craft"))
+    assert built == ["ask", "craft"]
+    assert a._agent_mode == "craft"
+
+
+def test_permission_decision_hook_upgrades_allowed_to_ask():
+    from floodmind_desktop_sidecar.floodmind_agent import _permission_decision_hook
+    from floodmind.agent.runtime.contracts.permissions import (
+        PermissionBehavior,
+        PermissionDecision,
+        ToolPermissionPolicy,
+    )
+
+    decision = PermissionDecision(behavior=PermissionBehavior.ALLOW, reason="ok")
+    result = _permission_decision_hook("WriteFile", {}, decision, ToolPermissionPolicy(policy_type="write"))
+
+    assert result.behavior == PermissionBehavior.ASK
+
+
+def test_artifact_events_from_sdk_agent_artifacts(tmp_path):
+    from floodmind_desktop_sidecar.floodmind_agent import FloodMindAgent
+
+    report = tmp_path / "sdk-report.xlsx"
+    report.write_bytes(b"data")
+
+    class FakeAgent:
+        artifacts = [{"kind": "file", "name": "SDK 报告", "path": str(report), "source": "sdk"}]
+
+    a = FloodMindAgent.__new__(FloodMindAgent)
+    events = list(a._artifact_events_from_agent(FakeAgent()))
+
+    assert events == [{
+        "type": "artifact",
+        "kind": "file",
+        "name": "SDK 报告",
+        "path": os.path.abspath(os.path.normpath(str(report))),
+        "final": True,
+        "exists": True,
+        "source": "sdk",
+        "size": 4,
+    }]
+
+
+def test_set_workspace_uses_sdk_folder_first_workspace(tmp_path, monkeypatch):
+    from floodmind_desktop_sidecar.floodmind_agent import FloodMindAgent
+    import floodmind.tools as tools
+
+    opened = tmp_path / "业务工作区"
+    opened.mkdir()
+
+    class FakeAgent:
+        def __init__(self):
+            self.workspace = None
+
+        def bind_workspace(self, ws):
+            self.workspace = ws
+
+    captured_ctx = {}
+    monkeypatch.setattr(
+        tools,
+        "set_session_context",
+        lambda sid, **kw: captured_ctx.update({"sid": sid, **kw}),
+    )
+
+    a = FloodMindAgent.__new__(FloodMindAgent)
+    a._agent = FakeAgent()
+    a._workspace_manager = type("W", (), {"current_path": lambda self: str(opened)})()
+
+    a._set_workspace()
+
+    ws = a._agent.workspace
+    assert ws is not None
+    assert ws.is_folder_first is True
+    assert ws.workspace_dir == opened.resolve()
+    assert ws.state_dir == opened.resolve() / ".floodmind"
+    assert ws.artifact_dir == opened.resolve() / ".floodmind" / "artifacts" / captured_ctx["sid"]
+    assert captured_ctx["output_dir"] == str(opened.resolve())
+    assert captured_ctx["workspace_dir"] == str(opened.resolve())
+    assert captured_ctx["artifact_dir"] == str(ws.artifact_dir)
+    assert a._output_dir == str(opened.resolve())
 
 
 def test_diff_outputs_yields_artifacts(tmp_path):
@@ -227,7 +734,91 @@ def test_diff_outputs_yields_artifacts(tmp_path):
     assert ("file", "report.xlsx") in names
     assert ("image", "plot.png") in names
     assert all("existing.xlsx" != art["name"] for art in arts)  # pre-existing ignored
+    assert all(os.path.isabs(art["path"]) for art in arts)
     assert all(art["path"].endswith(art["name"]) for art in arts)
+    assert all(art["final"] is True for art in arts)
+    assert all(art["exists"] is True for art in arts)
+    assert all(art["source"] == "fallback" for art in arts)
+    sizes = {art["name"]: art["size"] for art in arts}
+    assert sizes == {"plot.png": 3, "report.xlsx": 3}
+
+
+def test_diff_outputs_recurses_files_without_emitting_directories(tmp_path):
+    from floodmind_desktop_sidecar.floodmind_agent import FloodMindAgent
+
+    out = tmp_path / "outputs"
+    existing_dir = out / "existing"
+    existing_dir.mkdir(parents=True)
+    (existing_dir / "before.txt").write_text("old", encoding="utf-8")
+
+    a = FloodMindAgent.__new__(FloodMindAgent)
+    a._output_dir = str(out)
+    before = a._snapshot_outputs()
+
+    (out / "top.txt").write_text("top", encoding="utf-8")
+    (existing_dir / "nested.txt").write_text("nested", encoding="utf-8")
+    new_dir = out / "new-dir"
+    new_dir.mkdir()
+    (new_dir / "chart.png").write_bytes(b"img")
+
+    artifacts = list(a._diff_outputs(before))
+
+    assert [art["name"] for art in artifacts] == ["nested.txt", "chart.png", "top.txt"]
+    assert [os.path.relpath(art["path"], out) for art in artifacts] == [
+        os.path.join("existing", "nested.txt"),
+        os.path.join("new-dir", "chart.png"),
+        "top.txt",
+    ]
+    assert all(os.path.isabs(art["path"]) for art in artifacts)
+    assert all(art["exists"] is True for art in artifacts)
+    assert all(art["source"] == "fallback" for art in artifacts)
+    assert all(art["name"] not in {"existing", "new-dir"} for art in artifacts)
+
+
+def test_diff_outputs_ignores_hidden_sdk_managed_dirs(tmp_path):
+    """`.floodmind/` (sessions/checkpoints/memory) churns on every run and must
+    never surface as artifacts."""
+    from floodmind_desktop_sidecar.floodmind_agent import FloodMindAgent
+
+    out = tmp_path / "ws"
+    out.mkdir()
+    (out / "user.txt").write_text("user", encoding="utf-8")
+    hidden = out / ".floodmind" / "sessions" / "s1" / "checkpoints" / "ckpt-1"
+    hidden.mkdir(parents=True)
+    (hidden / "manifest.json").write_text("{}", encoding="utf-8")
+    (hidden / "state.json").write_text("{}", encoding="utf-8")
+
+    a = FloodMindAgent.__new__(FloodMindAgent)
+    a._output_dir = str(out)
+    before = a._snapshot_outputs()
+    assert before == {"user.txt": before["user.txt"]}
+
+    # A run adds a user-visible output AND writes more checkpoint churn.
+    (out / "report.xlsx").write_bytes(b"new")
+    (hidden / "manifest.json").write_text('{"x":1}', encoding="utf-8")
+    mem = out / ".floodmind" / "sessions" / "s1" / "memory"
+    mem.mkdir(parents=True)
+    (mem / "turns.json").write_text("[]", encoding="utf-8")
+
+    artifacts = list(a._diff_outputs(before))
+    assert [art["name"] for art in artifacts] == ["report.xlsx"]
+
+
+
+def test_build_artifact_event_preserves_missing_declared_path(tmp_path):
+    from floodmind_desktop_sidecar.floodmind_agent import _build_artifact_event
+
+    missing = tmp_path / "missing.xlsx"
+    event = _build_artifact_event(str(missing), source="declared")
+
+    assert event["type"] == "artifact"
+    assert event["kind"] == "file"
+    assert event["name"] == "missing.xlsx"
+    assert event["path"] == os.path.abspath(os.path.normpath(str(missing)))
+    assert event["final"] is True
+    assert event["exists"] is False
+    assert event["source"] == "declared"
+    assert "size" not in event
 
 
 def test_stream_surfaces_artifacts_via_output_dir_diff(tmp_path, monkeypatch):
@@ -255,14 +846,43 @@ def test_stream_surfaces_artifacts_via_output_dir_diff(tmp_path, monkeypatch):
     assert types[-1] == "done"
 
 
-def test_activate_conversation_rebuilds_with_session_id(tmp_path, monkeypatch):
+def test_stream_prefers_sdk_artifacts_and_dedupes_diff(tmp_path, monkeypatch):
+    from floodmind_desktop_sidecar.floodmind_agent import FloodMindAgent
+
+    out = tmp_path / "out"
+    out.mkdir()
+    report = out / "report.xlsx"
+
+    class FakeAgent:
+        @property
+        def artifacts(self):
+            return [{"kind": "file", "name": "report.xlsx", "path": str(report), "source": "sdk"}]
+
+        def stream(self, _msg):
+            report.write_bytes(b"new")
+            yield {"type": "answer_delta", "content": "done"}
+
+    a = FloodMindAgent.__new__(FloodMindAgent)
+    a._agent = FakeAgent()
+    a._workspace_manager = None
+    monkeypatch.setattr(a, "_set_workspace", lambda: setattr(a, "_output_dir", str(out)))
+
+    events = list(a.stream([{"role": "user", "content": "hi"}]))
+    artifacts = [e for e in events if e.get("type") == "artifact"]
+
+    assert len(artifacts) == 1
+    assert artifacts[0]["name"] == "report.xlsx"
+    assert artifacts[0]["source"] == "sdk"
+    assert events[-1]["type"] == "done"
+
+
     # _memory_target uses _app_data_dir() == cwd.
     monkeypatch.chdir(tmp_path)
     from floodmind_desktop_sidecar.floodmind_agent import FloodMindAgent
 
     built = []
     a = FloodMindAgent.__new__(FloodMindAgent)
-    a._build_agent = lambda sid, pd: built.append((sid, pd)) or ("AGENT", sid, pd)
+    a._build_agent = lambda sid, pd, mode=None: built.append((sid, pd)) or ("AGENT", sid, pd)
 
     a.activate_conversation("sess-xyz")
 
@@ -276,7 +896,7 @@ def test_activate_conversation_swallows_errors(tmp_path, monkeypatch):
 
     a = FloodMindAgent.__new__(FloodMindAgent)
     a._agent = "ORIGINAL"
-    a._build_agent = lambda sid, pd: (_ for _ in ()).throw(RuntimeError("nope"))
+    a._build_agent = lambda sid, pd, mode=None: (_ for _ in ()).throw(RuntimeError("nope"))
 
     a.activate_conversation("sess-1")     # must not raise
     assert a._agent == "ORIGINAL"         # left untouched on failure
@@ -290,6 +910,7 @@ def test_generate_title_invokes_llm_and_cleans_output(monkeypatch):
         content = "  1. 帮我画个销售折线图\nignore me"
 
     class FakeRM:
+        provider = "openai"
         api_key = "k"
         base_url = "http://x/v1"
         id = "deepseek-v4-flash"
@@ -318,6 +939,7 @@ def test_generate_title_invokes_llm_and_cleans_output(monkeypatch):
     assert FakeMC.last_kwargs["temperature"] == 0.2
     assert FakeMC.last_kwargs["max_tokens"] == 10000
     assert FakeMC.last_kwargs["enable_thinking"] is False
+    assert FakeMC.last_kwargs["provider"] == "openai"
     assert "销售折线图" in FakeMC.last_prompt
 
 
@@ -334,6 +956,7 @@ def test_generate_title_uses_desktop_active_provider(monkeypatch):
     captured = {}
 
     class FakeRM:
+        provider = "openai"
         api_key = "proxy-key"
         base_url = "http://192.168.30.112:3000/v1"
         id = "deepseek-v4-flash"
@@ -367,6 +990,7 @@ def test_generate_title_uses_desktop_active_provider(monkeypatch):
     assert captured["client_kwargs"]["base_url"] == "http://192.168.30.112:3000/v1"
     assert captured["client_kwargs"]["api_key"] == "proxy-key"
     assert captured["client_kwargs"]["model_name"] == "deepseek-v4-flash"
+    assert captured["client_kwargs"]["provider"] == "openai"
 
 
 def test_generate_title_returns_empty_on_failure(monkeypatch):
@@ -374,6 +998,7 @@ def test_generate_title_returns_empty_on_failure(monkeypatch):
     from floodmind_desktop_sidecar.floodmind_agent import FloodMindAgent
 
     class FakeRM:
+        provider = "test-provider"
         api_key = "k"
         base_url = "http://x/v1"
         id = "m"
@@ -391,6 +1016,30 @@ def test_generate_title_returns_empty_on_failure(monkeypatch):
     assert a.generate_title("anything") == ""    # swallowed, not raised
 
 
+def test_set_workspace_for_uses_sdk_folder_first_workspace(tmp_path, monkeypatch):
+    from floodmind_desktop_sidecar.floodmind_agent import FloodMindAgent
+    import floodmind.tools as tools
+
+    opened = tmp_path / "后台工作区"
+    opened.mkdir()
+    captured_ctx = {}
+    monkeypatch.setattr(
+        tools,
+        "set_session_context",
+        lambda sid, **kw: captured_ctx.update({"sid": sid, **kw}),
+    )
+
+    a = FloodMindAgent.__new__(FloodMindAgent)
+    ws = a._set_workspace_for(str(opened))
+
+    assert ws is not None
+    assert ws.is_folder_first is True
+    assert ws.workspace_dir == opened.resolve()
+    assert captured_ctx["output_dir"] == str(opened.resolve())
+    assert captured_ctx["workspace_dir"] == str(opened.resolve())
+    assert captured_ctx["artifact_dir"] == str(ws.artifact_dir)
+
+
 def test_run_headless_collects_events_artifacts_final_text(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)            # _app_data_dir() == cwd
     from floodmind_desktop_sidecar.floodmind_agent import FloodMindAgent
@@ -403,7 +1052,7 @@ def test_run_headless_collects_events_artifacts_final_text(tmp_path, monkeypatch
 
     a = FloodMindAgent.__new__(FloodMindAgent)
     a._agent = "FOREGROUND_AGENT"          # must be left untouched
-    a._build_agent = lambda sid, pd: FakeAgent()
+    a._build_agent = lambda sid, pd, workspace=None, mode=None: FakeAgent()
     a._set_workspace_for = lambda path: None     # stubbed — no SDK workspace setup
 
     events, artifacts, final_text = a.run_headless("sess-x", "/ws/A", "do the thing")
@@ -428,7 +1077,7 @@ def test_run_headless_swallows_errors_into_an_error_event(tmp_path, monkeypatch)
 
     a = FloodMindAgent.__new__(FloodMindAgent)
     a._agent = "FOREGROUND_AGENT"
-    a._build_agent = lambda sid, pd: BoomAgent()
+    a._build_agent = lambda sid, pd, workspace=None, mode=None: BoomAgent()
     a._set_workspace_for = lambda path: None
 
     events, artifacts, final_text = a.run_headless("sess-x", "/ws/A", "go")
@@ -455,7 +1104,7 @@ def test_run_headless_diffs_output_dir_for_artifacts(tmp_path, monkeypatch):
 
     a = FloodMindAgent.__new__(FloodMindAgent)
     a._agent = "FOREGROUND_AGENT"
-    a._build_agent = lambda sid, pd: FakeAgent()
+    a._build_agent = lambda sid, pd, workspace=None, mode=None: FakeAgent()
     import types
     a._set_workspace_for = lambda path: types.SimpleNamespace(user_dir=str(out))
 
@@ -464,6 +1113,13 @@ def test_run_headless_diffs_output_dir_for_artifacts(tmp_path, monkeypatch):
     names = {(art["kind"], art["name"]) for art in artifacts}
     assert ("file", "report.xlsx") in names
     assert ("image", "chart.png") in names
+    assert all(art["final"] is True for art in artifacts)
+    assert all(art["exists"] is True for art in artifacts)
+    assert all(art["source"] == "fallback" for art in artifacts)
+    assert {art["name"]: art["size"] for art in artifacts} == {
+        "chart.png": 3,
+        "report.xlsx": 4,
+    }
     assert any(e["type"] == "artifact" and e["name"] == "report.xlsx" for e in events)
     assert final_text == "ok"
 
@@ -482,7 +1138,7 @@ def test_run_headless_auto_approves_permission_asks(tmp_path, monkeypatch):
 
     a = FloodMindAgent.__new__(FloodMindAgent)
     a._agent = "FOREGROUND_AGENT"
-    a._build_agent = lambda sid, pd: FakeAgent()
+    a._build_agent = lambda sid, pd, workspace=None, mode=None: FakeAgent()
     a._set_workspace_for = lambda path: None
 
     approved_calls = []
@@ -508,62 +1164,71 @@ def test_reload_persona_rebuilds_and_rebinds_workspace():
 
     built = []
     a._memory_target = lambda sid: (sid, "/tmp/mem")
-    a._build_agent = lambda sid, persist_dir: built.append(sid) or types.SimpleNamespace(session_id=sid)
+    a._build_agent = lambda sid, persist_dir, workspace=None, mode=None: built.append(sid) or types.SimpleNamespace(session_id=sid)
     rebinds = []
     a._set_workspace = lambda: rebinds.append(True)
 
     assert a.reload_persona() is True
     assert built == ["sid-1"]          # rebuilt with the SAME session_id
-    assert rebinds == [True]           # workspace re-bound (+ prompt refreshed)
+    assert rebinds == [True]           # workspace/session context re-bound for the fresh agent
     assert a._agent.session_id == "sid-1"
 
 
-def test_patch_tool_policies_upgrades_non_readonly_to_ask():
-    from floodmind_desktop_sidecar.floodmind_agent import FloodMindAgent
+def test_permission_decision_hook_respects_policy_and_deny():
+    from floodmind_desktop_sidecar.floodmind_agent import _permission_decision_hook
     from floodmind.agent.runtime.contracts.permissions import (
         PermissionBehavior,
+        PermissionDecision,
         ToolPermissionPolicy,
     )
 
-    class FakeTool:
-        def __init__(self, name, policy_type):
-            self.name = name
-            self.permission_policy = ToolPermissionPolicy(policy_type=policy_type)
-            self.check_permissions_fn = None
+    allow = PermissionDecision(behavior=PermissionBehavior.ALLOW, reason="ok")
 
-    class FakeRegistry:
-        def __init__(self, tools):
-            self._tools = tools
+    # non-readonly policies → upgraded to ASK
+    for ptype in ("exec", "write", "read_path", "network"):
+        d = _permission_decision_hook("T", {}, allow, ToolPermissionPolicy(policy_type=ptype))
+        assert d.behavior == PermissionBehavior.ASK, ptype
 
-        def all(self):
-            return self._tools
+    # readonly/internal/ask policies → pass through unchanged
+    for ptype in ("readonly", "internal", "ask"):
+        d = _permission_decision_hook("T", {}, allow, ToolPermissionPolicy(policy_type=ptype))
+        assert d is allow, ptype
 
-    class FakeAgent:
-        def __init__(self, tools):
-            self._orchestrator_registry = FakeRegistry(tools)
-            self._specialist_registry = FakeRegistry(tools)
+    # SDK DENY is preserved (hook can only tighten, never loosen)
+    deny = PermissionDecision(behavior=PermissionBehavior.DENY, reason="danger")
+    d = _permission_decision_hook("Bash", {}, deny, ToolPermissionPolicy(policy_type="exec"))
+    assert d is deny
 
-    a = FloodMindAgent.__new__(FloodMindAgent)
-    tools = [
-        FakeTool("Bash", "exec"),
-        FakeTool("WriteFile", "write"),
-        FakeTool("ReadFile", "read_path"),
-        FakeTool("WebSearch", "network"),
-        FakeTool("Glob", "readonly"),
-        FakeTool("SubAgent", "internal"),
-        FakeTool("UpdateProjectInstructions", "ask"),
-    ]
-    fake_agent = FakeAgent(tools)
-    a._patch_tool_policies_for_desktop_permission(fake_agent)
 
-    for tool in fake_agent._orchestrator_registry.all():
-        policy_type = tool.permission_policy.policy_type
-        if policy_type in {"readonly", "internal", "ask"}:
-            assert tool.check_permissions_fn is None, f"{tool.name} should keep original policy"
-        else:
-            assert tool.check_permissions_fn is not None, f"{tool.name} should get desktop check fn"
-            result = tool.check_permissions_fn({})
-            assert result.behavior == PermissionBehavior.ASK, f"{tool.name} should ask"
+def test_permission_decision_hook_denies_execution_in_ask_plan_mode():
+    """Ask: every tool denied. Plan: readonly/internal allowed (create_plan +
+    file reads), all execution tools denied."""
+    from floodmind_desktop_sidecar import floodmind_agent as fa
+    from floodmind.agent.runtime.contracts.permissions import (
+        PermissionBehavior,
+        PermissionDecision,
+        ToolPermissionPolicy,
+    )
+
+    allow = PermissionDecision(behavior=PermissionBehavior.ALLOW, reason="ok")
+
+    # Ask: nothing may run.
+    fa._CURRENT_MODE["mode"] = "ask"
+    for ptype in ("readonly", "exec", "write", "network", "ask", "internal"):
+        d = fa._permission_decision_hook("SearchTools", {}, allow, ToolPermissionPolicy(policy_type=ptype))
+        assert d.behavior == PermissionBehavior.DENY, ptype
+
+    # Plan: plan tools + reads pass through, execution denied.
+    fa._CURRENT_MODE["mode"] = "plan"
+    for ptype in ("readonly", "internal"):
+        d = fa._permission_decision_hook("create_plan", {}, allow, ToolPermissionPolicy(policy_type=ptype))
+        assert d is allow, ptype
+    for ptype in ("exec", "write", "network", "ask", "state_write"):
+        d = fa._permission_decision_hook("Bash", {}, allow, ToolPermissionPolicy(policy_type=ptype))
+        assert d.behavior == PermissionBehavior.DENY, ptype
+
+    # Restore craft so other tests see the default path.
+    fa._CURRENT_MODE["mode"] = "craft"
 
 
 # ── permission respond round-trip (I6) ──────────────────────────
@@ -649,16 +1314,40 @@ def test_respond_sdk_failure_returns_error(tmp_path, monkeypatch):
     assert PENDING_ASKS.pop("ask-3") is None
 
 
+def test_mcp_stdio_liveness_uses_process_state():
+    from floodmind.agent.mcp_client import McpClientConnection
+
+    class Proc:
+        def __init__(self, result):
+            self._result = result
+
+        def poll(self):
+            return self._result
+
+    conn = McpClientConnection("svc", transport="stdio")
+    conn._initialized = True
+    conn._process = Proc(None)
+    assert conn.is_connected is True
+
+    conn._process = Proc(1)
+    assert conn.is_connected is False
+
+    conn._initialized = False
+    conn._process = Proc(None)
+    assert conn.is_connected is False
+
+
 def test_mcp_tool_names_sanitized_for_openai_endpoints():
     """MCP tool names are namespaced with ':' which OpenAI-compatible endpoints reject.
 
-    The desktop patches build_mcp_tool_specs so the model sees a sanitized name
-    while the bound function keeps the original 'mcp:server:tool' call signature.
+    The SDK build_mcp_tool_specs exposes sanitized model-visible names while the
+    bound function keeps the original 'mcp:server:tool' call signature.
     """
     import re
     from floodmind.agent.mcp_client import build_mcp_tool_specs
 
     class FakeConn:
+        transport = "stdio"  # v2.0.0: build_mcp_tool_specs 读 conn.transport
         def list_tools(self):
             return [
                 {"name": "search:docs", "description": "d", "inputSchema": {"type": "object", "properties": {}}},
@@ -680,7 +1369,66 @@ def test_mcp_tool_names_sanitized_for_openai_endpoints():
     assert calls == ["mcp:hydro-rag:search:docs"]
 
 
-# ── concurrency: stream serialization + disconnect teardown (C3 + I1) ──
+def test_public_agent_full_runtime_and_compatibility_proxies(monkeypatch):
+    import importlib
+    from floodmind.agent.api import Agent
+
+    captured = {}
+
+    class FakeNative:
+        def __init__(self, **kw):
+            captured["native_kwargs"] = kw
+            self.memory = kw["memory"]
+            self.session_id = kw["session_id"]
+            self._orchestrator_registry = type("R", (), {"all": lambda self: []})()
+            self.cleared = False
+            self.stream_kwargs = None
+
+        def bind_workspace(self, ws):
+            self.workspace = ws
+
+        def clear_memory(self):
+            self.cleared = True
+
+        def stream(self, message, **kw):
+            self.stream_kwargs = {"message": message, **kw}
+            yield {"type": "token_usage", "prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3}
+            yield {"type": "file_generated", "filename": "x.txt", "download_url": "/x"}
+            yield {"type": "final_text", "content": "done"}
+
+    monkeypatch.setattr(importlib.import_module("floodmind.agent.api"), "NativeFloodAgent", FakeNative)
+
+    memory = object()
+    workspace = object()
+    agent = Agent(
+        llm="LLM",
+        memory=memory,
+        session_id="sid-public",
+        workspace=workspace,
+        permission_handler="perm",
+        max_iterations=7,
+        bare=False,
+    )
+
+    assert captured["native_kwargs"]["bare"] is False
+    assert captured["native_kwargs"]["llm_service"] == "LLM"
+    assert captured["native_kwargs"]["memory"] is memory
+    assert captured["native_kwargs"]["session_id"] == "sid-public"
+    assert captured["native_kwargs"]["workspace"] is workspace
+    assert captured["native_kwargs"]["permission_handler"] == "perm"
+    assert captured["native_kwargs"]["max_iterations"] == 7
+    assert captured["native_kwargs"]["tools"] is None
+    assert agent.memory is memory
+    assert agent.session_id == "sid-public"
+
+    events = list(agent.stream("hi", abort_check="abort", attachments=["att"]))
+    assert events[-1]["content"] == "done"
+    assert agent.raw.stream_kwargs == {"message": "hi", "abort_check": "abort", "attachments": ["att"]}
+    assert agent.last_usage == {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3}
+    assert agent.artifacts == [{"type": "file_generated", "filename": "x.txt", "download_url": "/x"}]
+    agent.clear_memory()
+    assert agent.raw.cleared is True
+
 import threading  # noqa: E402
 
 
@@ -730,6 +1478,53 @@ def test_stream_serializes_concurrent_runs(tmp_path, monkeypatch):
     assert out1 and out1[-1]["type"] == "done"
 
 
+def test_stream_waits_after_pause_for_lock_to_free(tmp_path, monkeypatch):
+    """After a pause (abort raised) the previous run may still hold the lock
+    while its SDK run unwinds to the next boundary — a new request must WAIT
+    for the lock instead of failing with 已有任务正在执行."""
+    import time
+
+    monkeypatch.chdir(tmp_path)
+
+    class BlockingAgent:
+        def stream(self, _msg, **_kw):
+            yield {"type": "answer_delta", "content": "x"}
+            release.wait(timeout=5)
+            yield {"type": "answer_delta", "content": "y"}
+
+    release = threading.Event()
+    a = _concurrent_agent()
+    a._agent = BlockingAgent()
+
+    out1: list = []
+    t1 = threading.Thread(target=lambda: out1.extend(a.stream([{"role": "user", "content": "hi"}])))
+    t1.start()
+    time.sleep(0.05)  # run1 holds the stream lock
+    a._abort.set()    # simulate the user pausing run1 mid-stream
+
+    out2: list = []
+    t2 = threading.Thread(target=lambda: out2.extend(a.stream([{"role": "user", "content": "resume"}])))
+    t2.start()
+    time.sleep(0.3)  # let run2 reach the lock-wait loop
+    assert out2 == [], "post-pause resume should wait for the lock, not fail fast"
+
+    release.set()
+    t1.join(timeout=2)
+    t2.join(timeout=3)
+    assert out2 and out2[-1]["type"] == "done"
+    assert all(e.get("type") != "error" for e in out2)
+
+
+def _wait_lock_free(a, timeout: float = 3.0) -> None:
+    """Wait for the detached run thread to release _stream_lock on completion."""
+    import time
+
+    deadline = time.time() + timeout
+    while a._stream_lock.locked() and time.time() < deadline:
+        time.sleep(0.05)
+    assert not a._stream_lock.locked()
+
+
 def test_stream_releases_lock_and_allows_followup(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
 
@@ -742,14 +1537,15 @@ def test_stream_releases_lock_and_allows_followup(tmp_path, monkeypatch):
 
     out = list(a.stream([{"role": "user", "content": "hi"}]))
     assert out[-1]["type"] == "done"
-    assert not a._stream_lock.locked()       # lock released on completion
-    assert a._abort.is_set()                 # abort set in finally (cleared next run)
+    _wait_lock_free(a)  # lock released by the run thread on completion
     # Follow-up run works because the lock was released.
     out2 = list(a.stream([{"role": "user", "content": "again"}]))
     assert out2[-1]["type"] == "done"
+    _wait_lock_free(a)
 
 
-def test_stream_sets_abort_and_releases_on_disconnect(tmp_path, monkeypatch):
+def test_stream_keeps_running_and_releases_on_disconnect(tmp_path, monkeypatch):
+    """重连对账：客户端断连不再 abort——run 后台继续、事件缓冲，完成后释放锁。"""
     monkeypatch.chdir(tmp_path)
 
     class LongAgent:
@@ -761,7 +1557,158 @@ def test_stream_sets_abort_and_releases_on_disconnect(tmp_path, monkeypatch):
     a._agent = LongAgent()
 
     g = a.stream([{"role": "user", "content": "hi"}])
-    next(g)                                   # consume one event; generator suspended, lock held
-    g.close()                                 # simulate client disconnect
-    assert a._abort.is_set()                  # teardown armed the abort signal
-    assert not a._stream_lock.locked()        # lock released even on abnormal close
+    next(g)                                   # consume one event; generator suspended
+    g.close()                                 # simulate client disconnect (GeneratorExit)
+    assert not a._abort.is_set()              # 不再 abort：run 继续缓冲
+    _wait_lock_free(a)                        # 锁由 run 线程在完成后释放
+    # 断连期间 run 仍跑完并缓冲全部事件 → 可经游标补拉。
+    events, done = a.run_events_since(0)
+    assert done is True
+    assert [e["type"] for e in events] == ["text"] * 5 + ["done"]
+
+
+# ── vision attachments: stream() forwards to SDK + non-vision gate (Task 5) ──
+def _bare_vision_agent(monkeypatch, supports_vision: bool):
+    """A bare FloodMindAgent wired for unit-testing stream()'s attachment path.
+
+    Avoids __init__ (no real SDK build, no filesystem setup). All bare attrs
+    are set to None so the getattr guards in stream()/_fg() handle them; the
+    FakeAgent is the only live piece. _set_workspace is monkeypatched to a
+    no-op so a bare instance never touches the real workspace/app-data setup
+    or the SDK's bind_workspace.
+    """
+    from floodmind_desktop_sidecar import floodmind_agent as fa
+
+    agent = fa.FloodMindAgent.__new__(fa.FloodMindAgent)
+    agent._agent = None  # caller sets
+    agent._workspace_manager = None
+    agent._stream_lock = None
+    agent._fg_lock = None
+    agent._output_dir = None
+    agent._abort = threading.Event()
+    agent._abort.clear()
+    monkeypatch.setattr(fa.FloodMindAgent, "_set_workspace", lambda self: None)
+    monkeypatch.setattr(
+        fa.FloodMindAgent, "_active_supports_vision", lambda self: supports_vision
+    )
+    monkeypatch.setattr(fa.FloodMindAgent, "_current_workspace_path", lambda self: None)
+    return agent
+
+
+def test_stream_passes_attachments_to_agent(monkeypatch, tmp_path):
+    """stream() normalizes descriptors and forwards SDK Attachments to agent.stream."""
+    import base64
+    from floodmind_desktop_sidecar import floodmind_agent as fa
+
+    captured = {}
+
+    class FakeAgent:
+        def stream(self, user_text, attachments=None, abort_check=None):
+            captured["text"] = user_text
+            captured["attachments"] = list(attachments or [])
+            yield {"type": "text", "content": "ok"}
+            yield {"type": "done"}
+
+    agent = _bare_vision_agent(monkeypatch, supports_vision=True)
+    agent._agent = FakeAgent()
+
+    png = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M8AAAMBAQDJ/pLvAAAAAElFTkSuQmCC")
+    img = tmp_path / "x.png"
+    img.write_bytes(png)
+    desc = [{"source": "file", "path": str(img), "name": "x.png", "mime": "image/png"}]
+    events = list(agent.stream([{"role": "user", "content": "看图"}], attachments=desc))
+    assert captured["text"] == "看图"
+    assert len(captured["attachments"]) == 1
+    assert captured["attachments"][0].kind == "image"
+    assert any(e.get("type") == "done" for e in events)
+
+
+def test_stream_non_vision_model_yields_error_and_drops_attachments(monkeypatch, tmp_path):
+    """Non-vision active model: attachments are dropped and an error event surfaces."""
+    import base64
+    from floodmind_desktop_sidecar import floodmind_agent as fa
+
+    captured = {}
+
+    class FakeAgent:
+        def stream(self, user_text, attachments=None, abort_check=None):
+            captured["attachments"] = list(attachments or [])
+            yield {"type": "done"}
+
+    agent = _bare_vision_agent(monkeypatch, supports_vision=False)
+    agent._agent = FakeAgent()
+
+    png = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M8AAAMBAQDJ/pLvAAAAAElFTkSuQmCC")
+    img = tmp_path / "x.png"
+    img.write_bytes(png)
+    events = list(agent.stream(
+        [{"role": "user", "content": "hi"}],
+        attachments=[{"source": "file", "path": str(img), "name": "x.png"}],
+    ))
+    assert captured["attachments"] == []
+    assert any("不支持图片" in e.get("content", "")
+               for e in events if e.get("type") == "error")
+
+
+def test_list_checkpoints_empty_for_missing_dir(tmp_path, monkeypatch):
+    """A non-existent session/checkpoint dir must yield [] (never raise)."""
+    monkeypatch.chdir(tmp_path)
+    from floodmind_desktop_sidecar.floodmind_agent import FloodMindAgent
+
+    a = FloodMindAgent.__new__(FloodMindAgent)
+    assert a.list_checkpoints("session-missing", str(tmp_path)) == []
+
+
+def test_skill_frontmatter_helpers(tmp_path):
+    """_read_skill_frontmatter + _set_skill_status parse/rewrite SKILL.md."""
+    from floodmind_desktop_sidecar.floodmind_agent import (
+        _read_skill_frontmatter,
+        _set_skill_status,
+    )
+
+    md = tmp_path / "SKILL.md"
+    md.write_text(
+        "---\nname: hydrology-forecast\ndescription: 水文预报\nstatus: draft\n"
+        "source: auto-generated-from-experience\ntrigger_keywords: []\n---\n\n# 内容\n",
+        encoding="utf-8",
+    )
+
+    fm = _read_skill_frontmatter(md)
+    assert fm["status"] == "draft"
+    assert fm["source"] == "auto-generated-from-experience"
+
+    updated = _set_skill_status(md.read_text(encoding="utf-8"), "active")
+    assert "status: active" in updated
+    assert "status: draft" not in updated
+
+    # No status line → unchanged (can't approve).
+    plain = "---\nname: x\n---\nbody\n"
+    assert _set_skill_status(plain, "active") == plain
+
+
+def test_snapshot_skips_intermediate_scripts_and_cache_dirs(tmp_path):
+    """中间脚本(.py/.sh/.tmp)与 __pycache__ 不是最终产物，产物 diff 必须排除。"""
+    from floodmind_desktop_sidecar.floodmind_agent import FloodMindAgent
+
+    out = tmp_path / "ws"
+    out.mkdir()
+    (out / "report.docx").write_text("final", encoding="utf-8")
+    (out / "chart.png").write_bytes(b"img")
+    (out / "task").mkdir()
+    (out / "task" / "script.py").write_text("print(1)", encoding="utf-8")
+    (out / "task" / "helper.sh").write_text("ls", encoding="utf-8")
+    (out / "task" / "notes.tmp").write_text("tmp", encoding="utf-8")
+    cache = out / "task" / "__pycache__"
+    cache.mkdir()
+    (cache / "script.cpython-313.pyc").write_bytes(b"\x00")
+
+    a = FloodMindAgent.__new__(FloodMindAgent)
+    a._output_dir = str(out)
+    snap = a._snapshot_outputs()
+
+    # 最终成品保留；脚本/临时/缓存一律排除。
+    assert "report.docx" in snap
+    assert "chart.png" in snap
+    assert all(not rel.endswith((".py", ".sh", ".tmp", ".pyc")) for rel in snap)

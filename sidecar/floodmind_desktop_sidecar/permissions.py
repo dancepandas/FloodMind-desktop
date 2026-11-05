@@ -113,7 +113,10 @@ def permission_fingerprint(tool_name: str, tool_input: Any, workspace_path: str 
         key = _normalize(inp.get("path") or inp.get("file_path") or "")
         return hashlib.sha256(f"{name}:{key}".encode("utf-8")).hexdigest()
 
-    if name == "ReadFile":
+    if name == "Read":
+        # The SDK's read tool is `Read` (read_path policy). Workspace-internal
+        # reads group under one fingerprint (any file inside the workspace is
+        # low-risk once one is approved); external reads stay per-path.
         path = _normalize(inp.get("path") or inp.get("file_path") or "")
         if workspace_path and path:
             try:
@@ -157,6 +160,14 @@ class PendingPermissionAsks:
     def pop(self, ask_id: str) -> dict[str, Any] | None:
         with self._lock:
             return self._pending.pop(ask_id, None)
+
+    def all_pending(self) -> list[dict[str, str]]:
+        """Snapshot of {ask_id, session_id} for every ask awaiting a response."""
+        with self._lock:
+            return [
+                {"ask_id": ask_id, "session_id": entry.get("session_id", "")}
+                for ask_id, entry in self._pending.items()
+            ]
 
     def clear(self) -> None:
         with self._lock:

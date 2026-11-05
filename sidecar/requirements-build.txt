@@ -1,0 +1,6 @@
+# Reproducible tooling used only to compile the Windows standalone sidecar.
+# Runtime dependencies remain declared in pyproject.toml and are installed from
+# its pinned FloodMind tag before this file is applied.
+Nuitka==4.2
+ordered-set==4.1.0
+zstandard==0.24.0

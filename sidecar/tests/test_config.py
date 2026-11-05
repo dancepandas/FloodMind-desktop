@@ -25,8 +25,9 @@ def isolated_home(tmp_path, monkeypatch):
     monkeypatch.setattr(
         config_api, "_legacy_config_path", lambda: tmp_path / "legacy_config.json"
     )
-    from floodmind.config.settings import reload_config
+    from floodmind.config.settings import initialize_floodmind_home, reload_config
 
+    initialize_floodmind_home()  # v2.0.0 显式种子 settings.json
     reload_config()  # pick up the new FLOODMIND_HOME
     yield tmp_path
     reload_config()  # restore other tests' view
@@ -34,6 +35,17 @@ def isolated_home(tmp_path, monkeypatch):
 
 def _write_settings(home, data):
     (home / "settings.json").write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+
+def _read_settings(home):
+    """Read settings.json as the SDK sees it (credentials decrypted).
+
+    Since SDK v2.3.1 credential fields are encrypted at rest; comparing raw
+    ciphertext wouldn't prove the value survived the round-trip.
+    """
+    from floodmind.config.secret_store import unprotect_tree
+
+    return unprotect_tree(json.loads((home / "settings.json").read_text(encoding="utf-8")))
 
 
 def test_read_returns_provider_catalog_and_active_model(isolated_home):
@@ -129,7 +141,11 @@ def test_write_rebuilds_providers_and_records_active_model(isolated_home):
     assert snapshot["model"]["maxTokens"] == 131072
     assert snapshot["apiKeyPresent"] is True
 
-    on_disk = json.loads((isolated_home / "settings.json").read_text(encoding="utf-8"))
+    raw_on_disk = json.loads((isolated_home / "settings.json").read_text(encoding="utf-8"))
+    # Credentials are encrypted at rest (SDK v2.3.1)…
+    assert raw_on_disk["providers"]["deepseek"]["api_key"].startswith("enc:v1:")
+    # …and decrypt back to the value the GUI sent.
+    on_disk = _read_settings(isolated_home)
     # New flat providers format.
     ds = on_disk["providers"]["deepseek"]
     assert ds["base_url"] == "https://api.deepseek.com/v1"
@@ -161,9 +177,34 @@ def test_write_preserves_unrelated_keys_and_keeps_unsent_apikey(isolated_home):
         ],
     })
 
-    on_disk = json.loads((isolated_home / "settings.json").read_text(encoding="utf-8"))
+    on_disk = _read_settings(isolated_home)
     assert on_disk["providers"]["deepseek"]["api_key"] == "sk-keep"
     assert on_disk["permissions"]["mode"] == "always-trust"
+
+
+def test_repeated_saves_never_double_encrypt_credentials(isolated_home):
+    """Read-modify-write cycles keep credentials recoverable.
+
+    The host decrypts settings on read and the SDK re-protects on write; a key
+    that was sent once must still resolve after a later save that leaves the
+    password field blank.
+    """
+    payload = {
+        "provider": "deepseek", "model": "deepseek-v4-flash",
+        "providers": [
+            {"id": "deepseek", "baseURL": "https://api.deepseek.com/v1",
+             "apiKey": "sk-twice", "models": [{"name": "deepseek-v4-flash"}]},
+        ],
+    }
+    write_model_config(payload)
+    # Second save without re-sending the key (GUI keeps the field blank).
+    payload["providers"][0].pop("apiKey")
+    write_model_config(payload)
+
+    from floodmind.config.settings import reload_config
+
+    cfg = reload_config()  # SDK reads the file from disk
+    assert cfg["providers"]["deepseek"]["api_key"] == "sk-twice"
 
 
 def test_write_disambiguates_colliding_model_ids_via_active_provider(isolated_home):
@@ -214,7 +255,8 @@ def test_read_disambiguates_via_active_provider(isolated_home):
     cfg = read_model_config()
     assert cfg["model"]["provider"] == "openai"
     assert cfg["baseURL"] == "http://192.168.30.112:3000/v1"
-    assert cfg["model"]["maxTokens"] == 65536  # the proxy model's tokens
+    # 65536 is the SDK default → metadata corrects it to the known value (384K).
+    assert cfg["model"]["maxTokens"] == 384000
 
 
 def test_write_drops_providers_not_in_payload(isolated_home):
@@ -323,3 +365,108 @@ def test_write_agents_md_empty_deletes(isolated_home):
     res = write_agents_md("")
     assert res["content"] == ""
     assert not (isolated_home / "AGENTS.md").exists()
+
+
+def test_read_returns_enabled_models_defaulting_to_all(isolated_home):
+    """enabledModels 缺失时默认等于当前所有模型（升级不丢可用模型）。"""
+    _write_settings(isolated_home, {
+        "providers": {
+            "deepseek": {"base_url": "u", "api_key": "sk",
+                         "models": [{"id": "deepseek-v4-pro", "default_max_tokens": 131072},
+                                    {"id": "deepseek-v4-flash", "default_max_tokens": 65536}]},
+            "qwen": {"base_url": "u2", "api_key": "sk2",
+                     "models": [{"id": "qwen3.7-plus", "default_max_tokens": 131072}]},
+        },
+        "desktop": {"activeModel": "deepseek-v4-pro"},
+    })
+    cfg = read_model_config()
+    enabled = {(e["provider"], e["model"]) for e in cfg["enabledModels"]}
+    assert enabled == {("deepseek", "deepseek-v4-pro"), ("deepseek", "deepseek-v4-flash"), ("qwen", "qwen3.7-plus")}
+
+
+def test_read_returns_explicit_enabled_models(isolated_home):
+    _write_settings(isolated_home, {
+        "providers": {
+            "deepseek": {"base_url": "u", "api_key": "sk",
+                         "models": [{"id": "deepseek-v4-pro", "default_max_tokens": 131072},
+                                    {"id": "deepseek-v4-flash", "default_max_tokens": 65536}]},
+        },
+        "desktop": {"activeModel": "deepseek-v4-pro",
+                    "enabledModels": [{"provider": "deepseek", "model": "deepseek-v4-flash"}]},
+    })
+    cfg = read_model_config()
+    assert cfg["enabledModels"] == [{"provider": "deepseek", "model": "deepseek-v4-flash"}]
+
+
+def test_write_persists_enabled_models(isolated_home):
+    write_model_config({
+        "provider": "deepseek", "model": "deepseek-v4-pro",
+        "enabledModels": [{"provider": "deepseek", "model": "deepseek-v4-pro"},
+                          {"provider": "qwen", "model": "qwen3.7-plus"}],
+        "providers": [
+            {"id": "deepseek", "baseURL": "u", "apiKey": "sk",
+             "models": [{"name": "deepseek-v4-pro", "maxTokens": 131072}]},
+            {"id": "qwen", "baseURL": "u2", "apiKey": "sk2",
+             "models": [{"name": "qwen3.7-plus", "maxTokens": 131072}]},
+        ],
+    })
+    on_disk = json.loads((isolated_home / "settings.json").read_text(encoding="utf-8"))
+    assert on_disk["desktop"]["enabledModels"] == [
+        {"provider": "deepseek", "model": "deepseek-v4-pro"},
+        {"provider": "qwen", "model": "qwen3.7-plus"},
+    ]
+
+
+def test_read_active_falls_back_to_first_enabled_when_not_in_set(isolated_home):
+    """activeModel 不在 enabledModels → 解析为首个 enabled。"""
+    _write_settings(isolated_home, {
+        "providers": {
+            "deepseek": {"base_url": "u", "api_key": "sk",
+                         "models": [{"id": "deepseek-v4-pro", "default_max_tokens": 131072},
+                                    {"id": "deepseek-v4-flash", "default_max_tokens": 65536}]},
+        },
+        "desktop": {"activeModel": "deepseek-v4-pro",  # NOT enabled below
+                    "enabledModels": [{"provider": "deepseek", "model": "deepseek-v4-flash"}]},
+    })
+    cfg = read_model_config()
+    assert cfg["model"]["model"] == "deepseek-v4-flash"
+    assert cfg["model"]["provider"] == "deepseek"
+
+
+# ── work mode (Craft/Ask/Plan) ─────────────────────────────────
+
+
+def test_read_work_mode_defaults_to_craft(isolated_home):
+    from floodmind_desktop_sidecar.config_api import read_work_mode_config
+
+    _write_settings(isolated_home, {"desktop": {}})
+    assert read_work_mode_config() == {"mode": "craft"}
+
+
+def test_write_work_mode_roundtrip(isolated_home):
+    from floodmind_desktop_sidecar.config_api import read_work_mode_config, write_work_mode_config
+
+    _write_settings(isolated_home, {
+        "providers": {},
+        "desktop": {"activeModel": "deepseek-v4-flash", "enableReasoning": True},
+        "permissions": {"mode": "always-trust"},  # unrelated — must survive
+    })
+
+    assert write_work_mode_config({"mode": "ask"}) == {"mode": "ask"}
+    on_disk = json.loads((isolated_home / "settings.json").read_text(encoding="utf-8"))
+    assert on_disk["desktop"]["workMode"] == "ask"
+    # Unrelated keys survive the write.
+    assert on_disk["desktop"]["activeModel"] == "deepseek-v4-flash"
+    assert on_disk["permissions"]["mode"] == "always-trust"
+
+    write_work_mode_config({"mode": "plan"})
+    assert read_work_mode_config() == {"mode": "plan"}
+    write_work_mode_config({"mode": "craft"})
+    assert read_work_mode_config() == {"mode": "craft"}
+
+
+def test_write_work_mode_invalid_falls_back_to_craft(isolated_home):
+    from floodmind_desktop_sidecar.config_api import write_work_mode_config
+
+    _write_settings(isolated_home, {"desktop": {}})
+    assert write_work_mode_config({"mode": "nonsense"}) == {"mode": "craft"}

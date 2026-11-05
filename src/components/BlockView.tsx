@@ -53,12 +53,27 @@ function firstLine(s: string, max = 80): string {
 }
 
 /* ── Thinking ────────────────────────────────────────────── */
-function ThinkingBlock({ block, isLive }: { block: Extract<Block, { kind: "thinking" }>; isLive: boolean }) {
-  const [collapsed, toggle] = useCollapse(true, isLive);
+function ThinkingBlock({
+  block,
+  isLive,
+  forceExpanded = false,
+}: {
+  block: Extract<Block, { kind: "thinking" }>;
+  isLive: boolean;
+  forceExpanded?: boolean;
+}) {
+  // 思考过程默认折叠（streaming 时也折叠）；折叠态用动态「正在思考…」指示，
+  // 点击展开查看具体思考内容。历史过程可按调用方需要强制展开。
+  const [collapsed, toggle] = useCollapse(true, forceExpanded);
   return (
     <div className="blk blk-thinking">
-      <button className="blk-chip" onClick={toggle} type="button">
-        <span className="caret">{collapsed ? "▸" : "▾"}</span> 思考过程
+      <button className="blk-chip" onClick={toggle} type="button" aria-expanded={!collapsed}>
+        <span className="caret">{collapsed ? "▸" : "▾"}</span>
+        {isLive ? (
+          <span className="live-label">正在思考<span className="live-dots" /></span>
+        ) : (
+          <span>思考过程</span>
+        )}
       </button>
       {!collapsed && <div className="thinking-body">{block.content}</div>}
     </div>
@@ -67,17 +82,20 @@ function ThinkingBlock({ block, isLive }: { block: Extract<Block, { kind: "think
 
 /* ── Tool ────────────────────────────────────────────────── */
 function ToolBlock({ block, isLive }: { block: Extract<Block, { kind: "tool" }>; isLive: boolean }) {
-  const [collapsed, toggle] = useCollapse(true, isLive);
+  // 工具行固定为「工具调用 + 工具名 + 参数」一行，放不下自动省略号；
+  // 点击展开才显示完整参数/输出。
+  const [collapsed, toggle] = useCollapse(true, false);
   const args = (block.input || "").replace(/\s+/g, " ").trim();
   const hasDetail = !!(block.input || block.output);
   const dot = statusDot(block.status);
+  const running = isLive || ["running", "pending", "awaiting_permission"].includes(block.status);
   return (
     <div className="blk blk-tool">
       <div
         className="tool-row"
-        role={hasDetail ? "button" : undefined}
-        tabIndex={hasDetail ? 0 : undefined}
-        aria-expanded={hasDetail ? !collapsed : undefined}
+        role="button"
+        tabIndex={0}
+        aria-expanded={!collapsed}
         onClick={() => hasDetail && toggle()}
         onKeyDown={(e) => {
           if (hasDetail && (e.key === "Enter" || e.key === " ")) {
@@ -88,9 +106,12 @@ function ToolBlock({ block, isLive }: { block: Extract<Block, { kind: "tool" }>;
         style={{ cursor: hasDetail ? "pointer" : "default" }}
       >
         <span className={`sdot sdot-${dot}`} />
-        <span className="tname">{block.tool_name}</span>
-        {args && <span className="targs">{args.length > 60 ? args.slice(0, 60) + "…" : args}</span>}
-        <span className="tstat">{block.status}</span>
+        <span className="tool-line">
+          工具调用 {block.tool_name}
+          {args ? ` ${args}` : ""}
+          {running && <span className="live-dots" aria-hidden="true" />}
+        </span>
+        {!collapsed && <span className="tstat">{block.status}</span>}
       </div>
       {!collapsed && hasDetail && (
         <div className="tool-detail">
@@ -110,9 +131,9 @@ function TextBlock({
   block: Extract<Block, { kind: "text" }>;
   isLive: boolean;
 }) {
-  // Final answer: always expanded. Intermediate: collapsed unless live.
+  // Final answer or live-streaming answer: always expanded (streaming adds cursor).
   const [collapsed, toggle] = useCollapse(!block.final, isLive);
-  if (block.final) {
+  if (block.final || isLive) {
     return (
       <div className="blk blk-text final">
         <Markdown>{block.content}</Markdown>
@@ -167,6 +188,8 @@ function ArtifactBlock({ block }: { block: Extract<Block, { kind: "artifact" }> 
       name={block.name}
       artKind={block.artKind}
       path={block.path}
+      exists={block.exists}
+      size={block.size}
       onOpen={() => setPreviewPath(block.path)}
     />
   );
@@ -184,7 +207,7 @@ function PermissionBlock({ block }: { block: Extract<Block, { kind: "permission"
   if (block.approved === true && block.auto_approved) {
     return (
       <div className="blk blk-permission">
-        <span className="perm-badge perm-auto">🔓 已自动批准 {block.tool_name}</span>
+        <span className="perm-badge perm-auto">已自动批准 {block.tool_name}</span>
       </div>
     );
   }
@@ -193,7 +216,7 @@ function PermissionBlock({ block }: { block: Extract<Block, { kind: "permission"
     return (
       <div className="blk blk-permission">
         <span className={`perm-badge ${approved ? "perm-approved" : "perm-rejected"}`}>
-          {approved ? "🔓 已批准" : "🚫 已拒绝"} {block.tool_name}
+          {approved ? "已批准" : "已拒绝"} {block.tool_name}
         </span>
       </div>
     );
@@ -304,6 +327,16 @@ function PermissionBlock({ block }: { block: Extract<Block, { kind: "permission"
   );
 }
 
+/* ── Context (history compaction / attachment injection) ──── */
+function ContextBlock({ block }: { block: Extract<Block, { kind: "context" }> }) {
+  return (
+    <div className="blk blk-context">
+      <span className="context-label">{block.label}</span>
+      {block.content && <span className="context-content">{block.content}</span>}
+    </div>
+  );
+}
+
 function ErrorBlock({ block }: { block: Extract<Block, { kind: "error" }> }) {
   return <div className="blk blk-error">✗ {block.content}</div>;
 }
@@ -311,13 +344,16 @@ function ErrorBlock({ block }: { block: Extract<Block, { kind: "error" }> }) {
 export default function BlockView({
   block,
   isLive,
+  forceExpanded = false,
 }: {
   block: Block;
   isLive: boolean;
+  /** Allow a parent disclosure to reveal thinking detail immediately. */
+  forceExpanded?: boolean;
 }) {
   switch (block.kind) {
     case "thinking":
-      return <ThinkingBlock block={block} isLive={isLive} />;
+      return <ThinkingBlock block={block} isLive={isLive} forceExpanded={forceExpanded} />;
     case "tool":
       return <ToolBlock block={block} isLive={isLive} />;
     case "text":
@@ -328,6 +364,8 @@ export default function BlockView({
       return <ArtifactBlock block={block} />;
     case "permission":
       return <PermissionBlock block={block} />;
+    case "context":
+      return <ContextBlock block={block} />;
     case "error":
       return <ErrorBlock block={block} />;
   }

@@ -1,6 +1,6 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { cleanup, render, screen, fireEvent } from "@testing-library/react";
 import type { SchedTask, RunSummary, RunDetail } from "../state/scheduled-task-store";
 
 const loadMock = vi.fn(async () => []);
@@ -100,6 +100,8 @@ function makeTask(overrides: Partial<SchedTask> = {}): SchedTask {
     ...overrides,
   };
 }
+
+afterEach(() => cleanup());
 
 describe("ScheduledTasksView", () => {
   it("shows empty hint when no tasks exist", () => {
@@ -216,6 +218,27 @@ describe("ScheduledTasksView", () => {
     };
     const html = renderStatic();
     expect(html).toContain("（无内容）");
+  });
+
+  it("selects task cards and retains run, enable, and history actions below", () => {
+    mockState.tasks = [makeTask()];
+    const { rerender } = render(<ScheduledTasksView />);
+    const card = screen.getByRole("button", { name: /idle · 已启用.*生成日报.*每日 08:30/ });
+    expect(card).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(card);
+    expect(setSelectedTaskIdMock).toHaveBeenCalledWith("t1");
+    selectedTaskId = "t1";
+    mockState.runs = [{ run_id: "r1", started_at: "2026-07-10T08:30", finished_at: "", status: "completed" }];
+    rerender(<ScheduledTasksView />);
+    expect(card).toHaveAttribute("aria-pressed", "true");
+    expect(loadRunsMock).toHaveBeenCalledWith("t1");
+    fireEvent.click(screen.getByRole("button", { name: "立即运行" }));
+    expect(runNowMock).toHaveBeenCalledWith("t1");
+    fireEvent.click(screen.getByRole("button", { name: "停用" }));
+    expect(updateMock).toHaveBeenCalledWith("t1", { enabled: false });
+    fireEvent.click(screen.getByRole("button", { name: "2026-07-10T08:30 · completed" }));
+    expect(loadRunMock).toHaveBeenCalledWith("t1", "r1");
+    expect(screen.getByRole("region", { name: "定时任务" })).toHaveAttribute("tabindex", "0");
   });
 
   it("reloads task list when TaskEditModal closes after create", () => {

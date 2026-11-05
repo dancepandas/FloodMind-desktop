@@ -11,6 +11,15 @@ import sys
 # Default to the China mirror only when the user hasn't set their own.
 os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 
+# 桌面端一律直连，不走代理。用户代理工具（Clash 等）若设置了 env/系统代理，
+# httpx(trust_env=True) 与 urllib 会把 LLM API 请求路由到代理；代理未开启时
+# 即报 openai.APIConnectionError("Connection error.")。清掉所有 proxy env 并
+# 设 NO_PROXY=*，让桌面端不依赖代理状态（须在 SDK import 之前执行）。
+for _proxy_key in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
+    os.environ.pop(_proxy_key, None)
+os.environ["NO_PROXY"] = "*"
+os.environ["no_proxy"] = "*"
+
 # Surface SDK internals on stderr — most importantly exec_bash's "执行命令: ..."
 # log line and workspace/path resolution — so CWD / wrong-drive issues are
 # visible in the sidecar log (stderr is inherited up to the tauri-dev console).
@@ -69,6 +78,14 @@ def main() -> None:
     # Python directory fixes that.
     sidecar_python_dir = os.path.dirname(os.path.abspath(sys.executable))
     os.environ["PATH"] = sidecar_python_dir + os.pathsep + os.environ.get("PATH", "")
+
+    # v2.0.0 起 SDK 不再隐式种子 settings.json（导入不建目录/不写配置）；
+    # 宿主（桌面端）显式调用，保证首次启动有可读的初始配置。
+    try:
+        from floodmind.config.settings import initialize_floodmind_home
+        initialize_floodmind_home()
+    except Exception as e:
+        print(f"[sidecar] initialize_floodmind_home failed: {e}", file=sys.stderr)
 
     workspace_manager = WorkspaceManager()
     agent = FloodMindAgent(workspace_manager=workspace_manager)

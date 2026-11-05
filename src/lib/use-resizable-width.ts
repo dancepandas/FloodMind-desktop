@@ -65,10 +65,30 @@ export function useResizableWidth({
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
     return () => {
+      if (draggingRef.current) {
+        draggingRef.current = false;
+        document.body.style.cursor = "";
+        document.body.style.userSelect = "";
+      }
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
     };
   }, [edge, minWidth, maxWidth, storageKey]);
 
-  return { width, startResize };
+  const persistWidth = useCallback((next: number) => {
+    widthRef.current = next;
+    setWidth(next);
+    try { localStorage.setItem(storageKey, String(next)); } catch {}
+  }, [storageKey]);
+
+  const onKeyDown = useCallback((e: React.KeyboardEvent) => {
+    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) return;
+    e.preventDefault();
+    const direction = (e.key === "ArrowRight" ? 1 : -1) * (edge === "left" ? -1 : 1);
+    const next = e.key === "Home" ? minWidth : e.key === "End" ? maxWidth
+      : Math.max(minWidth, Math.min(maxWidth, widthRef.current + direction * (e.shiftKey ? 40 : 10)));
+    persistWidth(next);
+  }, [edge, minWidth, maxWidth, persistWidth]);
+
+  return { width, startResize, onKeyDown };
 }

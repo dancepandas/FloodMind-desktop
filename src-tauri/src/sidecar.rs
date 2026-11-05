@@ -3,12 +3,16 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{mpsc, Mutex};
 use tauri::State;
 
+fn app_data_dir() -> std::path::PathBuf {
+    dirs::data_dir()
+        .map(|d| d.join("FloodMindDesktop"))
+        .unwrap_or_else(|| std::path::PathBuf::from(".floodmind-desktop"))
+}
+
 /// Append a debug line to the app data log. Useful when the GUI has no visible
 /// stderr in release builds.
 fn debug_log(msg: &str) {
-    let Some(dir) = dirs::data_dir().map(|d| d.join("FloodMindDesktop")) else {
-        return;
-    };
+    let dir = app_data_dir();
     let _ = std::fs::create_dir_all(&dir);
     let path = dir.join("sidecar-spawn.log");
     let now = std::time::SystemTime::now()
@@ -26,7 +30,9 @@ fn debug_log(msg: &str) {
         });
 }
 pub fn parse_ready_line(line: &str) -> Option<u16> {
-    line.trim().strip_prefix("READY ").and_then(|p| p.trim().parse::<u16>().ok())
+    line.trim()
+        .strip_prefix("READY ")
+        .and_then(|p| p.trim().parse::<u16>().ok())
 }
 
 pub struct SidecarHandle {
@@ -79,9 +85,15 @@ fn bundled_sidecar_command() -> Option<std::process::Command> {
     // Tauri's resource layout varies by bundler and install location. Try many
     // relatives to the main exe, and also the current working dir as a fallback.
     let mut candidates: Vec<std::path::PathBuf> = vec![
-        dir.join("floodmind-sidecar.dist").join("floodmind-sidecar.exe"),
-        dir.join("resources").join("floodmind-sidecar.dist").join("floodmind-sidecar.exe"),
-        dir.join("..").join("resources").join("floodmind-sidecar.dist").join("floodmind-sidecar.exe"),
+        dir.join("floodmind-sidecar.dist")
+            .join("floodmind-sidecar.exe"),
+        dir.join("resources")
+            .join("floodmind-sidecar.dist")
+            .join("floodmind-sidecar.exe"),
+        dir.join("..")
+            .join("resources")
+            .join("floodmind-sidecar.dist")
+            .join("floodmind-sidecar.exe"),
         dir.join("floodmind-sidecar.exe"),
         std::env::current_dir()
             .unwrap_or_else(|_| dir.to_path_buf())
@@ -111,7 +123,12 @@ fn bundled_sidecar_command() -> Option<std::process::Command> {
             return Some(std::process::Command::new(p));
         }
         search_dir = d.parent().map(|p| p.to_path_buf());
-        if search_dir.as_ref().map(|p| p.components().count()).unwrap_or(0) < 2 {
+        if search_dir
+            .as_ref()
+            .map(|p| p.components().count())
+            .unwrap_or(0)
+            < 2
+        {
             break;
         }
     }
@@ -133,7 +150,10 @@ fn find_sidecar_binary(dir: &std::path::Path, depth: usize) -> Option<std::path:
         if meta.is_file() {
             if path
                 .file_name()
-                .map(|n| n.to_string_lossy().eq_ignore_ascii_case("floodmind-sidecar.exe"))
+                .map(|n| {
+                    n.to_string_lossy()
+                        .eq_ignore_ascii_case("floodmind-sidecar.exe")
+                })
                 .unwrap_or(false)
             {
                 return Some(path);
@@ -160,9 +180,7 @@ pub fn spawn_sidecar() -> Result<SidecarHandle, String> {
     // trip Tauri's dev file-watcher (rebuild + window restart) and pollute the
     // repo. Settings (`~/.floodmind/settings.json`) are home-relative, so they
     // are still found regardless of cwd.
-    let data_dir = dirs::data_dir()
-        .map(|d| d.join("FloodMindDesktop"))
-        .unwrap_or_else(|| std::path::PathBuf::from(".floodmind-desktop"));
+    let data_dir = app_data_dir();
     std::fs::create_dir_all(&data_dir).ok();
 
     // In dev, the sidecar source lives at <project-root>/sidecar, next to
@@ -178,7 +196,9 @@ pub fn spawn_sidecar() -> Result<SidecarHandle, String> {
         .map(|p| {
             let sep = if cfg!(windows) { ';' } else { ':' };
             match std::env::var("PYTHONPATH") {
-                Ok(existing) if !existing.is_empty() => format!("{}{}{}", p.display(), sep, existing),
+                Ok(existing) if !existing.is_empty() => {
+                    format!("{}{}{}", p.display(), sep, existing)
+                }
                 _ => p.to_string_lossy().into_owned(),
             }
         });
@@ -186,7 +206,10 @@ pub fn spawn_sidecar() -> Result<SidecarHandle, String> {
     // Prefer the bundled Nuitka exe in release; otherwise launch via python -m.
     let (mut cmd, is_bundled) = match bundled_sidecar_command() {
         Some(c) => {
-            debug_log("spawn_sidecar: using bundled sidecar");
+            debug_log(&format!(
+                "spawn_sidecar: using bundled sidecar {:?}",
+                c.get_program()
+            ));
             (c, true)
         }
         None => {
@@ -209,12 +232,29 @@ pub fn spawn_sidecar() -> Result<SidecarHandle, String> {
         cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
     }
 
+    let stderr = if is_bundled {
+        let stderr_path = data_dir.join("sidecar-stderr.log");
+        match std::fs::File::create(&stderr_path) {
+            Ok(file) => {
+                debug_log(&format!("bundled stderr={stderr_path:?}"));
+                Stdio::from(file)
+            }
+            Err(e) => {
+                debug_log(&format!("failed to create bundled stderr log: {e}"));
+                Stdio::null()
+            }
+        }
+    } else {
+        Stdio::inherit()
+    };
+
     let mut child = cmd
         .current_dir(&data_dir)
         .stdout(Stdio::piped())
-        .stderr(if is_bundled { Stdio::null() } else { Stdio::inherit() })
+        .stderr(stderr)
         .spawn()
         .map_err(|e| format!("failed to spawn sidecar ({python}): {e}"))?;
+    debug_log(&format!("sidecar child pid={}", child.id()));
 
     let stdout = child
         .stdout
@@ -240,10 +280,25 @@ pub fn spawn_sidecar() -> Result<SidecarHandle, String> {
         }
     });
 
-    let port = rx
-        .recv_timeout(std::time::Duration::from_secs(45))
-        .map_err(|e| format!("sidecar did not report READY in time: {e}"))?
-        .ok_or_else(|| "sidecar's first stdout line was not a READY line".to_string())?;
+    let port = match rx.recv_timeout(std::time::Duration::from_secs(45)) {
+        Ok(Some(port)) => port,
+        Ok(None) => {
+            debug_log("sidecar first stdout line was not READY; terminating child");
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("sidecar's first stdout line was not a READY line".to_string());
+        }
+        Err(e) => {
+            let status = child.try_wait().ok().flatten();
+            debug_log(&format!(
+                "sidecar READY timeout/error={e}; exit_status={status:?}; terminating child"
+            ));
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!("sidecar did not report READY in time: {e}"));
+        }
+    };
+    debug_log(&format!("sidecar READY port={port}"));
 
     Ok(SidecarHandle {
         base_url: format!("http://127.0.0.1:{port}"),
